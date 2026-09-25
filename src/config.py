@@ -105,6 +105,18 @@ def load_config(path: str | Path | None = None) -> Config:
     return parse_config(raw)
 
 
+def load_raw_config(path: str | Path | None = None) -> dict[str, Any]:
+    """The raw YAML mapping, for area sections outside the typed core.
+
+    presets, data, api, backtest and forecast each read their own section from
+    here, so adding an area never touches the dataclasses above.
+    """
+    p = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    with p.open(encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
 def parse_config(raw: Any) -> Config:
     """Validate a parsed YAML mapping. Raises ConfigError naming the bad key."""
     if not isinstance(raw, Mapping):

@@ -40,3 +40,41 @@ orchestration:
   heartbeat_interval_s: 2   # worker SETs hb:{worker_id} every 2 s
   heartbeat_ttl_s: 6        # key TTL
   deadline_miss_threshold: 2  # DEAD after 2 missed tick deadlines (or heartbeat expiry)
+
+# Replay presets for the website's Start screen (docs/UX.md). start_utc = replay start.
+presets:
+  default: spike_evening
+  items:
+    - id: spike_evening
+      label: "Price-spike evening"
+      date_local: "2025-05-16"
+      start_utc: "2025-05-16T21:00:00Z"   # 4:00 pm CDT; Houston peaks $2,250/MWh at 7:45 pm
+      description: "Prices jump above $2,000/MWh around 7:45 pm."
+    - id: morning_spike
+      label: "Biggest spike of 2025"
+      date_local: "2025-04-07"
+      start_utc: "2025-04-07T08:00:00Z"   # 3:00 am CDT; Houston peaks $3,860/MWh around 6:45 am
+      description: "The year's highest price, just before 7 am."
+    - id: winter_spike
+      label: "Winter morning spike"
+      date_local: "2025-01-15"
+      start_utc: "2025-01-15T10:00:00Z"   # 4:00 am CST; HB_NORTH peaks $2,385 at 7:30 am (verify for LZ_*)
+      description: "A cold-morning price jump around 7:30 am."
+    - id: ordinary_day
+      label: "An ordinary day"
+      date_local: "2025-03-19"            # placeholder until the data owner picks a median-spread day
+      start_utc: "2025-03-19T05:00:00Z"
+      description: "A typical day with small ups and downs."
+
+# Area sections, one owner each; read via src.config.load_raw_config().
+data:       # owner: ingest (M1)
+  years: [2024, 2025]
+
+api:        # owner: fleet + API
+  port: 8000
+
+backtest:   # owner: backtest (M4)
+  year: 2025
+
+forecast:   # owner: forecasting
+  model: timesfm-3.0
