@@ -9,3 +9,7 @@ data/raw
 data/cache
 models
 __pycache__
+.claude
+.dev
+.pytest_cache
+data/results
