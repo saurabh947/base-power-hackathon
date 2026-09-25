@@ -40,7 +40,18 @@ def _memory(rows: list[PriceTick]) -> PriceFeed:
     return InMemoryPriceFeed.from_intervals(rows)
 
 
-FACTORIES = [pytest.param(_memory, id="memory")]
+def _postgres(rows: list[PriceTick]) -> PriceFeed:
+    from src.feeds.replay import PostgresReplayFeed, database_available
+
+    if not database_available():
+        pytest.skip("Postgres not reachable: set DATABASE_URL (scripts/dev/services.sh up)")
+    return PostgresReplayFeed.from_rows(rows)  # private TEMP table: never touches real prices
+
+
+FACTORIES = [
+    pytest.param(_memory, id="memory"),
+    pytest.param(_postgres, id="postgres", marks=pytest.mark.postgres),
+]
 
 
 @pytest.fixture(params=FACTORIES)
