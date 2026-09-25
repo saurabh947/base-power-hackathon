@@ -5,12 +5,23 @@ description = "Home-battery fleet simulator trading against real ERCOT prices (h
 readme = "RUNLOG.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "fastapi>=0.141.1",
+    "msgpack>=1.2.2",
     "numpy>=2.0",
+    "pandas>=2.2",
+    "psycopg[binary]>=3.2",
+    "pyarrow>=25.0.1",
+    "python-calamine>=0.8.2",
     "pyyaml>=6.0",
+    "redis>=5",
+    "requests>=2.34.2",
+    "scipy>=1.18.1",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=8.0",
 ]
 

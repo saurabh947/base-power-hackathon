@@ -32,6 +32,7 @@ from src.feeds.memory import InMemoryPriceFeed
 from src.ledger.backtest import BacktestLedger
 from src.sim import m0_prices
 from src.sim.adapters import InMemoryBatteryAdapter
+from src.sim.decision import decision_tick
 from src.sim.allocation import allocate, fleet_headroom_kw
 from src.sim.battery import fleet_soc, grid_kwh_from_soc_change, headroom_kw
 from src.sim.fleet import generate_batteries
@@ -99,10 +100,10 @@ def run(
         efficiency = np.array([s.efficiency for s in before])
         available = np.array([s.available for s in before])
 
-        # 1. strategy: sees the last published tick and only the history before it (no peeking)
+        # 1. strategy: decision-time clock, last published price, only earlier history (no peeking)
         seen = i - lag
         if seen >= 0:
-            target = strategy.target_kw(ticks[seen], fleet_soc(soc, capacity, available),
+            target = strategy.target_kw(decision_tick(tick, ticks[seen]), fleet_soc(soc, capacity, available),
                                         fleet_headroom_kw(power, available),
                                         prices[max(0, seen - window_ticks):seen])
         else:

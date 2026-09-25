@@ -16,3 +16,6 @@ test:
 # Exits 1 unless Ledger.summary() reports nonzero USD.
 m0:
 	$(UV) run python -m src.sim.skeleton
+
+# Area targets (ingest, fleet, backtest, forecast, web, cloud) live in mk/*.mk
+-include mk/*.mk

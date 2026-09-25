@@ -177,10 +177,8 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
    - `record()` is additive, so workers can report cohorts separately, and it rejects non-finite values.
 7. **`fleet_soc` for the Strategy** is the capacity-weighted SoC of available batteries.
 
-**Open question for the human (from M0).**
-- **Peak strategy vs the decision lag.** Per decision 5 the strategy gets the last *published* tick, and peak reads that tick's clock. Under lag 3 its windows therefore land 15 min late in delivery time: 10:15-15:15 and 18:15-21:15. On 2025-05-16 that moves peak from $4.45 (lag 0) to $5.81 (lag 3). Options:
-  - (a) accept it;
-  - (b) give strategies that read no prices the delivery tick (lag 0), since they cannot peek at prices anyway;
-  - (c) stamp the strategy's tick at decision time and carry the last published price.
-
-  The code does (a) today. Pick one before the pitch compares peak with v1.
+**Resolved after M0 (integrator, engineering call): option (c).**
+- **What changed.** The strategy's tick is now `decision_tick(now, published)` from `src/sim/decision.py`. It carries the decision-time timestamp with the latest published price, demand and fuel mix.
+- **Effect.** Clock rules stay on the clock, and prices still can't be peeked at. Peak under lag 3 is now $4.4470, the same as lag 0. Bands is unchanged.
+- **Where it applies.** The coordinator, the backtest and any future strategy caller must all use `decision_tick`.
+- **Tests.** Pinned in `tests/test_decision_tick.py`.

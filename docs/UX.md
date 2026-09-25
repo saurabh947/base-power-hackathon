@@ -1,0 +1,98 @@
+# Website UX guide
+
+The human's brief: *"as user friendly as possible, no unnecessary jargon, technical enough, but extremely easy to use."*
+
+## Principles
+1. **Plain words first.** Every number has a unit and a human translation, e.g. "$120/MWh (12¢ per kWh)".
+2. **One obvious next action per screen.** Secondary actions are visually quieter.
+3. **Every panel explains itself.** Each has a one-line *What is this?* under its title and an optional "How it works" expander of at most 3 sentences.
+4. **Technical on demand.** A global **"Show technical details"** switch (off by default) reveals:
+   - raw values: kW per controller, process IDs, tick numbers, error %, message counts
+   - spec terms in brackets, e.g. "Controllers (worker processes)"
+5. **Explain acronyms or hide them.**
+   - "ERCOT" is first introduced as "ERCOT, the Texas grid operator".
+   - LZ_HOUSTON is shown as "Houston area" and LZ_NORTH as "Dallas–Fort Worth area".
+6. **Color has meaning, and color is never the only signal** (also use icon or label):
+   - **teal/green** = charging (buying cheap power)
+   - **amber** = selling
+   - **grey** = holding
+   - **red** only for failures
+7. **Desktop-first**, with readable text at 1280px. Keyboard-accessible, visible focus, and AA contrast in light and dark themes.
+8. **Honest labels.**
+   - Replays say "Replaying real prices from May 16, 2025".
+   - Money is "gross wholesale value".
+   - Recorded or estimated values are always labeled.
+
+## Glossary (UI word ← internal term)
+| UI says | Internal |
+|---|---|
+| Controller | worker process |
+| Charge level | SoC (state of charge) |
+| Power the fleet was asked for / Power delivered | target kW / actual kW |
+| Selling / Charging / Waiting | discharge / charge / hold |
+| Spare capacity | headroom |
+| Failed commands | dead-letter entries |
+| Full-year results | backtest |
+| 5-minute step | tick |
+| Simple rule | Strategy v1 (percentile bands) |
+| AI forecast (TimesFM-3) | forecast strategy |
+| Evening peak | peak strategy |
+| Price right now | RT settlement point price |
+| Houston area / Dallas–Fort Worth area | LZ_HOUSTON / LZ_NORTH |
+
+## Screens
+
+### 1. Start (landing)
+- **Headline:** "What if 20,000 home batteries traded on the Texas power grid?"
+- **Subhead:** "Replay real 2025 electricity prices and watch a fleet of home batteries buy cheap, sell high, and keep working when parts of the system crash."
+- **Run settings card**, placed ABOVE the button:
+  - 20,000 home batteries
+  - 5–11.5 kW, 10–20 kWh each
+  - Houston & Dallas–Fort Worth
+  - Replay: {preset label, e.g. "Price-spike evening, May 16, 2025, from 4 pm"}
+  - Speed: "1 hour of market time every 6 seconds"
+  - Decision method: "AI forecast (TimesFM-3)"
+  - Batteries start 90% charged
+- A "Change settings" link opens a small editor. Only preset, speed, decision method and starting charge are editable.
+- **Primary button:** "Start the simulation".
+- **While the backend wakes up** (Cloud Run cold start), show "Waking up the simulator… (usually a few seconds)".
+- **If a run is already going:** "A simulation is running. Watch live" plus a secondary "Start over".
+
+### 2. Live
+- **Top bar:** replay clock ("May 16, 2025, 7:45 pm, Houston time"), Pause/Resume, Speed, Reset. Presenter mode shows the extra button "Crash a controller".
+- **Price card** ("Electricity price right now"):
+  - Real price line per area, shaded teal while charging and amber while selling.
+  - The AI forecast as a soft band (10–90% range) when available.
+  - Explainer: "Real prices from ERCOT, the Texas grid operator. Batteries buy when power is cheap and sell when it's expensive."
+- **Power card** ("Power: asked for vs delivered"):
+  - Dashed = plan, solid = delivered.
+  - Explainer: "The two lines should overlap. When a controller crashes, watch the gap close within a few seconds."
+- **Controllers card:** a grid of 20 tiles, green = working, amber = not responding, red = crashed.
+  - Each tile shows "1,000 batteries".
+  - Explainer: "Each controller runs 1,000 batteries. If one crashes, the others take over its batteries."
+  - Also shows a "Failed commands: N" counter with a one-line explanation.
+- **Money card:** a large running counter, "Earned so far in this replay: $X", with sold/bought kWh underneath.
+- **Battery availability panel** (side drawer: "Take batteries offline"):
+  - A slider per area ("% offline").
+  - "Take a controller's batteries offline" (a controller picker).
+  - "Find a battery" by ID.
+  - Explainer: "Offline batteries can't charge or sell, so the fleet's plan shrinks. This is different from crashing a controller."
+- **"What just happened" feed:** the plain-language `events[].message`, newest first, max 6 visible.
+
+### 3. Results
+- **Big number:** "$X per battery per year".
+  - Subline: "$Y million a year for the 20,000-battery fleet".
+  - Small print: "$/kWh-year", "cycles per year".
+- **Comparison bars:** Simple rule vs AI forecast vs Evening peak vs Best possible (hindsight). Explainer: "Best possible assumes perfect knowledge of future prices. No real system can reach it."
+- **Top 10 days by earnings:** a list or small bar chart.
+- **"How we got this number"** (expander):
+  - gross wholesale value at ERCOT 2025 real-time prices
+  - excludes retail/delivery charges, grid-support services and battery wear
+  - the fleet is too small to move prices
+  - TimesFM-3 licence note: non-commercial research weights; a production version would use TimesFM 2.5
+- **Button:** "Re-run the full year" (POST /backtest), showing progress.
+
+## Presenter mode
+- Reached from a small, unobtrusive "Presenter" link in the footer. It asks for the passcode and calls `POST /presenter/check`.
+- The passcode is kept in `sessionStorage` only, and is sent as the `X-Presenter-Passcode` header.
+- Unlocks "Crash a controller". Crashing a controller is presenter-only; everything else is public.
