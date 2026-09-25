@@ -1,0 +1,25 @@
+#!/bin/sh
+# Blocks secrets from being committed:
+#  1. any .env file (except .env.example)
+#  2. anything shaped like a Google API key
+#  3. any non-empty value (8+ chars) currently set in .env, wherever it appears
+bad=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$')
+if [ -n "$bad" ]; then
+  echo "pre-commit: refusing to commit secret file(s):" >&2
+  echo "$bad" >&2
+  exit 1
+fi
+staged=$(git diff --cached -U0 | grep -E '^\+' || true)
+if printf '%s' "$staged" | grep -qE 'AIza[0-9A-Za-z_-]{35}'; then
+  echo "pre-commit: staged changes contain what looks like a Google API key" >&2
+  exit 1
+fi
+if [ -f .env ]; then
+  grep -E '^[A-Za-z0-9_]+=.{8,}' .env | cut -d= -f2- | while IFS= read -r val; do
+    if printf '%s' "$staged" | grep -qF -- "$val"; then
+      echo "pre-commit: staged changes contain a value from .env" >&2
+      exit 1
+    fi
+  done || exit 1
+fi
+exit 0

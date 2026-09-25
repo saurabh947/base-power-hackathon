@@ -1,0 +1,42 @@
+# fleet-sim configuration: the one place for fleet, physics, strategy and
+# orchestration knobs (spec section 6). Loaded by src/config.py.
+# Decisions behind these values are in RUNLOG.md.
+
+seed: 42                    # seeds battery specs and anything else random
+
+sim:
+  tick_seconds: 300         # 5-minute ticks
+  decision_lag_ticks: 3     # strategy sees the last *published* price (one 15-min interval late)
+
+fleet:
+  size: 20000               # 20 workers x 1,000 batteries
+  workers: 20
+  locations:                # fleet split by ERCOT load zone (weights sum to 1)
+    LZ_HOUSTON: 0.5
+    LZ_NORTH: 0.5
+
+battery:                    # per-battery specs drawn uniformly, seeded (ranges confirmed by the human)
+  power_kw: [5.0, 11.5]     # max grid-side charge/discharge rate
+  capacity_kwh: [10.0, 20.0]
+  cap_power_at_capacity: true   # power_kw <= capacity_kwh (at most 1C)
+  efficiency: 0.90          # round-trip; sqrt(eta) lost each way (ASSUMPTION, human-adjustable)
+  soc_bounds: [0.20, 1.00]  # 0.20 = safety reserve floor
+  soc_init: 0.5
+  demo_soc_init: 0.9        # demo preset: fleet pre-charged before the spike evening
+
+strategy:
+  name: bands               # bands | peak  (the seam swaps here)
+  bands:
+    low_percentile: 25      # charge at or below p25
+    high_percentile: 90     # discharge at or above p90 (and price > 0)
+    window_days: 7          # trailing window, excludes the current tick
+    min_samples: 288        # hold until one day of history exists
+  peak:
+    timezone: America/Chicago
+    charge_window: ["10:00", "15:00"]      # half-open [start, end)
+    discharge_window: ["18:00", "21:00"]
+
+orchestration:
+  heartbeat_interval_s: 2   # worker SETs hb:{worker_id} every 2 s
+  heartbeat_ttl_s: 6        # key TTL
+  deadline_miss_threshold: 2  # DEAD after 2 missed tick deadlines (or heartbeat expiry)

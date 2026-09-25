@@ -1,0 +1,27 @@
+[project]
+name = "fleet-sim"
+version = "0.1.0"
+description = "Home-battery fleet simulator trading against real ERCOT prices (hackathon build)."
+readme = "RUNLOG.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.0",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+# No [build-system]: uv installs only the dependencies. `src` is imported as a
+# package from the repo root (python -m src.sim.skeleton; pytest pythonpath ".").
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "postgres: needs a running Postgres (later milestones)",
+    "redis: needs a running Redis (later milestones)",
+]

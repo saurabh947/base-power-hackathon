@@ -1,0 +1,25 @@
+# secrets: never commit (also blocked by .githooks/pre-commit)
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# web
+node_modules/
+web/dist/
+.vercel/
+
+# re-downloadable data and model weights
+data/raw/
+data/cache/
+models/
+*.log
+.DS_Store
+
+# project-local dev services
+.dev/
