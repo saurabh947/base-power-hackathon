@@ -73,8 +73,22 @@ data:       # owner: ingest (M1)
 api:        # owner: fleet + API
   port: 8000
 
-backtest:   # owner: backtest (M4)
-  year: 2025
+backtest:   # owner: backtest (M4). Read by src/backtest/runner.py:backtest_settings()
+  year: 2025                            # the pitch year shown on the Results screen
+  strategies: [bands, forecast, peak]   # the pitch set; one that isn't built is skipped and the results say so
+  headline: [forecast, bands]           # the big number: the first of these that ran
+  lag0_variant: true                    # also replay the spec-literal lag 0 (stored in metrics.lag0)
+  warmup_days: 7                        # real prices before Jan 1 that fill the bands window
+  results_dir: data/results             # JSON exports (runs/, pitch_<year>.json)
+  ceiling:                              # "Best possible (perfect hindsight)", src/backtest/ceiling.py
+    ratio_step: 0.05                    # power/capacity grid of the per-kWh LP (fleet: 0.25-1.0)
+    cycles_per_day_cap: 1.0             # the capped reference; the headline ceiling is uncapped
+    workers: 4                          # processes for the LP grid (1 = in-process)
+  labels:                               # UI words (docs/UX.md glossary)
+    bands: Simple rule
+    forecast: AI forecast (TimesFM-3)
+    peak: Evening peak
+    hindsight: Best possible (perfect hindsight)
 
 forecast:   # owner: forecasting
   model: timesfm-3.0

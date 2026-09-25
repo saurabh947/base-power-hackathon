@@ -1,0 +1,108 @@
+"""Backtest records in Postgres backtest_runs (postgres marker).
+
+Skips unless DATABASE_URL points at a reachable Postgres. Each test runs in a throwaway schema
+built from migrations/001_init.sql (search_path) and dropped afterwards, so real rows are
+never touched. Prices still come from the committed snapshot (SERIES_BACKEND=snapshot).
+"""
+from __future__ import annotations
+
+import os
+import uuid
+from datetime import date, timedelta
+
+import pytest
+
+from src.backtest import service, store
+from src.backtest.engine import local_midnight_utc
+from src.backtest.results import build_results
+from src.backtest.runner import backtest_settings, run_backtest
+from src.config import REPO_ROOT
+from src.feeds.memory import InMemoryPriceFeed
+from src.feeds.parquet import load_rt_rows
+
+pytestmark = pytest.mark.postgres
+LOCS = ("LZ_HOUSTON", "LZ_NORTH")
+
+
+@pytest.fixture
+def pg(monkeypatch):
+    psycopg = pytest.importorskip("psycopg")
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL is not set")
+    try:
+        conn = psycopg.connect(url, autocommit=True, connect_timeout=2)
+    except Exception as exc:
+        pytest.skip(f"Postgres is not reachable: {exc}")
+    schema = f"bt_test_{uuid.uuid4().hex[:10]}"
+    conn.execute(f'CREATE SCHEMA "{schema}"')
+    conn.execute(f'SET search_path TO "{schema}"')
+    conn.execute((REPO_ROOT / "migrations" / "001_init.sql").read_text())
+    monkeypatch.setenv("DATABASE_URL", url + ("&" if "?" in url else "?") + f"options=-csearch_path%3D{schema}")
+    monkeypatch.setenv("SERIES_BACKEND", "snapshot")
+    monkeypatch.delenv("BACKTEST_RESULTS_DIR", raising=False)
+    try:
+        yield conn
+    finally:
+        conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        conn.close()
+
+
+def mini_backtest(out_dir, strategies=("bands", "forecast", "peak"), pitch=True, ceiling=True):
+    start = local_midnight_utc(date(2025, 6, 1))
+    rows = [r for r in load_rt_rows(years=(2025,), locations=LOCS)
+            if start - timedelta(days=7) <= r.ts < start + timedelta(days=14)]
+    settings = backtest_settings()
+    settings["ceiling"].update(ratio_step=0.25, workers=1)
+    return run_backtest(list(strategies), 2025, settings=settings, pitch=pitch, fleet_size=20, ceiling=ceiling,
+                        feed=InMemoryPriceFeed.from_intervals(rows), out_dir=out_dir, log=lambda s: None)
+
+
+def flags(conn) -> dict[str, bool]:
+    return {str(r[0]): r[1] for r in conn.execute("SELECT run_id, is_pitch FROM backtest_runs")}
+
+
+def test_pitch_set_round_trips_through_postgres(pg, tmp_path):
+    outcome = mini_backtest(tmp_path)
+    assert outcome.stored_in_db
+    loaded = {r["strategy"]: r for r in store.load_pitch_records(2025)}
+    assert set(loaded) == {"bands", "forecast", "peak", "hindsight"}
+    for r in outcome.records:
+        got = loaded[r["strategy"]]
+        for key in ("run_id", "year", "fleet_total_usd", "per_battery_avg_usd", "per_location", "top_days", "metrics",
+                    "notes", "started_at", "finished_at", "label"):
+            assert got[key] == r[key], (r["strategy"], key)
+        assert got["params"]["config"] == r["params"]["config"] and got["params"]["year"] == 2025
+    assert loaded["forecast"]["fleet_total_usd"] is None and loaded["forecast"]["metrics"]["skipped"]
+    assert all(flags(pg).values())
+    assert store.load_run(outcome.records[0]["run_id"])["run_id"] == outcome.records[0]["run_id"]
+    assert store.load_pitch_records(2024) == []
+
+
+def test_a_new_pitch_run_replaces_only_its_own_strategy(pg, tmp_path):
+    first = mini_backtest(tmp_path)
+    old = {r["strategy"]: r["run_id"] for r in first.records}
+    second = mini_backtest(tmp_path, strategies=("bands",), ceiling=False)
+    new_bands = second.records[0]["run_id"]
+    f = flags(pg)
+    assert f[old["bands"]] is False and f[new_bands] is True
+    assert f[old["peak"]] and f[old["hindsight"]] and f[old["forecast"]]
+    pitch = {r["strategy"]: r["run_id"] for r in store.load_pitch_records(2025)}
+    assert pitch == {**old, "bands": new_bands}
+    # a run that is not for the pitch changes no flag
+    mini_backtest(tmp_path, strategies=("peak",), pitch=False, ceiling=False)
+    assert {k: v for k, v in flags(pg).items() if k in f} == f
+    assert pg.execute("SELECT count(*) FROM backtest_runs").fetchone()[0] == 6
+    assert pg.execute("SELECT count(*) FROM backtest_runs WHERE is_pitch").fetchone()[0] == 4
+
+
+def test_pitch_results_reads_the_database(pg, tmp_path):
+    outcome = mini_backtest(tmp_path)
+    (tmp_path / "pitch_2025.json").unlink()  # prove it is not the JSON fallback
+    results = service.pitch_results(2025)
+    assert results == build_results(outcome.records, year=2025)
+    assert [s["strategy"] for s in results["strategies"]] == ["bands", "peak"]
+    assert results["ceiling"]["per_battery_usd_year"] > 0
+    # jsonb reorders object keys; the Results keep config order
+    assert list(results["strategies"][0]["per_location_usd"]) == ["LZ_HOUSTON", "LZ_NORTH"]
+    assert any("split evenly between the Houston and Dallas–Fort Worth areas" in a for a in results["assumptions"])
