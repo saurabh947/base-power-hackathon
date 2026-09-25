@@ -293,7 +293,7 @@ def ceiling_record(ctx, *, out_dir: str | Path | None = None, workers: int | Non
     import uuid
 
     from src.backtest.runner import HINDSIGHT, utc_iso
-    from src.backtest.store import results_dir
+    from src.backtest.store import find_ceiling_curves, results_dir
 
     t0 = time.perf_counter()
     started = datetime.now(UTC)
@@ -310,14 +310,19 @@ def ceiling_record(ctx, *, out_dir: str | Path | None = None, workers: int | Non
     all_ratios = np.concatenate([f.power_kw / f.capacity_kwh for f in ctx.fleets.values()])
     grid = ratio_grid(all_ratios, step)
     key = cache_key(days, grid, physics, cap)
-    cache = results_dir(out_dir, settings) / "cache" / f"ceiling_curves_{key}.json"
-    if cache.exists():
-        curve = json.loads(cache.read_text())
+    base = results_dir(out_dir, settings)
+    cache = base / "cache" / f"ceiling_curves_{key}.json"
+    curve = json.loads(cache.read_text()) if cache.exists() else None
+    if curve is not None:
         log(f"ceiling: per-kWh curves from cache {cache.name}")
     else:
-        log(f"ceiling: solving {len(grid)} ratios x {sum(len(d) for d in days.values())} location-days x 2 "
-            f"with {workers} process(es)...")
-        curve = curves(days, grid, cycles_cap=cap, workers=workers, **physics)
+        curve = find_ceiling_curves(key, ctx.year, base)
+        if curve is not None:
+            log("ceiling: per-kWh curves from an earlier ceiling run with the same prices and physics")
+        else:
+            log(f"ceiling: solving {len(grid)} ratios x {sum(len(d) for d in days.values())} location-days x 2 "
+                f"with {workers} process(es)...")
+            curve = curves(days, grid, cycles_cap=cap, workers=workers, **physics)
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(curve))
     uncapped = fleet_value(ctx.fleets, curve, "uncapped", b.soc_min, b.soc_max)

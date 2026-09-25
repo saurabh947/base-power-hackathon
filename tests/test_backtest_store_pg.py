@@ -96,6 +96,26 @@ def test_a_new_pitch_run_replaces_only_its_own_strategy(pg, tmp_path):
     assert pg.execute("SELECT count(*) FROM backtest_runs WHERE is_pitch").fetchone()[0] == 4
 
 
+def test_ceiling_curves_come_back_from_the_database_after_a_restart(pg, tmp_path):
+    import shutil
+
+    from src.backtest import ceiling
+    from src.backtest.runner import build_context
+
+    outcome = mini_backtest(tmp_path / "first")
+    shutil.rmtree(tmp_path / "first")  # a fresh container: no cache/, no JSON
+    start = local_midnight_utc(date(2025, 6, 1))
+    rows = [r for r in load_rt_rows(years=(2025,), locations=LOCS)
+            if start - timedelta(days=7) <= r.ts < start + timedelta(days=14)]
+    settings = backtest_settings()
+    settings["ceiling"].update(ratio_step=0.25, workers=1)
+    ctx = build_context(2025, settings=settings, fleet_size=20, feed=InMemoryPriceFeed.from_intervals(rows))
+    lines = []
+    rec = ceiling.ceiling_record(ctx, out_dir=tmp_path / "second", log=lines.append)
+    assert any("earlier ceiling run" in line for line in lines)
+    assert rec["metrics"]["uncapped"] == outcome.ceiling["metrics"]["uncapped"]
+
+
 def test_pitch_results_reads_the_database(pg, tmp_path):
     outcome = mini_backtest(tmp_path)
     (tmp_path / "pitch_2025.json").unlink()  # prove it is not the JSON fallback

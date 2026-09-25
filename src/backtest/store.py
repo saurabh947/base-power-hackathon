@@ -197,6 +197,35 @@ def load_pitch_records(year: int, *, conn=None) -> list[dict]:
     return list(out.values())
 
 
+def find_ceiling_curves(cache_key: str, year: int, out_dir=None) -> dict | None:
+    """Per-kWh ceiling curves from an earlier ceiling row with the same cache key, if any.
+
+    Saves re-solving the LP grid after a restart (the file cache lives on the container's disk).
+    Looks in backtest_runs when a database is configured, then in the JSON pitch set.
+    """
+    if db_configured():
+        try:
+            conn, owned = _connect(None)
+            try:
+                row = conn.execute(
+                    "SELECT metrics->'curves' FROM backtest_runs WHERE strategy = 'hindsight' "
+                    "AND metrics->>'cache_key' = %s ORDER BY finished_at DESC NULLS LAST LIMIT 1",
+                    (cache_key,),
+                ).fetchone()
+            finally:
+                if owned:
+                    conn.close()
+            if row and row[0]:
+                return row[0]
+        except Exception:
+            pass
+    for r in load_pitch_records_json(year, out_dir):
+        m = r.get("metrics") or {}
+        if r.get("strategy") == "hindsight" and m.get("cache_key") == cache_key and m.get("curves"):
+            return m["curves"]
+    return None
+
+
 def load_run(run_id: str, *, conn=None) -> dict | None:
     conn, owned = _connect(conn)
     try:

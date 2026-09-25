@@ -156,6 +156,20 @@ def test_json_export_and_pitch_merge(mini, tmp_path):
     assert {r["strategy"]: r["run_id"] for r in store.load_pitch_records_json(2025, tmp_path)} == merged
 
 
+def test_ceiling_reuses_curves_from_the_pitch_set_after_a_restart(mini, tmp_path):
+    from src.backtest import ceiling
+    from src.backtest.runner import build_context
+
+    out, outcome = mini
+    (tmp_path / "pitch_2025_runs.json").write_text((out / "pitch_2025_runs.json").read_text())  # no cache/ dir
+    ctx = build_context(2025, settings=mini_settings(), fleet_size=20, feed=mini_feed())
+    lines = []
+    rec = ceiling.ceiling_record(ctx, out_dir=tmp_path, log=lines.append)
+    assert any("earlier ceiling run" in line for line in lines) and not any("solving" in line for line in lines)
+    assert rec["metrics"]["uncapped"] == outcome.ceiling["metrics"]["uncapped"]
+    assert (tmp_path / "cache" / f"ceiling_curves_{rec['metrics']['cache_key']}.json").exists()
+
+
 def test_clean_makes_records_json_safe():
     assert store.clean({"a": float("nan"), "b": [1.0, float("inf")], "c": 2}) == {"a": None, "b": [1.0, None], "c": 2}
 
