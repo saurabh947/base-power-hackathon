@@ -52,6 +52,7 @@ from src.backtest.metrics import compact, fleet_totals, replay_metrics
 from src.config import REPO_ROOT, Config, load_config, load_raw_config
 from src.core.interfaces import PriceFeed, Strategy
 from src.ledger.backtest import BacktestLedger
+from src.sim.allocation import fleet_headroom_kw
 
 __all__ = [
     "Fleet", "LocationRun", "TickSeries", "Replay", "BacktestOutcome", "backtest_settings", "bands_targets",
@@ -157,17 +158,16 @@ def replay(
         reprs.add(repr(strategy))
         targets = None
         if fast and uses_bands_fast_path(strategy):
+            prices = ts.prices
             key = (loc, id(ts), len(ts.ticks), hist, strategy.low_percentile, strategy.high_percentile,
                    strategy.window_ticks, strategy.min_samples)
             if window_cache is None or key not in window_cache:
-                windows = bands_windows(ts.prices, strategy, hist)
+                windows = bands_windows(prices, strategy, hist)
                 if window_cache is not None:
                     window_cache[key] = windows
             else:
                 windows = window_cache[key]
-            from src.sim.allocation import fleet_headroom_kw
-
-            targets = bands_targets(ts.prices, ts.start, lag, fleet_headroom_kw(fleet.power_kw, fleet.available),
+            targets = bands_targets(prices, ts.start, lag, fleet_headroom_kw(fleet.power_kw, fleet.available),
                                     windows)
             used_fast = True
         runs[loc] = replay_location(

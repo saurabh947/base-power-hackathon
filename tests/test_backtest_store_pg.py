@@ -96,6 +96,22 @@ def test_a_new_pitch_run_replaces_only_its_own_strategy(pg, tmp_path):
     assert pg.execute("SELECT count(*) FROM backtest_runs WHERE is_pitch").fetchone()[0] == 4
 
 
+def test_a_skip_never_displaces_a_run_that_worked(pg, tmp_path):
+    first = mini_backtest(tmp_path, strategies=("bands",), ceiling=False)
+    good = dict(first.records[0], strategy="forecast", run_id=str(uuid.uuid4()))  # SYNTHETIC forecast run
+    store.save_records([good], pitch=True, use_db=True, out_dir=tmp_path)
+    later = mini_backtest(tmp_path, strategies=("forecast",), ceiling=False)  # not built: a skip marker
+    marker = later.records[0]
+    assert marker["metrics"]["skipped"]
+    f = flags(pg)
+    assert f[good["run_id"]] is True and f[marker["run_id"]] is False
+    assert {r["strategy"]: r["run_id"] for r in store.load_pitch_records(2025)}["forecast"] == good["run_id"]
+    # with nothing that worked before, the marker does become the pitch row (so the Results say why)
+    pg.execute("DELETE FROM backtest_runs WHERE run_id = %s", (good["run_id"],))
+    again = mini_backtest(tmp_path, strategies=("forecast",), ceiling=False)
+    assert flags(pg)[again.records[0]["run_id"]] is True
+
+
 def test_ceiling_curves_come_back_from_the_database_after_a_restart(pg, tmp_path):
     import shutil
 

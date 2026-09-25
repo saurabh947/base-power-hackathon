@@ -156,6 +156,22 @@ def test_json_export_and_pitch_merge(mini, tmp_path):
     assert {r["strategy"]: r["run_id"] for r in store.load_pitch_records_json(2025, tmp_path)} == merged
 
 
+def test_a_skip_never_displaces_a_run_that_worked(mini, tmp_path):
+    import uuid
+
+    _, outcome = mini
+    bands = next(r for r in outcome.records if r["strategy"] == "bands")
+    good = dict(bands, strategy="forecast", label="AI forecast (TimesFM-3)", run_id=str(uuid.uuid4()))  # SYNTHETIC
+    store.save_records([good], pitch=True, use_db=False, out_dir=tmp_path, settings=mini_settings())
+    later = mini_backtest(tmp_path, strategies=("bands", "forecast"), ceiling=False)  # forecast is skipped now
+    assert later.skipped
+    pitch = {r["strategy"]: r["run_id"] for r in store.load_pitch_records_json(2025, tmp_path)}
+    assert pitch["forecast"] == good["run_id"]
+    results = store.read_pitch_results_json(2025, tmp_path)
+    assert next(s for s in results["strategies"] if s["is_headline"])["strategy"] == "forecast"
+    assert not any("isn't in these results" in a for a in results["assumptions"])
+
+
 def test_ceiling_reuses_curves_from_the_pitch_set_after_a_restart(mini, tmp_path):
     from src.backtest import ceiling
     from src.backtest.runner import build_context

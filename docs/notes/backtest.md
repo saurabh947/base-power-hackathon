@@ -125,6 +125,15 @@ For each 5-minute tick and each location, in this order, using the shared module
 
 **Lag 0 vs lag 3.** Lag 0 earns less than lag 3 for bands. With the 15-minute lag, the rule sells slightly later into rising spikes. Peak runs on the clock, so its lag 0 and lag 3 results are equal (RUNLOG).
 
+**2024, for comparison** (same fleet and config; there is no 2023 data to warm up with, so bands holds on Jan 1):
+
+| | per battery / yr | lag 0 |
+|---|---|---|
+| bands | $113.13 | $114.72 |
+| peak | $142.91 | $142.91 |
+| Best possible (uncapped) | $515.51 | |
+| Best possible, 1 cycle/day | $425.60 | |
+
 **Speed** (M3 Pro), per strategy including the lag-0 replay:
 
 | Run | Lag 3 | Lag 0 | Total |
@@ -158,7 +167,10 @@ For each 5-minute tick and each location, in this order, using the shared module
 - There is one row per strategy run, one ceiling row (`strategy='hindsight'`), and a skip marker for a requested strategy that could not run: totals NULL, `metrics.skipped = true`, `metrics.reason`, `metrics.reason_plain`.
 - `params` holds the full typed config, the `backtest` section, battery ranges, fleet totals, the price source, the year, the label and the git commit.
 - `is_pitch` means one row per (year, strategy). A pitch save flips it in one transaction.
+- A skip marker never displaces a run that worked. If a public re-run's forecast fails, the Results keep the last good forecast run instead of losing the headline.
 - jsonb reorders object keys, so `params.fleet.locations` keeps the config order for display.
+
+**Ceiling curves survive a restart.** They are cached on disk in `data/results/cache/`. If that cache is missing, as it is on a fresh Cloud Run container, the curves are reused from an earlier ceiling row with the same cache key, in `backtest_runs` or the JSON pitch set. The LP grid is only re-solved when prices or physics change.
 
 **Forecast.** The runner calls `make_strategy(cfg.strategy, tick_seconds, "forecast")`.
 - While it is not built, the run records a skip marker, and the Results say: "The AI forecast (TimesFM-3) method isn't in these results: it isn't available in this version of the simulator yet."

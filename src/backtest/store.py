@@ -8,7 +8,8 @@ notes, is_pitch.
 
 is_pitch marks the Results screen's set: at most one row per (year, strategy). Saving with
 pitch=True clears the flag on that strategy's previous row for the year and sets it on the new
-one, in one transaction for the whole batch.
+one, in one transaction for the whole batch. A skip marker never displaces a run that worked:
+if a re-run's forecast fails, the Results keep showing the last good forecast run.
 
 JSON (always written; the directory is data/results/ unless configured otherwise):
   runs/<run_id>.json       every record
@@ -47,6 +48,11 @@ def results_dir(out_dir: str | Path | None = None, settings: dict | None = None)
 
 def db_configured() -> bool:
     return bool(os.environ.get("DATABASE_URL") or os.environ.get("DB_HOST"))
+
+
+def is_skip(record: dict) -> bool:
+    """A skip marker: the strategy was requested but could not run."""
+    return bool((record.get("metrics") or {}).get("skipped"))
 
 
 def clean(value):
@@ -101,7 +107,10 @@ def write_json(records: Sequence[dict], *, pitch: bool, out_dir=None, settings: 
     if pitch:
         for year in sorted({r["year"] for r in records}):
             merged = {r["strategy"]: r for r in load_pitch_records_json(year, base)}
-            merged.update({r["strategy"]: r for r in records if r["year"] == year})
+            for r in records:
+                old = merged.get(r["strategy"])
+                if r["year"] == year and not (is_skip(r) and old is not None and not is_skip(old)):
+                    merged[r["strategy"]] = r
             runs_path = base / f"pitch_{year}_runs.json"
             _write(runs_path, list(merged.values()))
             results_path = base / f"pitch_{year}.json"
@@ -152,7 +161,14 @@ def insert_records(records: Iterable[dict], *, pitch: bool, conn=None) -> None:
     try:
         with conn.transaction():
             for r in records:
-                if pitch:
+                flag = bool(pitch)
+                if pitch and is_skip(r):  # a skip marker never displaces a run that worked
+                    flag = conn.execute(
+                        "SELECT 1 FROM backtest_runs WHERE is_pitch AND strategy = %s AND params->>'year' = %s "
+                        "AND fleet_total_usd IS NOT NULL LIMIT 1",
+                        (r["strategy"], str(r["year"])),
+                    ).fetchone() is None
+                if flag:
                     conn.execute(
                         "UPDATE backtest_runs SET is_pitch = false "
                         "WHERE is_pitch AND strategy = %s AND params->>'year' = %s",
@@ -169,7 +185,7 @@ def insert_records(records: Iterable[dict], *, pitch: bool, conn=None) -> None:
                         r["fleet_total_usd"], r["per_battery_avg_usd"],
                         Jsonb(r["per_location"]) if r["per_location"] is not None else None,
                         Jsonb(r["top_days"]) if r["top_days"] is not None else None,
-                        Jsonb(r["metrics"]), r.get("notes"), bool(pitch),
+                        Jsonb(r["metrics"]), r.get("notes"), flag,
                     ),
                 )
     finally:

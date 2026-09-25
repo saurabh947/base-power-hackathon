@@ -14,7 +14,7 @@ Per tick it runs the live path's steps, in the same order and with the same shar
      as the skeleton meters through read()), summed over the location's batteries. The
      caller records it in the Ledger per (tick, location) at that tick's RT price.
 
-Shortcuts that change no number (tests/test_backtest_runner.py pins each one):
+Shortcuts that change no number (tests/test_backtest_engine.py pins each one):
   - A hold (target 0) or a target with no feasible headroom skips steps 2-4: step() with
     all-zero setpoints returns the same SoC, and the meter reads 0.
   - H is computed once: nobody takes batteries offline during a backtest.
@@ -52,7 +52,7 @@ OPERATING_TZ = "America/Chicago"  # ERCOT operating days
 # --- the fleet -----------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Fleet:
     """One location's batteries as numpy arrays (read-only inputs; the replay copies the SoC)."""
 
@@ -326,7 +326,7 @@ def fill_ledger(ledger: BacktestLedger, runs: Sequence[tuple[Sequence[PriceTick]
 
 
 def bands_windows(
-    prices: np.ndarray, strategy: BandsStrategy, history_ticks: int, chunk: int = 4096
+    prices: np.ndarray, strategy: BandsStrategy, history_ticks: int, chunk: int = 2048
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(p_low, p_high, enough) for a decision whose published tick is index `seen`, for every seen.
 
@@ -334,6 +334,7 @@ def bands_windows(
     while len(history) < min_samples and otherwise takes percentiles of the last
     window_ticks of it. np.percentile over a 2-D stack of those same windows gives the same
     order statistics and the same interpolation, so the values are bit-identical.
+    Peak memory is one chunk of windows (2048 x 2016 floats, about 33 MB).
     """
     prices = np.asarray(prices, dtype=np.float64)
     n = len(prices)
