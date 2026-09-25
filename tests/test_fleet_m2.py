@@ -1,0 +1,69 @@
+"""M2 acceptance: 20,000 batteries across 20 worker processes, 1 sim day at max speed.
+
+With every worker healthy, actual power tracks the feasible target within 5% on EVERY tick
+(error as defined in docs/API.md: |actual - target| / max(|target|, 0.5% of nameplate)).
+Real 2025 ERCOT prices from data/snapshot drive the bands strategy.
+"""
+import time
+import uuid
+from datetime import datetime, timezone
+
+import numpy as np
+import pytest
+
+from src.sim.coordinator import Coordinator
+from src.sim.redis_layout import F_TICK, reachable, redis_url
+
+pytestmark = pytest.mark.redis
+UTC = timezone.utc
+
+
+@pytest.fixture
+def coordinator():
+    made = []
+
+    def make(**kw):
+        url = redis_url()
+        if not reachable(url):
+            pytest.skip(f"Redis not reachable at {url}")
+        co = Coordinator(url=url, prefix=f"test:m2:{uuid.uuid4().hex[:8]}:", **kw)
+        made.append(co)
+        co.boot()
+        return co
+
+    yield make
+    for co in made:
+        co.shutdown()
+        co.cleanup_keys()
+
+
+def test_m2_one_sim_day_20k_batteries_20_workers(coordinator):
+    co = coordinator(journal=True)
+    assert co.N == 20000 and co.n_workers == 20
+    assert len({h.pid for h in co.workers}) == 20 and all(h.status == "healthy" for h in co.workers)
+    co.start({"preset": "spike_evening", "speed_tps": "max", "strategy": "bands", "start_charge_level": 0.5},
+             max_ticks=288)
+    t0 = time.perf_counter()
+    assert co.serve_until(lambda: co.run.status == "finished", timeout_s=240)
+    wall = time.perf_counter() - t0
+    log = co.tick_log
+    assert len(log) == 288
+    errors = [r["error_pct"] for r in log]
+    print(f"\nM2: 288 ticks x 20,000 batteries x 20 workers in {wall:.1f}s = {288 / wall:.1f} ticks/s; "
+          f"max error {max(errors):.2e}%; barrier p50 {np.percentile([r['barrier_ms'] for r in log], 50):.1f} ms; "
+          f"revenue ${co.run.revenue_usd:,.2f}")
+    assert all(r["healthy_workers"] == 20 and r["reported"] == 20 for r in log)
+    assert max(errors) <= 5.0
+    trading = [r for r in log if set(r["action"].values()) != {"hold"}]
+    assert len(trading) >= 20  # the fleet really charged and sold, so tracking was tested under load
+    assert any(abs(r["target_kw"]["fleet"]) > 0.3 * co.nameplate_kw for r in log)
+    # the hashes (source of truth), the coordinator's telemetry view and a replay agree exactly
+    hash_soc = co.read_hash_soc()
+    assert np.array_equal(hash_soc, co.soc)
+    assert np.array_equal(hash_soc, co.replay_journal(0.5))
+    last = int(datetime.fromisoformat(log[-1]["ts_utc"].replace("Z", "+00:00")).timestamp())
+    assert {int(float(t)) for t in co.read_hash_state((F_TICK,))[F_TICK]} == {last}
+    # the ledger saw every tick at both locations, priced at real RT prices
+    summary = co.run.ledger.summary()
+    assert summary["total_usd"] == pytest.approx(sum(r["revenue_usd"]["fleet"] for r in log), rel=1e-6)
+    assert all(r["price"]["LZ_HOUSTON"] is not None and r["price"]["LZ_NORTH"] is not None for r in log)
