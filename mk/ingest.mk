@@ -6,14 +6,14 @@
 #   make ingest                                   # ERCOT 2024-2025 -> Postgres, gap report, M1 self-check
 #   make ingest INGEST_ARGS="--cache-dir data/raw"  # dev: keep and reuse the downloads (data/raw is gitignored)
 #   make gap-report                               # report + self-check on what is stored; no download
-#   make presets                                  # check config.yaml presets against real prices
+#   make preset-check                             # check config.yaml presets against real prices
 #   make ingest-test                              # the data-layer tests, with the database
 
 INGEST_YEARS ?= 2024 2025
 INGEST_ARGS ?=
 INGEST_DB = $${DATABASE_URL:-postgresql://postgres@localhost:$${PGPORT:-5433}/fleetsim}
 
-.PHONY: ingest gap-report presets ingest-test
+.PHONY: ingest gap-report preset-check ingest-test
 
 # Download, parse and load RT + DA prices, native load and fuel mix. Exits 1 unless the self-check passes.
 ingest:
@@ -24,7 +24,7 @@ gap-report:
 	DATABASE_URL="$(INGEST_DB)" $(UV) run python -m src.ingest.report --years $(INGEST_YEARS)
 
 # Presets vs real LZ_HOUSTON / LZ_NORTH prices, plus the recommended ordinary day (into docs/notes/data.md).
-presets:
+preset-check:
 	DATABASE_URL="$(INGEST_DB)" $(UV) run python -m src.ingest.presets
 
 # Parser, source, store, series and replay-feed tests, plus the PriceFeed contract suite, against the database.

@@ -1,10 +1,10 @@
 # Data notes: ERCOT ingest (M1) and the Postgres data layer
 
-Owner: ingest. Written 2026-09-25. The tables between `BEGIN`/`END` markers are generated: `make ingest` writes the timings and the gap report, and `make presets` writes the preset check. Everything else is hand-written.
+Owner: ingest. Written 2026-09-25. The tables between `BEGIN`/`END` markers are generated: `make ingest` writes the timings and the gap report, and `make preset-check` writes the preset check. Everything else is hand-written.
 
 ## Summary
 
-- **M1 self-check passes for 2024 and 2025:** 0 missing intervals, 0 duplicates, and the right counts on all 4 DST days, for every series. `make ingest` loads everything from scratch in about 64 s. A re-run takes about 51 s and writes 0 rows.
+- **M1 self-check passes for 2024 and 2025:** 0 missing intervals, 0 duplicates, and the right counts on all 4 DST days, for every series. `make ingest` loads everything from scratch in about a minute (58-64 s). A re-run takes about 51 s and writes 0 rows.
 - **What is loaded:** all 15 ERCOT hubs and load zones (RT 15-min and DA hourly), plus ERCOT hourly native load and the 15-min fuel mix, for both years. That is 1.3 M price rows.
 - **Matches the snapshot:** Postgres returns bit-identical RT and DA prices for the 7 snapshot locations in both years, and bit-identical 2025 fuel-mix shares.
 - **One snapshot bug found:** native load 2025 matches except 2 hours where the **snapshot is wrong** (it swaps the fall-back hour's two passes), plus 4 values rounded in the last bit.
@@ -19,7 +19,7 @@ Owner: ingest. Written 2026-09-25. The tables between `BEGIN`/`END` markers are 
 PGPORT=5441 REDIS_PORT=6441 scripts/dev/services.sh up   # any free ports; prints DATABASE_URL
 PGPORT=5441 make ingest        # ERCOT 2024-2025 -> Postgres; gap report; exit 1 unless the M1 self-check passes
 PGPORT=5441 make gap-report    # report + self-check over what is stored (no download)
-PGPORT=5441 make presets       # presets vs real prices, recommended ordinary day
+PGPORT=5441 make preset-check  # presets vs real prices, recommended ordinary day
 PGPORT=5441 make ingest-test   # data-layer tests + PriceFeed contract suite with the database
 make test                      # whole suite; database tests skip without DATABASE_URL
 ```
@@ -191,7 +191,7 @@ Recommended values for the integrator (who owns `presets:`):
 `spike_evening` and `morning_spike` need no change.
 
 <!-- BEGIN presets -->
-Generated 2026-09-25 23:46 UTC by `python -m src.ingest.presets` (series backend: postgres). RT 15-min settlement point prices; a peak's time is its interval start.
+Generated 2026-09-25 23:57 UTC by `python -m src.ingest.presets` (series backend: postgres). RT 15-min settlement point prices; a peak's time is its interval start.
 
 #### Presets against real prices
 
@@ -223,12 +223,16 @@ Recommended ordinary_day: **2025-06-28** (replay from local midnight = `2025-06-
 
 ## Timings
 
-Measured on the dev laptop (M3 Pro), against local Postgres 16:
+Measured on the dev laptop (M3 Pro), against local Postgres 16.
 
-| run | download s (2024 / 2025) | parse s | load s | wall |
-|---|---|---|---|---:|
-| fresh database, stateless (temp dir) | 3.1 / 1.1 | 6.3 / 6.8 | 18.7 / 17.5 | 63.9 s |
-| re-run, nothing changed (0 rows written) | 2.5 / 2.6 | 6.6 / 6.6 | 12.3 / 12.0 | 50.8 s |
+- **Fresh database, stateless (temp dir):** see the generated table below, which `make ingest` rewrites on every run. The notes were last regenerated from a fresh run into an empty database.
+  - Across three fresh runs the wall time was 58-64 s. Peak RSS was 854 MB.
+- **Re-run with nothing changed:** 0 rows written, 50.8 s wall.
+
+  | year | download s | parse s | load s |
+  |---|---:|---:|---:|
+  | 2024 | 2.5 | 6.6 | 12.3 |
+  | 2025 | 2.6 | 6.6 | 12.0 |
 
 - **Where the time goes:**
   - Parsing is dominated by calamine reading the 22 MB RT workbook (about 4 s per year).
@@ -239,29 +243,29 @@ Measured on the dev laptop (M3 Pro), against local Postgres 16:
 The last run's per-file table:
 
 <!-- BEGIN ingest-timings -->
-Last `python -m src.ingest.ercot --years 2024 2025` run; wall time 63.9s.
+Last `python -m src.ingest.ercot --years 2024 2025` run; wall time 61.4s.
 
 | dataset | year | MB | download s | parse s | load s | result |
 |---|---|---:|---:|---:|---:|---|
 | native_load | 2024 | 1.1 | 0.1 | 0.1 | 0.9 | 79056 rows: 79056 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| fuel_mix | 2024 | 51.0 | 1.0 | 0.8 | 3.7 | 351360 rows: 351360 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| rt_spp | 2024 | 14.3 | 1.1 | 4.5 | 11.3 | 527040 rows: 527040 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| da_spp | 2024 | 2.1 | 0.9 | 0.9 | 2.8 | 131760 rows: 131760 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| native_load | 2025 | 1.1 | 0.1 | 0.1 | 1.1 | 78840 rows: 78840 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| fuel_mix | 2025 | 3.0 | 0.1 | 0.8 | 3.3 | 350400 rows: 350400 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| rt_spp | 2025 | 14.0 | 0.6 | 5.2 | 10.9 | 525600 rows: 525600 inserted, 0 updated, 0 unchanged, 0 stale deleted |
-| da_spp | 2025 | 2.1 | 0.2 | 0.7 | 2.1 | 131400 rows: 131400 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| fuel_mix | 2024 | 51.0 | 1.0 | 0.8 | 3.9 | 351360 rows: 351360 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| rt_spp | 2024 | 14.3 | 1.2 | 4.7 | 10.6 | 527040 rows: 527040 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| da_spp | 2024 | 2.1 | 0.3 | 0.7 | 2.1 | 131760 rows: 131760 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| native_load | 2025 | 1.1 | 0.1 | 0.1 | 0.9 | 78840 rows: 78840 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| fuel_mix | 2025 | 3.0 | 0.1 | 0.8 | 3.4 | 350400 rows: 350400 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| rt_spp | 2025 | 14.0 | 1.0 | 4.6 | 10.8 | 525600 rows: 525600 inserted, 0 updated, 0 unchanged, 0 stale deleted |
+| da_spp | 2025 | 2.1 | 0.1 | 0.7 | 2.1 | 131400 rows: 131400 inserted, 0 updated, 0 unchanged, 0 stale deleted |
 
 | year | download s | parse s | load s | total s |
 |---|---:|---:|---:|---:|
-| 2024 | 3.1 | 6.3 | 18.7 | 28.1 |
-| 2025 | 1.1 | 6.8 | 17.5 | 25.3 |
+| 2024 | 2.6 | 6.3 | 17.4 | 26.3 |
+| 2025 | 1.3 | 6.1 | 17.2 | 24.7 |
 <!-- END ingest-timings -->
 
 ## Gap report
 
 <!-- BEGIN gap-report -->
-Generated 2026-09-25 23:46 UTC by `python -m src.ingest.report`.
+Generated 2026-09-25 23:57 UTC by `python -m src.ingest.report`.
 
 ### Prices: rows, gaps and duplicates per (location, market, year)
 
@@ -388,14 +392,14 @@ Native load flags the repeated hour as `HH:00 DST`, the fuel mix as `(DST)` colu
 
 | dataset | year | file | published | MB | rows loaded | download s | parse s | load s | ingested (UTC) |
 |---|---|---|---|---:|---:|---:|---:|---:|---|
-| da_spp | 2024 | rpt.00013060.0000000000000000.20250101.080733817.DAMLZHBSPP_2024.zip | 2025-01-01 | 2.1 | 131,760 | 0.9 | 0.9 | 2.8 | 2026-09-25 23:45 |
-| fuel_mix | 2024 | FuelMixReport_PreviousYears.zip [^intgenbyfuel2024\.xlsx?$] | 2025-03-07 | 51.0 | 351,360 | 1.0 | 0.8 | 3.7 | 2026-09-25 23:45 |
-| native_load | 2024 | Native_Load_2024.zip | 2025-01-10 | 1.1 | 79,056 | 0.1 | 0.1 | 0.9 | 2026-09-25 23:45 |
-| rt_spp | 2024 | rpt.00013061.0000000000000000.20250101.081829672.RTMLZHBSPP_2024.zip | 2025-01-01 | 14.3 | 527,040 | 1.1 | 4.5 | 11.3 | 2026-09-25 23:45 |
-| da_spp | 2025 | rpt.00013060.0000000000000000.20260101.084409719.DAMLZHBSPP_2025.zip | 2026-01-01 | 2.1 | 131,400 | 0.2 | 0.7 | 2.1 | 2026-09-25 23:45 |
-| fuel_mix | 2025 | IntGenbyFuel2025.xlsx | 2026-03-09 | 3.0 | 350,400 | 0.1 | 0.8 | 3.3 | 2026-09-25 23:45 |
-| native_load | 2025 | Native_Load_2025.zip | 2026-02-04 | 1.1 | 78,840 | 0.1 | 0.1 | 1.1 | 2026-09-25 23:45 |
-| rt_spp | 2025 | rpt.00013061.0000000000000000.20260101.132601474.RTMLZHBSPP_2025.zip | 2026-01-01 | 14.0 | 525,600 | 0.6 | 5.2 | 10.9 | 2026-09-25 23:45 |
+| da_spp | 2024 | rpt.00013060.0000000000000000.20250101.080733817.DAMLZHBSPP_2024.zip | 2025-01-01 | 2.1 | 131,760 | 0.3 | 0.7 | 2.1 | 2026-09-25 23:57 |
+| fuel_mix | 2024 | FuelMixReport_PreviousYears.zip [^intgenbyfuel2024\.xlsx?$] | 2025-03-07 | 51.0 | 351,360 | 1.0 | 0.8 | 3.9 | 2026-09-25 23:56 |
+| native_load | 2024 | Native_Load_2024.zip | 2025-01-10 | 1.1 | 79,056 | 0.1 | 0.1 | 0.9 | 2026-09-25 23:56 |
+| rt_spp | 2024 | rpt.00013061.0000000000000000.20250101.081829672.RTMLZHBSPP_2024.zip | 2025-01-01 | 14.3 | 527,040 | 1.2 | 4.7 | 10.6 | 2026-09-25 23:57 |
+| da_spp | 2025 | rpt.00013060.0000000000000000.20260101.084409719.DAMLZHBSPP_2025.zip | 2026-01-01 | 2.1 | 131,400 | 0.1 | 0.7 | 2.1 | 2026-09-25 23:57 |
+| fuel_mix | 2025 | IntGenbyFuel2025.xlsx | 2026-03-09 | 3.0 | 350,400 | 0.1 | 0.8 | 3.4 | 2026-09-25 23:57 |
+| native_load | 2025 | Native_Load_2025.zip | 2026-02-04 | 1.1 | 78,840 | 0.1 | 0.1 | 0.9 | 2026-09-25 23:57 |
+| rt_spp | 2025 | rpt.00013061.0000000000000000.20260101.132601474.RTMLZHBSPP_2025.zip | 2026-01-01 | 14.0 | 525,600 | 1.0 | 4.6 | 10.8 | 2026-09-25 23:57 |
 
 ### Self-check
 
