@@ -390,6 +390,53 @@ def test_bands_fast_path_while_the_window_fills_and_with_no_headroom():
     assert not bands_targets(prices, 0, 3, 0.0, windows).any()
 
 
+@pytest.mark.parametrize("seed", range(4))
+def test_bands_fast_path_equals_the_seam_on_awkward_prices(seed):
+    """SYNTHETIC prices: many exact zeros, negatives, repeats and flat stretches, so p90 <= 0,
+    p25 == p90 ties and price == percentile cases all occur."""
+    rng = np.random.default_rng(seed)
+    prices = rng.choice([-5.0, 0.0, 0.0, 0.0, 10.0, 25.0, 25.0, 300.0], size=1500)
+    prices[rng.random(1500) < 0.35] = 0.0
+    prices[400:520] = 0.0  # a flat stretch: p25 == p90 == 0, so charge wins the tie
+    prices[700:1100] = rng.choice([-5.0, -5.0, -5.0, 0.0, 0.0], size=400)  # p25 < 0 == p90: a $0 price must hold
+    ticks = synthetic_ticks(prices)
+    strategy = BandsStrategy(window_ticks=300, min_samples=50)
+    for hist in (250, 400):  # history shorter and longer than the strategy's window
+        windows = bands_windows(prices, strategy, hist)
+        for lag in (0, 3):
+            fast = bands_targets(prices, 0, lag, 7.0, windows)
+            seam = [strategy.target_kw(decision_tick(ticks[i], ticks[i - lag]), 0.5, 7.0,
+                                       list(prices[max(0, i - lag - hist):i - lag])) if i - lag >= 0 else 0.0
+                    for i in range(len(prices))]
+            assert np.array_equal(fast, np.array(seam)), (hist, lag)
+    decided_by_price_above_zero = [
+        i for i in range(300, len(prices))
+        if prices[i] == 0.0 and prices[i] > np.percentile(prices[i - 300:i], 25)
+        and prices[i] >= np.percentile(prices[i - 300:i], 90)]
+    assert decided_by_price_above_zero  # the "and price > 0" part of the rule is really exercised
+
+
+def test_metrics_definitions_by_hand():
+    from src.backtest.engine import TickSeries
+
+    ticks = synthetic_ticks([20, 40, 100, 100])  # the one-battery hand case above
+    strategy = Scripted({ticks[0].ts: -5.0, ticks[2].ts: 5.0, ticks[3].ts: 5.0})
+    fleet = fleet_of([(10.0, 5.0, 0.5, 0.81)])
+    rep = replay("scripted", CFG, {"LZ_HOUSTON": TickSeries("LZ_HOUSTON", ticks, 0)}, {"LZ_HOUSTON": fleet},
+                 lag=0, strategies={"LZ_HOUSTON": strategy}, expected_ticks=4)
+    m, kwh = rep.metrics, 5.0 / 12
+    assert m["fleet_usd_year"] == pytest.approx(0.075) and m["per_battery_usd_year"] == pytest.approx(0.075)
+    assert m["usd_per_kw_year"] == pytest.approx(0.075 / 5.0)  # per kW of power_kw
+    assert m["usd_per_kwh_year"] == pytest.approx(0.075 / 10.0)  # per nameplate kWh
+    out = 2 * kwh / 0.9  # kWh that left storage for 2 x 5/12 kWh delivered
+    assert m["cycles_per_year"] == pytest.approx(out / (10.0 * 0.8))  # usable = 100% down to the 20% reserve
+    assert m["cycles_per_year_nameplate"] == pytest.approx(out / 10.0)
+    assert (m["sold_kwh"], m["bought_kwh"]) == (pytest.approx(2 * kwh), pytest.approx(kwh))
+    assert (m["avg_sell_usd_mwh"], m["avg_buy_usd_mwh"]) == (pytest.approx(100.0), pytest.approx(20.0))
+    assert m["top_days"] == [{"date_local": "2025-03-03", "usd": pytest.approx(0.075)}]
+    assert m["coverage"]["fraction"] == 1.0 and m["monthly_usd"] == {"2025-03": pytest.approx(0.075)}
+
+
 def test_fast_path_only_for_the_exact_v1_class():
     class Tweaked(BandsStrategy):
         pass
