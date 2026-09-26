@@ -56,7 +56,8 @@ def build_results(records: Sequence[dict], *, year: int, settings: dict | None =
             "top_days": [{"date_local": d["date_local"], "usd": _money(d["usd"])} for d in (r["top_days"] or [])],
         })
 
-    finished =[r["finished_at"] for r in [*latest.values(), *([ceiling] if ceiling else [])] if r.get("finished_at")]
+    everything = [*latest.values(), *([ceiling] if ceiling else [])]
+    finished = [r["finished_at"] for r in everything if r.get("finished_at")]
     return {
         "year": year,
         "generated_utc": max(finished) if finished else None,

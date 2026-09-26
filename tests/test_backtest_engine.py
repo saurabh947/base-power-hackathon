@@ -256,7 +256,8 @@ def test_engine_is_bit_identical_to_the_command_loop(name, lag):
         strategy = make_strategy(CFG.strategy, 300, name)
         targets = None
         if fast and uses_bands_fast_path(strategy):
-            targets = bands_targets(series.prices, series.start, lag, fleet_headroom_kw(fleet.power_kw, fleet.available),
+            h = fleet_headroom_kw(fleet.power_kw, fleet.available)
+            targets = bands_targets(series.prices, series.start, lag, h,
                                     bands_windows(series.prices, strategy, history_ticks(CFG)))
         r = run(series.ticks, fleet, strategy, start=series.start, lag=lag, targets=targets)
         assert np.array_equal(r.delivered_kwh, ref_kwh)

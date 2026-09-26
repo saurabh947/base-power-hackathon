@@ -224,7 +224,9 @@ def curves(
     return out
 
 
-def interpolate_bounds(grid: np.ndarray, values: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def interpolate_bounds(
+    grid: np.ndarray, values: np.ndarray, x: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(interpolated, lower, upper) for a concave nondecreasing curve known at grid points.
 
     Linear interpolation is a lower bound. Upper bound: the next grid value, and the chords of
