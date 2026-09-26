@@ -79,6 +79,7 @@ backtest:   # owner: backtest (M4). Read by src/backtest/runner.py:backtest_sett
   strategies: [bands, forecast, peak]   # the pitch set; one that isn't built is skipped and the results say so
   headline: [forecast, bands]           # the big number: the first of these that ran
   lag0_variant: true                    # also replay the spec-literal lag 0 (stored in metrics.lag0)
+  forecast_min_coverage: 0.99           # skip 'forecast' unless forecasts cover 99% of the year's ticks
   warmup_days: 7                        # real prices before Jan 1 that fill the bands window
   results_dir: data/results             # JSON exports (runs/, pitch_<year>.json)
   ceiling:                              # "Best possible (perfect hindsight)", src/backtest/ceiling.py

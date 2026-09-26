@@ -106,6 +106,25 @@ def make_named_strategy(name: str, cfg: Config) -> Strategy:
         raise StrategyUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
 
+def forecast_coverage(strategy: Strategy, location: str, ticks: list) -> float | None:
+    """Share of `ticks` that have a usable forecast (issued at or before the tick, not too old).
+
+    None for strategies that don't read forecasts. A forecast strategy with no
+    forecasts would silently hold all year, so run_strategy refuses to run it.
+    """
+    books = getattr(strategy, "books", None)
+    if books is None:
+        return None
+    book = books.get(location)
+    if book is None or len(book) == 0 or not ticks:
+        return 0.0
+    ts_ns = np.fromiter((int(t.ts.timestamp()) * 10**9 for t in ticks), dtype=np.int64, count=len(ticks))
+    idx = np.searchsorted(book.issued, ts_ns, side="right") - 1
+    found = idx >= 0
+    age = ts_ns - book.issued[np.clip(idx, 0, None)]
+    return float(np.mean(found & (age <= strategy.max_age_ns)))
+
+
 def history_ticks(cfg: Config) -> int:
     """How much price history the caller hands the strategy: what the M0 skeleton passes."""
     return cfg.strategy.bands.window_days * cfg.sim.ticks_per_day
@@ -303,6 +322,13 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     started = datetime.now(UTC)
     if strategies is None:
         strategies = {loc: make_named_strategy(name, ctx.cfg) for loc in ctx.fleets}
+    need = float(ctx.settings.get("forecast_min_coverage", 0.99))
+    for loc, strategy in strategies.items():
+        coverage = forecast_coverage(strategy, loc, ctx.series[loc].replayed)
+        if coverage is not None and coverage < need:
+            raise StrategyUnavailable(
+                f"forecasts cover {coverage:.1%} of {ctx.year} at {loc} (need {need:.0%}); "
+                "run the forecast job first (make cloud-forecast)")
     lag = ctx.cfg.sim.decision_lag_ticks
     main_run = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=lag, fast=fast, expected_ticks=ctx.expected_ticks,
                       window_cache=ctx.window_cache, strategies=strategies)

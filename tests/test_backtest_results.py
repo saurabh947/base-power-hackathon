@@ -128,7 +128,8 @@ def test_records_hold_the_required_outputs(mini):
     assert p["config"]["seed"] == 42 and p["config"]["backtest"]["headline"] == ["forecast", "bands"]
     assert p["fleet"]["size"] == 20 and p["lag_ticks"] == 3
     forecast = next(r for r in outcome.records if r["strategy"] == "forecast")
-    assert forecast["metrics"]["skipped"] and "unknown strategy" in forecast["metrics"]["reason"]
+    # forecast is built now, but no forecasts are cached in a bare checkout: the coverage guard skips it
+    assert forecast["metrics"]["skipped"] and "forecasts cover" in forecast["metrics"]["reason"]
     assert outcome.skipped == {"forecast": forecast["metrics"]["reason"]}
     assert set(outcome.run_ids) == {r["run_id"] for r in outcome.records if r["strategy"] in ("bands", "peak",
                                                                                                "hindsight")}

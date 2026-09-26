@@ -6,4 +6,4 @@ SA=fleet-sim-run@appintellect.iam.gserviceaccount.com
 SQL=appintellect:us-east1:fleet-sim-db
 DB_ENV="DB_HOST=/cloudsql/$SQL,DB_NAME=fleetsim,DB_USER=fleetsim"
 DB_SECRET="DB_PASSWORD=fleet-sim-db-password:latest"
-TAG="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+TAG="${TAG:-$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)}"   # override to reuse a built image
