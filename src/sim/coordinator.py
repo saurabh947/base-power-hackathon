@@ -965,7 +965,8 @@ class Coordinator:
         pipe.execute()
         self._tick_events(run, k, ts, decisions, feasible)
         self.tick_log.append({**record, "k": k, "barrier_ms": round(barrier_ms, 2),
-                              "reported": len(reports), "sent": len(sent)})
+                              "reported": len(reports), "sent": len(sent),
+                              "raw_kw": {loc: dec.raw_kw for loc, dec in decisions.items()}})
         if len(self.tick_log) > 20000:  # serve mode runs for hours: keep memory bounded
             del self.tick_log[:10000]
         for hook in list(self.tick_hooks):

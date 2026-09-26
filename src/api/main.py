@@ -203,11 +203,20 @@ async def health():
     return {"ok": True, "version": VERSION, "status": status}
 
 
+def _running_fleet_size() -> int | None:
+    try:
+        layout = backend().layout()
+        return int(layout["size"]) if layout else None
+    except Exception:  # simulator not up yet: the configured size is the right answer
+        return None
+
+
 @app.get("/settings")
 async def settings():
     forecast_available = importlib.util.find_spec("src.strategy.forecast") is not None
+    fleet_size = await run_in_threadpool(_running_fleet_size)
     return {
-        "defaults": ctl.default_settings(CFG, RAW),
+        "defaults": ctl.default_settings(CFG, RAW, fleet_size),
         "editable": list(ctl.EDITABLE),
         "presets": ctl.presets(RAW),
         **ctl.choices(RAW, forecast_available),

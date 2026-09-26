@@ -148,7 +148,8 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 
 | What | Number |
 |---|---|
-| M2: 288 ticks × 20,000 batteries × 20 workers, max speed | **32–35 ticks/s** (8.3–8.9 s); max error 0.0%; barrier p50 26 ms, max 36–45 ms |
+| M2: 288 ticks × 20,000 batteries × 20 workers, max speed | **32–36 ticks/s** (7.9–8.9 s); max error 0.0%; barrier p50 25–28 ms, max 36–45 ms |
+| 20,000 batteries at 10 ticks/s (the fastest visitor speed) | 9.6 ticks/s achieved; barrier p50 30 ms, max 36 ms (deadline 100 ms) |
 | Boot: 20 workers spawned and heartbeating | 0.9–1.2 s |
 | Run start: prices + 20k batteries initialised + all `ready` | 0.8–1.0 s |
 | M3 at max speed: error by tick after SIGKILL | +1: 5.02% (the dead cohort's share, unavoidable); +2 onwards: 0.000% |
@@ -157,6 +158,19 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 | dead_letter per kill | 2,000 `expired_owner_dead` (2 unconfirmed ticks × 1,000) |
 | Memory while running | workers ~47 MB each (0.94 GB for 20); coordinator ~200 MB with the 2025 price feed; Redis ~45 MB peak |
 | Write path alone (20 procs × 1,000 hashes, 5 fields) | raw RESP ~31–40 ticks/s vs redis-py pipeline ~30 |
+
+## Test map
+
+| File | Proves |
+|---|---|
+| `test_fleet_m2.py` | M2 at 20k/20: every tick within 5% (in fact 0.0%). Hashes, telemetry and a journal replay agree exactly. The ledger saw every tick. |
+| `test_recovery.py` | M3 at max speed and at 2 ticks/s: DEAD on the 2nd miss, reassigned for the very next tick, within 5% from kill+2, `expired_owner_dead` entries, nothing lost or double-applied. Also covers: a frozen worker fenced out as `epoch_mismatch` when it wakes; one miss is only SUSPECT (its late energy is booked); heartbeat expiry while paused; reset. |
+| `test_idempotency.py` | Real worker processes, with SoC compared exactly against one application of `battery.step` per tick: duplicate/stale redelivery, redelivery across adoption (same command ids), zombie writes, and retries including "the write landed but the reply was lost". |
+| `test_fleet_parity.py` | `run_fleet_targets()` gives exactly the SoC of the in-process `allocate` + `step` loop. |
+| `test_fleet_strategy_parity.py` | On the M0 day the fleet decides exactly like `src/sim/skeleton.py` (bands and peak, lag 3), with the same RT and decision prices. |
+| `test_api_unit.py`, `test_api_live.py` | Every message shape in docs/API.md, availability scopes, presenter auth, rate limits, CORS, chaos-kill guards, run controls, forecasts riding along, 501 bridges. |
+| `test_fleet_launcher.py` | SIGTERM → exit 0 with nothing left running; dead coordinator → exit 1; SIGKILLed launcher → no orphans. |
+| `test_contracts_battery.py[redis]` | The Redis BatteryAdapter passes the frozen seam's 25 contract tests. |
 
 ## Open issues
 

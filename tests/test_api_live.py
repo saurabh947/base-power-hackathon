@@ -221,6 +221,7 @@ def test_battery_lookup(live):
     assert b["capacity_kwh"] == pytest.approx(float(co.cap[7])) and b["power_kw"] == pytest.approx(float(co.power[7]))
     assert client.get("/batteries/LZ_HOUSTON-000150").status_code == 404
     assert client.get("/batteries/garbage").status_code == 404
+    assert client.get("/settings").json()["defaults"]["fleet_size"] == 300  # the fleet that is actually running
 
 
 def test_presenter_kill_flow(live):
