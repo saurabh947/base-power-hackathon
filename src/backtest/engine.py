@@ -42,7 +42,7 @@ from src.ledger.backtest import BacktestLedger
 from src.sim.allocation import allocate, fleet_headroom_kw
 from src.sim.battery import fleet_soc, grid_kwh_from_soc_change, headroom_kw, step
 from src.sim.decision import decision_tick
-from src.sim.fleet import generate_batteries
+from src.sim.fleet import assign_locations, generate_batteries, location_counts  # noqa: F401 (location_counts re-exported)
 from src.strategy.bands import BandsStrategy
 
 UTC = timezone.utc
@@ -86,18 +86,6 @@ class Fleet:
         )
 
 
-def location_counts(size: int, shares: Mapping[str, float]) -> dict[str, int]:
-    """Batteries per location: floor(size * share), remainder by largest fraction (ties: config order)."""
-    if size < 0:
-        raise ValueError("size must be >= 0")
-    exact = {loc: size * float(share) for loc, share in shares.items()}
-    counts = {loc: int(math.floor(x)) for loc, x in exact.items()}
-    order = sorted(shares, key=lambda loc: -(exact[loc] - counts[loc]))  # stable: config order breaks ties
-    for loc in order[: size - sum(counts.values())]:
-        counts[loc] += 1
-    return counts
-
-
 def build_fleets(
     size: int, shares: Mapping[str, float], battery: BatteryConfig, seed: int, *, soc_init: float | None = None
 ) -> dict[str, Fleet]:
@@ -108,11 +96,7 @@ def build_fleets(
     Battery i has the same specs at any fleet size, so a smaller test fleet is a prefix.
     """
     states = generate_batteries(size, battery, seed, soc_init=soc_init)
-    fleets, first = {}, 0
-    for loc, count in location_counts(size, shares).items():
-        fleets[loc] = Fleet.from_states(loc, states[first:first + count])
-        first += count
-    return fleets
+    return {loc: Fleet.from_states(loc, block) for loc, block in assign_locations(states, shares).items()}
 
 
 # --- prices ----------------------------------------------------------------------------------
