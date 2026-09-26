@@ -1,111 +1,16 @@
 /*
- * Design tokens. Meaning of color (docs/UX.md principle 6), never the only signal:
- *   teal  = charging (buying cheap power)      amber = selling / not responding
- *   grey  = holding / waiting                  red   = failures only
- *   green = a controller that is working       violet = the AI forecast
+ * Design tokens: one theme for the whole site, always dark whatever prefers-color-scheme says. It is the
+ * live map's look (docs/UX.md, Live map): a dark gray page (#25282c), compact translucent dark panels with
+ * light text, Texas as a bright red outline and the batteries as green dots.
+ *
+ * Meaning of color (docs/UX.md principle 6), never the only signal:
+ *   green  = the primary action and links, a controller that is working, the headline earnings
+ *   teal   = charging (buying cheap power)       amber  = selling / not responding
+ *   grey   = holding / waiting                   red    = failures only (and the Texas outline)
+ *   violet = the AI forecast                     blue   = the keyboard focus ring, power delivered
  * Text pairs are checked for WCAG AA contrast by src/styles/contrast.test.ts.
  */
 :root {
-  color-scheme: light;
-
-  --bg: #f3f5f8;
-  --surface: #ffffff;
-  --surface-2: #f7f9fb;
-  --border: #d4dae3;
-  --border-strong: #7d8a9c;
-  --text: #0f172a;
-  --text-muted: #475569;
-
-  --accent: #1d4ed8;
-  --accent-hover: #1e40af;
-  --accent-text: #ffffff;
-  --accent-soft: #e8efff;
-  --focus: #2563eb;
-
-  --charge: #0f766e;
-  --charge-fill: rgba(20, 184, 166, 0.16);
-  --charge-soft: #e6f7f5;
-  --sell: #b45309;
-  --sell-fill: rgba(245, 158, 11, 0.22);
-  --sell-soft: #fdf3e3;
-  --hold: #5f6b7c;
-  --hold-soft: #eef1f5;
-  --ok: #15803d;
-  --ok-soft: #ebf8ef;
-  --warn: #b45309;
-  --warn-soft: #fdf3e3;
-  --fail: #b91c1c;
-  --fail-soft: #fdecec;
-  --forecast: #6d28d9;
-  --forecast-fill: rgba(124, 58, 237, 0.14);
-
-  --chart-price: #1e293b;
-  --chart-plan: #475569;
-  --chart-delivered: #1d4ed8;
-  --chart-grid: #e3e8ef;
-  --chart-axis: #475569;
-
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.05);
-  --shadow-raised: 0 12px 32px rgba(15, 23, 42, 0.18);
-  --radius: 10px;
-  --radius-sm: 6px;
-
-  --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-
-    --bg: #0b1120;
-    --surface: #131c2e;
-    --surface-2: #182236;
-    --border: #2a3650;
-    --border-strong: #6b7a93;
-    --text: #e8edf5;
-    --text-muted: #a9b5c7;
-
-    --accent: #8ab4ff;
-    --accent-hover: #a9c7ff;
-    --accent-text: #0b1120;
-    --accent-soft: #1b2a4a;
-    --focus: #8ab4ff;
-
-    --charge: #2dd4bf;
-    --charge-fill: rgba(45, 212, 191, 0.16);
-    --charge-soft: #12302f;
-    --sell: #fbbf24;
-    --sell-fill: rgba(251, 191, 36, 0.18);
-    --sell-soft: #33290f;
-    --hold: #a3afc1;
-    --hold-soft: #1f2a3e;
-    --ok: #4ade80;
-    --ok-soft: #13301f;
-    --warn: #fbbf24;
-    --warn-soft: #33290f;
-    --fail: #fca5a5;
-    --fail-soft: #3a1a1f;
-    --forecast: #c4b5fd;
-    --forecast-fill: rgba(167, 139, 250, 0.2);
-
-    --chart-price: #e8edf5;
-    --chart-plan: #a9b5c7;
-    --chart-delivered: #8ab4ff;
-    --chart-grid: #233049;
-    --chart-axis: #a9b5c7;
-
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-raised: 0 16px 40px rgba(0, 0, 0, 0.55);
-  }
-}
-
-/*
- * The live map is always dark, whatever the site theme (docs/UX.md, Live map): a neutral dark
- * gray page (#25282c) and gray panels. The app sets data-theme="map" on <html> while the map is
- * on screen, so the header, dialogs and toasts match. Every token is redefined here.
- */
-:root[data-theme='map'] {
   color-scheme: dark;
 
   --bg: #25282c;
@@ -116,11 +21,15 @@
   --text: #eef0f2;
   --text-muted: #adb4bc;
 
-  --accent: #8ab4ff;
-  --accent-hover: #a9c7ff;
-  --accent-text: #15171a;
-  --accent-soft: #263349;
+  /* The primary action (Start, Watch live, Resume) and links: the map's battery green, never red. */
+  --accent: #4ade80;
+  --accent-hover: #86efac;
+  --accent-text: #0a1a10;
+  --accent-soft: #1c3326;
+  --accent-glow: rgba(74, 222, 128, 0.28);
   --focus: #8ab4ff;
+  /* Neutral news (info notices, "info" events): blue, so it never reads as "good" green. */
+  --info: #8ab4ff;
 
   --charge: #2dd4bf;
   --charge-fill: rgba(45, 212, 191, 0.18);
@@ -145,12 +54,35 @@
   --chart-grid: #3a3f45;
   --chart-axis: #adb4bc;
 
+  /*
+   * Panels: translucent over the page, like the map's corners. --panel-solid is what their text sits on
+   * (AA-checked); --panel-blur frosts whatever is behind them (the map, the Start page's Texas).
+   */
+  --panel: rgba(24, 27, 30, 0.84);
+  --panel-solid: #1b1e21;
+  --panel-border: rgba(255, 255, 255, 0.09);
+  --panel-hover: rgba(255, 255, 255, 0.07);
+  --panel-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --panel-blur: blur(10px) saturate(1.1);
+
+  /* The map's red Texas outline and its glow (also the Start page's faint Texas). */
+  --map-outline: #ff3b3b;
+  --map-outline-glow: rgba(255, 59, 59, 0.55);
+
+  /* Results: the big per-battery number (a selling dot's bright green), and the comparison bars. */
+  --money: #80ffa6;
+  --money-glow: rgba(96, 255, 150, 0.22);
+  --bar-headline: #4ade80;
+  --bar-other: #8a929c;
+  --bar-ceiling: #c3c9d0;
+  --bar-track: #26292d;
+  --bar-day: #40a868;
+
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   --shadow-raised: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --radius: 12px;
+  --radius-sm: 6px;
 
-  /* Corner panels: translucent over the map; --map-panel-solid is what text sits on (AA-checked). */
-  --map-panel: rgba(24, 27, 30, 0.84);
-  --map-panel-solid: #1b1e21;
-  --map-panel-border: rgba(255, 255, 255, 0.09);
-  --map-outline: #ff3b3b;
+  --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }

@@ -1,4 +1,8 @@
-/* fleet-sim website styles. Desktop-first (1280px), degrading to ~1024px and below. */
+/*
+ * fleet-sim website styles. Desktop-first (1280px), degrading to ~1024px and below. One always-dark theme
+ * (tokens.css): the live map's dark gray page, translucent dark panels with light text, green for the primary
+ * action. The map itself is in map.css.
+ */
 
 *,
 *::before,
@@ -8,6 +12,7 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  background: var(--bg);
 }
 
 body {
@@ -16,7 +21,13 @@ body {
   color: var(--text);
   font: 16px/1.5 var(--font);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+}
+
+::selection {
+  background: rgba(74, 222, 128, 0.32);
+  color: var(--text);
 }
 
 h1,
@@ -82,6 +93,10 @@ textarea {
   font-size: 13px;
 }
 
+.nowrap {
+  white-space: nowrap;
+}
+
 /* ---- technical details ------------------------------------------------------ */
 
 .tech {
@@ -140,13 +155,20 @@ textarea {
   color: var(--accent-text);
 }
 
+/* The header and the footer span the window on every page, as on the live map. */
 .site-header {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  border-bottom: 1px solid var(--panel-border);
 }
 
-.site-header-inner,
-.site-footer-inner,
+.site-header-inner {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  min-height: 52px;
+  padding: 0 16px;
+}
+
 .page {
   max-width: 1280px;
   margin: 0 auto;
@@ -154,19 +176,13 @@ textarea {
   padding-right: 24px;
 }
 
-.site-header-inner {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  min-height: 60px;
-}
-
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-weight: 700;
+  font-weight: 750;
   font-size: 18px;
+  letter-spacing: -0.01em;
   color: var(--text);
   text-decoration: none;
 }
@@ -176,7 +192,8 @@ textarea {
 }
 
 .brand svg {
-  color: var(--charge);
+  color: var(--accent);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
 }
 
 .main-nav ul {
@@ -191,8 +208,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  border-radius: 8px;
   color: var(--text-muted);
   font-weight: 600;
   text-decoration: none;
@@ -200,7 +217,7 @@ textarea {
 
 .main-nav a:hover {
   color: var(--text);
-  background: var(--surface-2);
+  background: var(--panel-hover);
 }
 
 .main-nav a[aria-current='page'] {
@@ -214,17 +231,17 @@ textarea {
 
 .practice-banner {
   background: var(--warn-soft);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--panel-border);
   color: var(--text);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .practice-banner .page {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding-top: 8px;
-  padding-bottom: 8px;
+  max-width: none;
+  padding: 5px 16px;
 }
 
 .practice-banner svg {
@@ -249,10 +266,10 @@ main:focus {
 }
 
 .site-footer {
-  border-top: 1px solid var(--border);
-  background: var(--surface);
+  border-top: 1px solid var(--panel-border);
+  background: var(--bg);
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .site-footer-inner {
@@ -260,8 +277,7 @@ main:focus {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 20px;
-  padding-top: 16px;
-  padding-bottom: 16px;
+  padding: 12px 16px;
 }
 
 .site-footer .footer-spacer {
@@ -289,7 +305,8 @@ main:focus {
   white-space: nowrap;
   transition:
     background-color 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .btn:hover {
@@ -303,6 +320,11 @@ main:focus {
   opacity: 0.55;
 }
 
+.btn:disabled:hover {
+  background: var(--surface);
+}
+
+/* The one obvious next action: the map's green, with dark text. */
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -317,6 +339,7 @@ main:focus {
 
 .btn-primary:disabled:hover {
   background: var(--accent);
+  border-color: var(--accent);
 }
 
 .btn-danger {
@@ -345,6 +368,14 @@ main:focus {
   padding: 0 28px;
   font-size: 18px;
   border-radius: 10px;
+}
+
+.btn-lg.btn-primary:not(:disabled) {
+  box-shadow: 0 8px 26px var(--accent-glow);
+}
+
+.btn-lg.btn-primary:not(:disabled):hover {
+  box-shadow: 0 8px 32px rgba(134, 239, 172, 0.4);
 }
 
 .btn-sm {
@@ -454,7 +485,7 @@ legend {
 }
 
 .switch:hover {
-  background: var(--surface-2);
+  background: var(--panel-hover);
 }
 
 .switch-track {
@@ -548,10 +579,11 @@ legend {
   gap: 10px;
   align-items: flex-start;
   padding: 12px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-border);
   border-left-width: 4px;
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  border-radius: 10px;
+  background: var(--panel-solid);
+  box-shadow: var(--panel-shadow);
   font-size: 15px;
 }
 
@@ -571,11 +603,11 @@ legend {
 }
 
 .notice-info {
-  border-left-color: var(--accent);
+  border-left-color: var(--info);
 }
 
 .notice-info > svg {
-  color: var(--accent);
+  color: var(--info);
 }
 
 .notice-waiting {
@@ -626,10 +658,10 @@ legend {
   gap: 10px;
   align-items: flex-start;
   padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  border-left: 4px solid var(--info);
+  border-radius: 10px;
+  background: var(--panel-solid);
   box-shadow: var(--shadow-raised);
   font-size: 15px;
 }
@@ -669,7 +701,7 @@ legend {
 }
 
 .icon-btn:hover {
-  background: var(--surface-2);
+  background: var(--panel-hover);
   color: var(--text);
 }
 
@@ -683,13 +715,13 @@ legend {
   }
 }
 
-/* ---- panels ------------------------------------------------------------------ */
+/* ---- panels: compact, translucent and dark, like the live map's corners ---------------------- */
 
 .panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--panel-shadow);
   padding: 16px 18px 18px;
   min-width: 0;
 }
@@ -701,9 +733,18 @@ legend {
   gap: 8px 16px;
 }
 
+/* Panel titles read like the map's corner labels: small, spaced capitals. */
 .panel-title {
-  font-size: 18px;
-  font-weight: 700;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.panel-title .tech {
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .panel-actions {
@@ -736,6 +777,10 @@ legend {
   border-radius: 4px;
 }
 
+.how summary:hover {
+  color: var(--accent-hover);
+}
+
 .how summary::-webkit-details-marker {
   display: none;
 }
@@ -751,7 +796,8 @@ legend {
 .how-body {
   margin-top: 6px;
   padding: 10px 12px;
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
   background: var(--surface-2);
   color: var(--text);
   display: grid;
@@ -831,6 +877,7 @@ legend {
 
 .dot-ok {
   background: var(--ok);
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 .dot-warn {
@@ -853,37 +900,113 @@ legend {
 
 /* ---- start screen ---------------------------------------------------------------- */
 
+/* The Start page fills the window below the header; a faint Texas sits behind its content. */
+main.main-start {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.start-stage {
+  position: relative;
+  isolation: isolate;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* One column of content on the left; Texas and its four glowing cities to the right of it. */
 .start {
-  max-width: 780px;
-  margin: 0 auto;
+  width: 100%;
   display: grid;
-  gap: 24px;
-  padding-top: 16px;
+  justify-items: start;
+  gap: 18px;
+  padding-top: 24px;
+  padding-bottom: 48px;
+}
+
+.start > * {
+  width: 100%;
+  max-width: 760px;
+}
+
+.start-intro {
+  display: grid;
+  gap: 12px;
 }
 
 .start h1 {
-  font-size: 40px;
+  font-size: 42px;
   font-weight: 800;
-  letter-spacing: -0.02em;
-  line-height: 1.12;
+  letter-spacing: -0.028em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+/* "20,000 home batteries" in the green of a selling battery. */
+.start-highlight {
+  color: var(--money);
+  text-shadow: 0 0 30px var(--money-glow);
 }
 
 .lede {
   font-size: 19px;
   color: var(--text-muted);
-  max-width: 44em;
+  max-width: 42em;
+  text-wrap: pretty;
+}
+
+/* Frosted glass: the Texas behind them shows through, blurred, as the map does behind its corners. */
+.start .panel,
+.start .notice,
+.start-facts li {
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+}
+
+.start .notice {
+  background: var(--panel);
+}
+
+.start .notice-waiting {
+  background: color-mix(in srgb, var(--hold-soft) 88%, transparent);
+}
+
+.start .notice-warn {
+  background: color-mix(in srgb, var(--warn-soft) 90%, transparent);
+}
+
+.start .notice-error {
+  background: color-mix(in srgb, var(--fail-soft) 90%, transparent);
+}
+
+.run-card {
+  padding: 16px 20px 16px;
 }
 
 .run-card .settings-list {
   display: grid;
-  grid-template-columns: 170px 1fr;
-  gap: 10px 16px;
-  margin: 14px 0 0;
+  grid-template-columns: 150px minmax(0, 1fr);
+  margin: 10px 0 0;
+}
+
+.settings-list dt,
+.settings-list dd {
+  padding: 6px 0;
+  border-top: 1px solid var(--panel-border);
+}
+
+.settings-list dt:first-of-type,
+.settings-list dt:first-of-type + dd {
+  border-top: 0;
 }
 
 .settings-list dt {
+  padding-right: 16px;
   color: var(--text-muted);
-  font-size: 15px;
+  font-size: 14.5px;
 }
 
 .settings-list dd {
@@ -896,9 +1019,9 @@ legend {
 }
 
 .editor {
-  margin-top: 16px;
+  margin-top: 12px;
   padding-top: 16px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--panel-border);
   display: grid;
   gap: 20px;
 }
@@ -965,6 +1088,23 @@ legend {
   gap: 12px 20px;
 }
 
+.btn-start {
+  min-height: 58px;
+  padding: 0 30px 0 26px;
+  gap: 10px;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.btn-start svg {
+  width: 20px;
+  height: 20px;
+}
+
+.btn-start svg:not(.spinner) {
+  fill: currentColor;
+}
+
 .running-card {
   display: grid;
   gap: 14px;
@@ -980,34 +1120,123 @@ legend {
 
 .start-facts {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 6px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .start-facts li {
   display: grid;
+  align-content: start;
   gap: 4px;
-  font-size: 14px;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-solid) 62%, transparent);
+  font-size: 13.5px;
+  line-height: 1.45;
   color: var(--text-muted);
 }
 
 .start-facts strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   color: var(--text);
-  font-size: 15px;
+  font-size: 14.5px;
 }
 
-/* ---- live screen ------------------------------------------------------------------ */
+.start-facts svg {
+  flex: none;
+  color: var(--accent);
+}
+
+/* The decorative Texas: the map's red outline, faint, with the four cities glowing green (aria-hidden). */
+.texas-backdrop {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  /* The same box as the content (.page), so Texas lines up with the column's right edge. */
+  left: max(0px, calc((100% - 1280px) / 2));
+  right: max(0px, calc((100% - 1280px) / 2));
+  /* The first screenful: opening the settings editor makes the page longer without moving Texas. */
+  height: min(100%, calc(100vh - 52px));
+  pointer-events: none;
+}
+
+.texas-backdrop svg {
+  position: absolute;
+  top: 3%;
+  right: 16px;
+  width: auto;
+  max-width: calc(100% - 32px);
+  height: 94%;
+  overflow: visible;
+}
+
+/* Stroke widths are in the SVG's kilometres: about 1.5 px for the line at 1280 × 800. */
+.tx-glow {
+  fill: none;
+  stroke: var(--map-outline);
+  stroke-width: 10;
+  stroke-linejoin: round;
+  opacity: 0.18;
+  animation: tx-fade-in 1.4s ease-out 1.2s both;
+}
+
+/* pathLength="1": a dash as long as the whole outline, slid into place to draw it once. */
+.tx-line {
+  fill: none;
+  stroke: var(--map-outline);
+  stroke-width: 2.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  opacity: 0.38;
+  animation: tx-draw 2.2s cubic-bezier(0.45, 0.05, 0.25, 1) both;
+}
+
+.tx-city {
+  animation: tx-fade-in 1.2s ease-out both;
+}
+
+/* The map's battery green (src/map/style.ts, PALETTE.charging). */
+.tx-dot {
+  fill: rgb(84, 204, 128);
+}
+
+@keyframes tx-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+
+@keyframes tx-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tx-glow,
+  .tx-line,
+  .tx-city {
+    animation: none;
+  }
+}
+
+/* ---- live screen, detailed layout ("Show charts") --------------------------------------------- */
 
 .live-topbar {
   position: sticky;
   top: 0;
   z-index: 20;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(6px);
-  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--panel-border);
   margin-top: -24px;
   margin-bottom: 16px;
 }
@@ -1035,10 +1264,6 @@ legend {
   font-weight: 750;
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
-}
-
-.nowrap {
-  white-space: nowrap;
 }
 
 .clock-sub {
@@ -1105,9 +1330,9 @@ legend {
   z-index: 30;
   width: 320px;
   padding: 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-border);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--panel-solid);
   box-shadow: var(--shadow-raised);
   display: grid;
   gap: 10px;
@@ -1140,6 +1365,7 @@ legend {
 .stack {
   display: grid;
   gap: 16px;
+  align-content: start;
   min-width: 0;
 }
 
@@ -1256,6 +1482,10 @@ legend {
   cursor: crosshair;
 }
 
+.chart .u-select {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .chart-empty {
   position: absolute;
   inset: 0;
@@ -1276,9 +1506,9 @@ legend {
   z-index: 5;
   pointer-events: none;
   padding: 6px 9px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-border);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--panel-solid);
   box-shadow: var(--shadow-raised);
   font-size: 13px;
   line-height: 1.45;
@@ -1442,7 +1672,7 @@ legend {
   gap: 2px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--panel-border);
   font-size: 14px;
 }
 
@@ -1489,7 +1719,7 @@ legend {
   gap: 8px;
   align-items: start;
   padding: 7px 4px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--panel-border);
   font-size: 14.5px;
   line-height: 1.4;
 }
@@ -1511,7 +1741,7 @@ legend {
 }
 
 .feed-info > svg {
-  color: var(--accent);
+  color: var(--info);
 }
 
 .feed-time {
@@ -1531,14 +1761,14 @@ legend {
 
 dialog {
   padding: 0;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-solid);
   color: var(--text);
   box-shadow: var(--shadow-raised);
 }
 
 dialog::backdrop {
-  background: rgba(8, 12, 22, 0.45);
+  background: rgba(8, 9, 11, 0.6);
 }
 
 .modal {
@@ -1582,7 +1812,7 @@ dialog::backdrop {
   display: grid;
   gap: 10px;
   padding-top: 16px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--panel-border);
 }
 
 .drawer-section h3 {
@@ -1658,130 +1888,279 @@ dialog::backdrop {
 
 .results {
   display: grid;
-  gap: 16px;
+  gap: 20px;
+  padding-top: 8px;
 }
 
 .results-head {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .results-head h1 {
-  font-size: 30px;
+  font-size: 36px;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.022em;
 }
 
+.results-head .lede {
+  font-size: 18px;
+}
+
+/* Rows of panels: the headline and the comparison, then the details. A new full-width section (span-12)
+   fits between them without changing anything else. */
 .results-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
+.results-grid > .panel,
+.results-grid > .stack > .panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.results-grid > .panel > .panel-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+/* The big per-battery number, in a selling battery's green. */
 .big-number {
-  font-size: 60px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+  margin-top: 2px;
+  color: var(--money);
+  font-size: 80px;
   font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.05;
+  letter-spacing: -0.04em;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
-  margin-top: 8px;
+  text-shadow: 0 0 36px var(--money-glow);
 }
 
 .big-number small {
-  font-size: 22px;
+  color: var(--text-muted);
+  font-size: 21px;
   font-weight: 650;
   letter-spacing: 0;
-  color: var(--text-muted);
-  margin-left: 6px;
+  text-shadow: none;
 }
 
 .big-sub {
+  margin-top: 12px;
   font-size: 19px;
-  font-weight: 600;
-  margin-top: 6px;
+  font-weight: 650;
 }
 
-.fine-print {
-  margin-top: 10px;
-  color: var(--text-muted);
-  font-size: 14px;
+.result-stats {
   display: grid;
-  gap: 2px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 20px;
+  margin: 20px 0 0;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--panel-border);
+  list-style: none;
 }
 
+.result-stat {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+
+.stat-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 12.5px;
+}
+
+.result-section-label {
+  margin: 20px 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.label-note {
+  margin-left: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Per city: one row each, biggest first. */
+.city-results {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.city-result {
+  display: grid;
+  grid-template-columns: minmax(120px, 170px) minmax(0, 1fr) minmax(7.5em, max-content);
+  gap: 12px;
+  align-items: center;
+  font-size: 14.5px;
+}
+
+.city-result-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.city-result-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bar-track);
+  overflow: hidden;
+}
+
+.city-result-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--bar-day);
+}
+
+.city-result-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.fleet-size-note {
+  margin-top: auto;
+  padding-top: 14px;
+  color: var(--text-muted);
+  font-size: 13.5px;
+}
+
+/* Comparison bars: AI forecast (the headline) green, the other methods gray, "Best possible" hatched. */
 .bars {
   display: grid;
-  gap: 12px;
-  margin: 14px 0 0;
+  gap: 16px;
+  margin: 16px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .bar-row {
   display: grid;
-  grid-template-columns: minmax(150px, 210px) 1fr max-content;
-  gap: 12px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 6px 12px;
+  align-items: baseline;
   font-size: 15px;
 }
 
 .bar-label {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
   line-height: 1.3;
+  min-width: 0;
 }
 
 .bar-label strong {
   font-weight: 650;
 }
 
+.bar-note {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .bar-track {
-  height: 22px;
-  border-radius: 6px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  grid-column: 1 / -1;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--bar-track);
   overflow: hidden;
 }
 
 .bar-fill {
+  display: block;
   height: 100%;
-  background: var(--chart-plan);
-  border-radius: 5px 0 0 5px;
+  border-radius: 999px;
+  background: var(--bar-other);
 }
 
 .bar-row.headline .bar-fill {
-  background: var(--accent);
+  background: var(--bar-headline);
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.bar-row.headline .bar-value {
+  color: var(--money);
 }
 
 .bar-row.ceiling .bar-fill {
-  background: repeating-linear-gradient(
-    135deg,
-    var(--forecast-fill) 0 6px,
-    transparent 6px 12px
-  );
-  border-right: 2px dashed var(--forecast);
+  background: repeating-linear-gradient(-45deg, var(--bar-ceiling) 0 2px, transparent 2px 7px);
+  box-shadow: inset 0 0 0 1.5px var(--bar-ceiling);
 }
 
 .bar-value {
-  font-weight: 700;
+  font-weight: 750;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  min-width: 6em;
 }
 
+/* When the panel is taller than its bars (it matches the headline panel beside it), the bars spread out. */
+.results-grid .panel-body > .bars {
+  flex: 1 0 auto;
+  align-content: space-evenly;
+}
+
+.bars-note {
+  padding-top: 14px;
+  color: var(--text-muted);
+  font-size: 13.5px;
+}
+
+/* Top 10 days */
 .days {
   display: grid;
-  gap: 6px;
-  margin: 12px 0 0;
+  gap: 8px;
+  margin: 14px 0 0;
   padding: 0;
   list-style: none;
-  counter-reset: day;
 }
 
 .day-row {
   display: grid;
-  grid-template-columns: 26px minmax(130px, 170px) 1fr max-content;
-  gap: 10px;
+  grid-template-columns: 22px minmax(128px, 150px) minmax(0, 1fr) max-content;
+  gap: 12px;
   align-items: center;
   font-size: 14.5px;
 }
@@ -1793,10 +2172,21 @@ dialog::backdrop {
 }
 
 .day-bar {
-  height: 12px;
-  border-radius: 4px;
-  background: var(--sell);
-  opacity: 0.85;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bar-day);
+}
+
+.day-row:first-child .day-bar {
+  background: var(--bar-headline);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.day-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .assumptions {
@@ -1848,6 +2238,42 @@ dialog::backdrop {
 
 /* ---- responsive ------------------------------------------------------------------------ */
 
+@media (min-width: 1600px) {
+  .start.page {
+    max-width: 1440px;
+  }
+
+  .texas-backdrop {
+    left: max(0px, calc((100% - 1440px) / 2));
+    right: max(0px, calc((100% - 1440px) / 2));
+  }
+
+  .start > * {
+    max-width: 800px;
+  }
+
+  .start h1 {
+    font-size: 52px;
+  }
+
+  .lede {
+    font-size: 20px;
+  }
+}
+
+/* No room beside the column: Texas moves behind it, centred. */
+@media (max-width: 1100px) {
+  .start {
+    justify-items: center;
+  }
+
+  .texas-backdrop svg {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
+
 @media (max-width: 1180px) {
   .tiles {
     gap: 6px;
@@ -1860,11 +2286,13 @@ dialog::backdrop {
   .readout-label {
     min-width: 0;
   }
+
+  .big-number {
+    font-size: 68px;
+  }
 }
 
 @media (max-width: 1060px) {
-  .site-header-inner,
-  .site-footer-inner,
   .page {
     padding-left: 16px;
     padding-right: 16px;
@@ -1877,6 +2305,10 @@ dialog::backdrop {
   .tile-name {
     font-size: 12.5px;
   }
+
+  .result-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {
@@ -1885,8 +2317,12 @@ dialog::backdrop {
     grid-column: span 12;
   }
 
+  .start {
+    padding-top: 28px;
+  }
+
   .start h1 {
-    font-size: 32px;
+    font-size: 34px;
   }
 
   .start-facts {
@@ -1899,11 +2335,15 @@ dialog::backdrop {
 
   .run-card .settings-list {
     grid-template-columns: 1fr;
-    gap: 2px 0;
   }
 
-  .run-card .settings-list dd {
-    margin-bottom: 8px;
+  .settings-list dt {
+    padding-bottom: 0;
+  }
+
+  .settings-list dd {
+    padding-top: 2px;
+    border-top: 0;
   }
 
   .site-header-inner {
@@ -1913,12 +2353,25 @@ dialog::backdrop {
     padding-bottom: 8px;
   }
 
-  .bar-row {
-    grid-template-columns: 1fr max-content;
+  .big-number {
+    font-size: 56px;
   }
 
-  .bar-row .bar-track {
+  .city-result {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .city-result-bar {
     grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .day-row {
+    grid-template-columns: 22px minmax(0, 1fr) max-content;
+  }
+
+  .day-bar {
+    grid-column: 2 / -1;
     grid-row: 2;
   }
 }

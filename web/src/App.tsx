@@ -23,7 +23,7 @@ export function App() {
   const liveMode = useView((v) => v.mode);
   const mainRef = useRef<HTMLElement>(null);
   const firstRender = useRef(true);
-  // The live map fills the window and is always dark (docs/UX.md, Live map).
+  // The live map fills the window (docs/UX.md, Live map). Every page shares its dark theme (tokens.css).
   const mapMode = route === 'live' && liveMode === 'map';
 
   useEffect(() => {
@@ -43,12 +43,8 @@ export function App() {
   useEffect(() => {
     const root = document.documentElement;
     if (!mapMode) return;
-    root.dataset.theme = 'map';
     root.classList.add('map-mode');
-    return () => {
-      delete root.dataset.theme;
-      root.classList.remove('map-mode');
-    };
+    return () => root.classList.remove('map-mode');
   }, [mapMode]);
 
   return (
@@ -58,7 +54,7 @@ export function App() {
       </a>
       <Header route={route} />
       <PracticeBanner />
-      <main id="main" tabIndex={-1} ref={mainRef} className={mapMode ? 'main-map' : undefined}>
+      <main id="main" tabIndex={-1} ref={mainRef} className={mapMode ? 'main-map' : `main-${route}`}>
         {route === 'start' ? <StartScreen /> : null}
         {route === 'live' ? <LiveScreen /> : null}
         {route === 'results' ? <ResultsScreen /> : null}
