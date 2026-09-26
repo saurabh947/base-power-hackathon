@@ -58,8 +58,8 @@ Change it only through the integrator.
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
 | `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed\|cancelled", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
 | `POST /backtest/{job_id}/cancel` | anyone | – | Stops a running full-year job: `200 {"status": "cancelled"}`. Nothing is stored, and the previous results stay. `409 not_running` ("That full-year run has already finished.") if the job has already finished; `404 unknown_job` if the id is unknown. A cancelled job emits a `backtest_done` event whose message says it was stopped. |
-| `GET /results/pitch` | anyone | – | Results (below). Before any full-year run: `404 {"error": "no_results", "message": "No full-year results yet."}` |
-| `GET /results/ai-gains` | anyone | – | AiGains (below): what the AI forecast adds over the simple rule, per year (the pitch year first, then other complete years). `404 no_results` if none. |
+| `GET /results/pitch` | anyone | `?year=2025\|2026` (default: the pitch year, 2025) | Results (below) for that year. Before any full-year run of it: `404 {"error": "no_results", "message": "No full-year results yet."}` |
+| `GET /results/ai-gains` | anyone | `?year=` (default: the pitch year) | AiGains (below): what the AI forecast adds over the simple rule, per year (the pitch year first, then other complete years). `404 no_results` if none. |
 | `GET /forecast` | anyone | `?location=LZ_HOUSTON&at_utc=…` (`location=ERCOT&series=demand` for demand) | Forecast (below): the latest forecast issued at or before `at_utc`, or 404 `no_forecast` |
 
 `POST /chaos/kill` errors:
@@ -153,13 +153,25 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 **Worker**
 ```json
 {"worker_id": 7, "status": "healthy", "pid": 1234, "batteries": 1000, "last_tick_utc": "…", "adopted_from": [3],
- "by_location": {"LZ_NORTH": 1000}, "charge_level": 0.62}
+ "by_location": {"LZ_NORTH": 1000}, "charge_level": 0.62, "usable_charge": 0.525, "recovers_in_s": null}
 ```
+`usable_charge` is the share of usable energy left above the 20% reserve (0–1): `(charge_level − 0.2) / 0.8`. The controller panel shows this; `null` when it owns none.
+
+**Failure model (the human's rules, 2026-09-26):**
+- **Crash.** A crash (public kill or any worker exit) empties that controller's batteries to the reserve (`usable_charge` 0).
+  - The other controllers take them over within one tick, as before, so the fleet keeps running with those batteries empty.
+  - The crashed controller **restarts automatically** after `orchestration.auto_restart_s` (default 10 s; 0 = off). Meanwhile its status is `dead` with `recovers_in_s` counting down, then `starting`.
+  - On restart it takes its original batteries back and emits a `worker_recovered` event. Its gauge starts from their current, near-empty charge.
+- **Controller offline.** Taking a controller offline (`/availability` scope `worker`) **halves** the usable charge of its batteries at that moment.
+  - While offline they don't move. Back online, they resume from the halved level.
+  - City and single-battery offline don't change charge.
+- **Mirroring.** The race shadow applies the same emptying and halving to the same batteries, so the race compares only decisions. The `potential` fleet never loses charge, so `shortfall_usd` includes the lost energy.
+
 `charge_level` is the capacity-weighted average charge of the batteries this controller owns right now, 0.2–1.0. It is `null` when it owns none, e.g. a dead controller after the hand-over.
 
 `by_location` lists only the cities this controller currently holds. It is `{}` for a dead controller, and changes after hand-overs. `totals.by_location` always has every city.
 
-`status` is `starting`, `healthy`, `suspect` or `dead`.
+`status` is `starting`, `healthy`, `suspect` or `dead`. `recovers_in_s` is the seconds until an auto-restart, set only while `dead` and waiting to restart.
 
 **FailedCommands**
 ```json
@@ -253,7 +265,8 @@ StrategyGains is:
 ```json
 {"id": "…", "wall_utc": "…", "sim_utc": "…", "kind": "…", "severity": "info", "message": "…", "detail": {}}
 ```
-- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`, `race_update`, `prediction_started`.
+- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`, `race_update`, `prediction_started`, `worker_recovered`.
+  - `worker_recovered`: e.g. "Controller 8 is back and has taken back its 1,000 Dallas–Fort Worth batteries, starting from empty." It carries `detail.worker_id`, `detail.controller` and `detail.batteries`.
   - `prediction_started`: "From here on, prices are the AI's prediction (TimesFM-3), not real ERCOT data." It is emitted once, at the first predicted tick.
   - `race_update` is a plain-language comparison with the race fleet. A "spike" here is any city's price reaching `api.race_spike_usd_mwh` ($300/MWh), which is lower than the $1,000 `price_spike` alert. It comes at the start of each price spike (e.g. "Prices jumped to $1,757 in all four cities. The AI fleet had 54% charge left; the simple rule had 21%.") and after it ends ("The AI is now $12,400 ahead of the simple rule.").
   - A run finishes when the replay reaches the end of the loaded data.
@@ -267,7 +280,10 @@ StrategyGains is:
  "points": [{"ts_utc": "…", "p10": 0, "p50": 0, "p90": 0}]}
 ```
 
-**Results** (`GET /results/pitch`)
+**Results** (`GET /results/pitch?year=`)
+- **Real and projected years.** For a year with `real_until_utc` (2026), the Results carry `"real_until_utc"`, and every strategy and the ceiling split their per-battery figure into `real_per_battery_usd` (up to the cutoff) and `projected_per_battery_usd` (the AI-predicted rest). The two add up to `per_battery_usd_year`.
+- For fully real years these are `real_until_utc: null` and `projected_per_battery_usd: 0`.
+- `POST /backtest {"year": 2026}` re-runs 2026 the same way.
 ```json
 {"year": 2025, "generated_utc": "…", "fleet_size": 20000, "fleet_power_mw": 165.1, "fleet_energy_mwh": 300.2,
  "assumptions": ["Gross wholesale energy value at ERCOT real-time prices (15-minute settlement)", "…"],
