@@ -257,10 +257,11 @@ def test_one_job_at_a_time_then_done(monkeypatch):
     service.add_listener(lambda job_id, job: (seen.append((job_id, job)), done_event.set()))
     try:
         job_id = service.start_backtest(["bands", "forecast", "peak"], 2025)
-        assert service.get_job(job_id) == {"status": "running", "run_ids": [], "error": None}
+        assert service.get_job(job_id) == {"status": "running", "run_ids": [], "skipped": {}, "error": None}
         assert service.start_backtest(["peak"], 2024) == job_id  # busy: same job
         job = wait_done(job_id)
-        assert job == {"status": "done", "run_ids": ["r-bands", "r-peak", "r-ceiling"], "error": None}
+        assert job == {"status": "done", "run_ids": ["r-bands", "r-peak", "r-ceiling"],
+                       "skipped": {"forecast": "not built"}, "error": None}
         assert done_event.wait(5) and seen[-1] == (job_id, job)
         again = service.start_backtest(["peak"], 2025)
         assert again != job_id
@@ -273,7 +274,7 @@ def test_failed_job_reports_a_plain_sentence(monkeypatch):
     message = "There are no real ERCOT prices for 2019 (LZ_HOUSTON, LZ_NORTH) to replay."
     monkeypatch.setattr(service, "runner_command", fake_runner(0.0, {"run_ids": [], "error": message}, 2))
     job = wait_done(service.start_backtest(["bands"], 2019))
-    assert job == {"status": "failed", "run_ids": [], "error": message}
+    assert job == {"status": "failed", "run_ids": [], "skipped": {}, "error": message}
     monkeypatch.setattr(service, "runner_command", lambda *a: [sys.executable, "-c", "import sys; sys.exit(1)"])
     job = wait_done(service.start_backtest(["bands"], 2025))
     assert job["status"] == "failed" and job["error"] == "The full-year run failed."

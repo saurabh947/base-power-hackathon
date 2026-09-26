@@ -2,7 +2,7 @@
 GET /results/pitch). The API builder calls exactly these three functions:
 
     start_backtest(strategies, year) -> job_id
-    get_job(job_id)                  -> {"status": "running" | "done" | "failed", "run_ids": [...], "error": None}
+    get_job(job_id)                  -> {"status": "running" | "done" | "failed", "run_ids": [...], "skipped": {...}, "error": None}
     pitch_results(year=None)         -> the Results object
 
 A job runs `python -m src.backtest.runner --pitch` in a subprocess, so the replay's CPU work
@@ -153,7 +153,8 @@ def _run_job(job_id: str, names: list[str], year: int) -> None:
         job = _jobs[job_id]
         job.update(status="failed" if error else "done", run_ids=run_ids, error=error,
                    skipped=status.get("skipped") or {}, finished_utc=_now())
-        snapshot = {"status": job["status"], "run_ids": list(run_ids), "error": error}
+        snapshot = {"status": job["status"], "run_ids": list(run_ids),
+                    "skipped": dict(job.get("skipped") or {}), "error": error}
     for fn in list(_listeners):
         try:
             fn(job_id, snapshot)
