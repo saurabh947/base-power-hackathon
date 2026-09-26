@@ -56,7 +56,7 @@ Change it only through the integrator.
 | `POST /chaos/kill` | **presenter only** | header `X-Presenter-Passcode`; optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. |
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
 | `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed\|cancelled", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
-| `POST /backtest/{job_id}/cancel` | anyone | – | Stops a running full-year job: `200 {"status": "cancelled"}`. Nothing is stored, and the previous results stay. `409 not_running` if the job has already finished; `404` if the id is unknown. A cancelled job emits a `backtest_done` event whose message says it was stopped. |
+| `POST /backtest/{job_id}/cancel` | anyone | – | Stops a running full-year job: `200 {"status": "cancelled"}`. Nothing is stored, and the previous results stay. `409 not_running` ("That full-year run has already finished.") if the job has already finished; `404 unknown_job` if the id is unknown. A cancelled job emits a `backtest_done` event whose message says it was stopped. |
 | `GET /results/pitch` | anyone | – | Results (below). Before any full-year run: `404 {"error": "no_results", "message": "No full-year results yet."}` |
 | `GET /results/ai-gains` | anyone | – | AiGains (below): what the AI forecast adds over the simple rule, per year (the pitch year first, then other complete years). `404 no_results` if none. |
 | `GET /forecast` | anyone | `?location=LZ_HOUSTON&at_utc=…` (`location=ERCOT&series=demand` for demand) | Forecast (below): the latest forecast issued at or before `at_utc`, or 404 `no_forecast` |
@@ -193,12 +193,13 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
  "charge_level": 0.43, "live_minus_race_usd": 15290.1}
 ```
 - `live_minus_race_usd` is the live fleet's `totals.revenue_usd` minus the race's. Positive means the live strategy is ahead.
-- `race` is `null` while idle.
+- `race` is `null` while idle, while a run is starting, and when there is nothing to race: a live simple rule with no forecasts in any city.
+- The after-spike `race_update` has severity `good` when the live strategy leads, and `info` otherwise.
 
 **AiGains** (`GET /results/ai-gains`)
 ```json
 {"ai": "forecast", "baseline": "bands",
- "years": [{"year": 2025, "is_pitch": true, "best_possible_per_battery_usd_year": 421.29,
+ "years": [{"year": 2025, "is_pitch": true, "fleet_size": 20000, "best_possible_per_battery_usd_year": 421.29,
    "strategies": {"forecast": StrategyGains, "bands": StrategyGains, "peak": StrategyGains},
    "uplift": {"per_battery_usd_year": 67.28, "pct": 0.544, "fleet_usd_year": 1345600}}]}
 ```
@@ -214,6 +215,11 @@ StrategyGains is:
   - `spike_events` is the number of separate spikes.
   - `spike_charge_level` is the fleet's charge level when each spike began, averaged.
 - `share_of_best` is per-battery earnings ÷ the same year's hindsight best.
+- **Fields that can be missing:**
+  - The insight fields, on runs stored before they existed.
+  - `best_possible_per_battery_usd_year` and `share_of_best`, when that year has no hindsight run.
+  - The AI entry and `uplift`, when the year has no AI run.
+- `spike_charge_level` is `null` when the year had no spikes.
 
 **Layout** (`GET /fleet/layout`)
 ```json
