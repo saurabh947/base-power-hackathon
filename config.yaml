@@ -69,20 +69,21 @@ presets:
       date_local: "2025-04-07"
       start_utc: "2025-04-07T08:00:00Z"   # 3:00 am CDT; Houston peaks $3,860/MWh around 6:45 am
       description: "The year's highest price, just before 7 am."
-    - id: winter_spike
-      label: "Winter morning spike"
-      date_local: "2025-01-15"
-      start_utc: "2025-01-15T10:00:00Z"   # 4:00 am CST; HB_NORTH peaks $2,385 at 7:30 am (verify for LZ_*)
-      description: "A cold-morning price jump around 7:30 am."
+    - id: summer_spike
+      label: "Summer night spike"
+      date_local: "2025-07-11"
+      start_utc: "2025-07-11T23:00:00Z"   # 6:00 pm CDT; both areas ~$1,755/MWh in the 9:00 pm interval
+      description: "Both areas jump to about $1,750/MWh at 9 pm."
     - id: ordinary_day
       label: "An ordinary day"
-      date_local: "2025-03-19"            # placeholder until the data owner picks a median-spread day
-      start_utc: "2025-03-19T05:00:00Z"
+      date_local: "2025-06-28"            # daily spread $64/$68 (Houston/North) ~ the 2025 medians $63/$68
+      start_utc: "2025-06-28T05:00:00Z"
       description: "A typical day with small ups and downs."
 
 # Area sections, one owner each; read via src.config.load_raw_config().
-data:       # owner: ingest (M1)
-  years: [2024, 2025]
+data:       # owner: ingest (M1). python -m src.ingest.ercot; notes in docs/notes/data.md
+  years: [2024, 2025]       # ERCOT (America/Chicago) calendar years to ingest and check
+  max_missing_pct: 0.1      # M1 self-check: missing intervals per series and year must stay below this %
 
 api:        # owner: fleet + API
   port: 8000
@@ -98,8 +99,57 @@ api:        # owner: fleet + API
     availability_per_s: 10
     wrong_passcode_per_min: 5 # per IP
 
-backtest:   # owner: backtest (M4)
-  year: 2025
+backtest:   # owner: backtest (M4). Read by src/backtest/runner.py:backtest_settings()
+  year: 2025                            # the pitch year shown on the Results screen
+  strategies: [bands, forecast, peak]   # the pitch set; one that isn't built is skipped and the results say so
+  headline: [forecast, bands]           # the big number: the first of these that ran
+  lag0_variant: true                    # also replay the spec-literal lag 0 (stored in metrics.lag0)
+  forecast_min_coverage: 0.99           # skip 'forecast' unless forecasts cover 99% of the year's ticks
+  warmup_days: 7                        # real prices before Jan 1 that fill the bands window
+  results_dir: data/results             # JSON exports (runs/, pitch_<year>.json)
+  ceiling:                              # "Best possible (perfect hindsight)", src/backtest/ceiling.py
+    ratio_step: 0.05                    # power/capacity grid of the per-kWh LP (fleet: 0.25-1.0)
+    cycles_per_day_cap: 1.0             # the capped reference; the headline ceiling is uncapped
+    workers: 4                          # processes for the LP grid (1 = in-process)
+  labels:                               # UI words (docs/UX.md glossary)
+    bands: Simple rule
+    forecast: AI forecast (TimesFM-3)
+    peak: Evening peak
+    hindsight: Best possible (perfect hindsight)
 
-forecast:   # owner: forecasting
+forecast:   # owner: forecasting (src/forecast, docs/notes/forecast.md)
+  # timesfm-3.0: weights are non-commercial / non-production (OK'd for the demo).
+  # timesfm-2.5: Apache-2.0, what production would use. Env FORECAST_MODEL overrides.
   model: timesfm-3.0
+  weights_dir: models       # gitignored; the forecast image bakes weights into /app/models
+  download: true            # fetch missing weights from Hugging Face (pinned revision, no token)
+  device: cpu               # the Cloud Run job has no GPU
+  batch_size: 32            # series per forward pass
+  threads: 0                # 0 = every CPU the container may use
+  timezone: America/Chicago
+  locations: [LZ_HOUSTON, LZ_NORTH]
+  demand_location: ERCOT
+  da_publish_local: "13:30" # DA prices for day D are posted about 13:30 CT on D-1
+  cache_dir: data/cache/forecasts   # parquet output of `--out parquet` (gitignored)
+  # Plan chosen by measurement (docs/notes/forecast.md): ~515 TFLOP for 2025, 30-60 min on 8 vCPU.
+  rt_price:                 # RT settlement price per location, $/MWh
+    step_minutes: 15
+    horizon_steps: 96       # next 24 h
+    context_steps: 512      # 5.3 days of 15-min history (1024 was only 3% better, at 2x the cost)
+    every_minutes: 60       # a new forecast every hour
+    min_context_steps: 96
+    covariates: da          # none | da. DA as known-future covariate: MAE -18% vs univariate
+  demand:                   # ERCOT system load, MW
+    step_minutes: 60
+    horizon_steps: 48       # next 48 h
+    context_steps: 336      # 14 days of hourly history (512 was 1% better)
+    every_minutes: 60
+    min_context_steps: 72   # load history starts 2025-01-01, so the first 3 days are skipped
+  strategy:                 # the forecast rule (src/strategy/forecast.py)
+    horizon_hours: 12       # rank the decision price within the next 12 h of forecasts
+                            # (4 h earns more but cycles 2x/day; 12 h cycles like the peak rule)
+    max_age_hours: 6        # older forecasts are ignored (hold)
+    min_points: 8           # hold if fewer than 2 h of forecast points remain
+    charge_margin: 1.0      # charge only if price <= eta * margin * (price we expect to sell at)
+    reserve_spike_usd: 0    # p90 above this ahead keeps reserve_soc back (0 = off; it cost revenue)
+    reserve_soc: 0.5

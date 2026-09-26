@@ -7,9 +7,12 @@ Change it only through the integrator.
 - **Formats:** JSON bodies. Times are ISO-8601. `*_utc` fields are UTC with a `Z`; `*_local` fields are America/Chicago with an offset.
 - **Units:** power in kW (the UI may show MW), energy in kWh, prices in $/MWh, money in USD.
 - **Signs:** power is **+ when selling to the grid** and **− when buying/charging**. Revenue is + when earned.
-- **Naming:** the API says **worker**, which is the spec's term. The UI labels a worker a **"controller"**. Battery ids look like `LZ_HOUSTON-000123`.
-- **CORS:** origins come from env `CORS_ORIGINS` (comma-separated) plus a regex for `https://*.vercel.app` and `http://localhost:5173`.
-- **Errors:** always `{"error": "<code>", "message": "<plain-language sentence>"}` with a 4xx/5xx status.
+- **Naming:** the API says **worker**, which is the spec's term. The UI labels a worker a **"controller"**.
+  - `worker_id` is **0–19**. Humans always see **"Controller N" with N = worker_id + 1**, in UI tiles and event messages alike.
+  - Battery ids are fleet-wide: **`b00000`–`b19999`**. With the default 50/50 split, b00000–b09999 are in the Houston area and b10000–b19999 in Dallas–Fort Worth. `src.sim.fleet.assign_locations` is the one place that split is made.
+- **Amounts:** `top_days[].usd`, `per_location_usd` and `revenue_usd` are **fleet totals** (all batteries), not per battery. `error_pct` is already a percentage: `0.02` means 0.02%.
+- **CORS:** origins come from env `CORS_ORIGINS` (comma-separated) plus a regex for `https://*.vercel.app` and `http://localhost:5173`. Allowed request headers: `Content-Type` and `X-Presenter-Passcode`. Exposed response header: `Retry-After`.
+- **Errors:** always `{"error": "<code>", "message": "<plain-language sentence>"}` with a 4xx/5xx status. A 429 also carries `retry_after_s` in the body and a `Retry-After` header.
 
 ## Settings
 
@@ -35,7 +38,7 @@ Change it only through the integrator.
 | Method + path | Who | Body / query | Response |
 |---|---|---|---|
 | `GET /health` | anyone | – | `{"ok": true, "version": "…", "status": "idle\|starting\|running\|paused\|finished"}` |
-| `GET /settings` | anyone | – | `{"defaults": Settings, "editable": [...], "presets": [Preset], "strategies": [Choice], "speeds": [Choice]}` |
+| `GET /settings` | anyone | – | `{"defaults": Settings, "editable": [...], "presets": [Preset], "strategies": [Strategy], "speeds": [Speed]}` (shapes below the table) |
 | `GET /state` | anyone | – | the same object as the WebSocket `snapshot` message |
 | `POST /run/start` | anyone | partial Settings | `202 {"run_id": "…", "settings": Settings}`. Starts a fresh shared run, replacing any current one. |
 | `POST /run/pause` / `POST /run/resume` | anyone | – | `{"status": "paused" \| "running"}` |
@@ -45,10 +48,10 @@ Change it only through the integrator.
 | `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
 | `POST /presenter/check` | anyone | header `X-Presenter-Passcode` | `200 {"ok": true}` or `403` |
 | `POST /chaos/kill` | **presenter only** | header `X-Presenter-Passcode`; optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. |
-| `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}` |
-| `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed", "run_ids": [...], "error": null}` |
-| `GET /results/pitch` | anyone | – | Results (below) |
-| `GET /forecast` | anyone | `?location=LZ_HOUSTON&at_utc=…` | Forecast (below): the latest forecast issued at or before `at_utc` |
+| `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
+| `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
+| `GET /results/pitch` | anyone | – | Results (below). Before any full-year run: `404 {"error": "no_results", "message": "No full-year results yet."}` |
+| `GET /forecast` | anyone | `?location=LZ_HOUSTON&at_utc=…` (`location=ERCOT&series=demand` for demand) | Forecast (below): the latest forecast issued at or before `at_utc`, or 404 `no_forecast` |
 
 `POST /chaos/kill` errors:
 
@@ -58,6 +61,11 @@ Change it only through the integrator.
 | 503 | `presenter_passcode_not_set` | No passcode is configured yet |
 | 409 | `already_dead` | That worker is already dead |
 | 409 | `too_few_healthy` | The kill would leave fewer than 2 healthy workers |
+
+**`GET /settings` item shapes:**
+- Preset: `{"id", "label", "date_local", "start_utc", "start_local", "description"}`
+- Strategy: `{"id": "bands", "label": "Simple rule", "description": "…"}`
+- Speed: `{"tps": 2, "label": "1 hour every 6 s"}`
 
 **Rate limits** (global, because everyone shares one fleet):
 - `/run/start` and `/run/reset`: one call per 5 s.
@@ -73,10 +81,11 @@ Change it only through the integrator.
 
 ## WebSocket `/live`
 
-On connect, the server sends one `snapshot`. After that it sends a `frame` every 1 s, and an `idle` frame when no run is active. Clients reconnect automatically: Cloud Run closes connections after 60 min.
+On connect, the server sends one `snapshot`. After that it sends a `frame` every 1 s while a run exists, and an `idle` message every 5 s when none does:
+`{"type": "idle", "status": "idle", "run_id": null, "last_run": {"run_id": "…", "totals": Totals} | null}`. Clients reconnect automatically: Cloud Run closes connections after 60 min.
 
 ```json
-{"type": "snapshot", "run_id": "…", "status": "running", "settings": Settings,
+{"type": "snapshot", "run_id": "…", "status": "running", "sim_time_utc": "…", "speed_tps": 2, "settings": Settings,
  "history": [Tick], "totals": Totals, "workers": [Worker], "failed_commands": FailedCommands,
  "availability": Availability, "events": [Event], "forecast": {"LZ_HOUSTON": Forecast, "LZ_NORTH": Forecast}}
 
@@ -136,7 +145,9 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 ```json
 {"id": "…", "wall_utc": "…", "sim_utc": "…", "kind": "…", "severity": "info", "message": "…", "detail": {}}
 ```
-- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`.
+- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`.
+  - A run finishes when the replay reaches the end of the loaded data.
+- Worker events carry `detail.worker_id` (0-based) and `detail.controller` (1-based, as shown to people). `worker_adopted` also carries `detail.adopted_by` (worker ids) and `detail.ms`.
 - `severity` is `info`, `good` or `warn`.
 - `message` is ONE plain-language sentence that the UI shows verbatim (see docs/UX.md for tone), for example *"Controller 7 stopped responding. Its 1,000 batteries were handed to the other 19 in 2 ms."* Technical values go in `detail`.
 

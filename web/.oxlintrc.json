@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc", "unicorn", "jsx-a11y", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "react/react-in-jsx-scope": "off",
+    "no-console": ["warn", { "allow": ["warn", "error", "info"] }],
+    // ARIA roles are used on purpose: role="img" on canvas charts, role="status" live regions,
+    // and role="meter"/"progressbar" on custom-styled indicators (native <meter>/<progress>
+    // render inconsistently across browsers).
+    "jsx-a11y/prefer-tag-over-role": "off",
+    // The live connection talks to WebSocket through on* handlers so tests can pass a tiny fake.
+    "unicorn/prefer-add-event-listener": "off",
+    // Choice labels nest their text two spans deep.
+    "jsx-a11y/label-has-associated-control": ["error", { "depth": 4 }]
+  },
+  "ignorePatterns": ["dist/**", "node_modules/**", "coverage/**"]
+}

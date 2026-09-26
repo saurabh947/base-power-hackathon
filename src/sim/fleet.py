@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from typing import Mapping
+
 import numpy as np
 
 from src.config import BatteryConfig
@@ -32,3 +35,29 @@ def generate_batteries(
         BatteryState(f"b{i:05d}", float(capacity[i]), float(power[i]), soc, battery.efficiency, True)
         for i in range(n)
     ]
+
+
+def location_counts(size: int, shares: Mapping[str, float]) -> dict[str, int]:
+    """Batteries per location: floor(size * share), remainder by largest fraction (ties: config order)."""
+    if size < 0:
+        raise ValueError("size must be >= 0")
+    exact = {loc: size * float(share) for loc, share in shares.items()}
+    counts = {loc: int(math.floor(x)) for loc, x in exact.items()}
+    order = sorted(shares, key=lambda loc: -(exact[loc] - counts[loc]))  # stable: config order breaks ties
+    for loc in order[: size - sum(counts.values())]:
+        counts[loc] += 1
+    return counts
+
+
+def assign_locations(batteries: list[BatteryState], shares: Mapping[str, float]) -> dict[str, list[BatteryState]]:
+    """THE fleet split, shared by the live fleet and the backtest (parity depends on it).
+
+    Locations take consecutive blocks of the battery list in config order: with
+    20,000 batteries at 50/50, LZ_HOUSTON gets b00000-b09999 and LZ_NORTH gets
+    b10000-b19999.
+    """
+    out, first = {}, 0
+    for loc, count in location_counts(len(batteries), shares).items():
+        out[loc] = batteries[first:first + count]
+        first += count
+    return out

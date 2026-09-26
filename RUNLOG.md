@@ -182,3 +182,38 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
 - **Effect.** Clock rules stay on the clock, and prices still can't be peeked at. Peak under lag 3 is now $4.4470, the same as lag 0. Bands is unchanged.
 - **Where it applies.** The coordinator, the backtest and any future strategy caller must all use `decision_tick`.
 - **Tests.** Pinned in `tests/test_decision_tick.py`.
+
+## M1: data (done 2026-09-25)
+
+- **Ingest.** `python -m src.ingest.ercot --years 2024 2025`, or `make ingest` locally and `make cloud-ingest` on Cloud SQL.
+  - Loads RT and DA prices for all 15 settlement points, ERCOT native load and fuel mix.
+  - Took 61 s locally from an empty DB, and a re-run is idempotent.
+  - The exit code is gated by a self-check: 0 gaps, 0 duplicates, correct DST day counts.
+- **Postgres backend.** `src/data/series_pg.py` returns exactly what the snapshot backend returns; prices are bit-identical.
+- **Replay feed.** `src/feeds/replay.PostgresReplayFeed` streams a full year for 2 locations in 0.55 s.
+- **Fixes made at integration.**
+  - The snapshot's 2025 load had the 2025-11-02 fall-back hour swapped (a gridstatus artifact). It is now in ERCOT order.
+  - The snapshot backend now also reads the previous ERCOT-year file.
+- **Presets checked against real LZ prices.**
+  - spike_evening and morning_spike are correct.
+  - winter_spike was a North-only spike, so it was replaced by summer_spike (2025-07-11, both areas).
+  - ordinary_day is now 2025-06-28, a median-spread day.
+- **Details:** docs/notes/data.md.
+
+## Forecasting: TimesFM-3 (done 2026-09-25)
+
+- **Model.** `src/forecast/model.py` loads timesfm-3.0 by default; env `FORECAST_MODEL=timesfm-2.5` switches to the Apache-2.0 model. It runs on CPU torch, pinned to Hugging Face revisions.
+- **Job.** `python -m src.forecast.job --year 2025` issues rolling-origin forecasts every hour:
+  - RT price per location: 24 h at 15-min steps, p10/p50/p90, with DA as a known-future covariate.
+  - ERCOT demand: 48 h, hourly.
+- **No look-ahead.** A forecast only sees intervals that have ended. DA prices count as known from 13:30 CT the day before.
+- **Accuracy** on a 2025 sample, RT MAE:
+  - Houston $10.18, vs $16.10 for "same time yesterday".
+  - North $10.99, vs $18.64.
+  - The p10–p90 band covers only 72% of outcomes (target 80%), so the band shown on the site understates uncertainty.
+- **Strategy.** `src/strategy/forecast.py` is a rank rule over the next 12 h of p50 forecasts.
+  - On 152 real days: $78.00 per battery, vs bands $51.31 and peak $57.08.
+  - Caveat: its parameters were chosen on those same days, so don't annualise; the full-year backtest decides.
+  - On the demo day (2025-05-16) it sold at 3–4 pm and missed the evening spike.
+- **Cloud.** `make cloud-forecast` builds an image with both models baked in (~2.2 GB) and runs the job. Estimated 30–60 min on 8 vCPU.
+- **Details:** docs/notes/forecast.md.

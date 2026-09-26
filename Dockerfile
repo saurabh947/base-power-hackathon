@@ -10,6 +10,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY config.yaml ./
 COPY migrations ./migrations
+COPY data/snapshot ./data/snapshot
 COPY src ./src
 ENV PATH="/app/.venv/bin:$PATH" START_REDIS=1 REDIS_URL=redis://127.0.0.1:6379/0
 # tini reaps zombies (SIGKILLed workers) and forwards SIGTERM from Cloud Run
