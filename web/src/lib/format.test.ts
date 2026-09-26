@@ -28,8 +28,10 @@ import {
   fmtUsd,
   fmtUsdLarge,
   localDateOf,
+  lowerFirst,
   powerDirection,
   roundSignificant,
+  shortLabel,
   strategyName,
 } from './format.ts';
 
@@ -185,6 +187,15 @@ describe('plain words', () => {
     expect(actionLabel('charge')).toBe('Charging');
     expect(actionLabel('sell')).toBe('Selling');
     expect(actionLabel('hold')).toBe('Waiting');
+  });
+
+  it('shortens a method name for tight spaces and puts one inside a sentence', () => {
+    expect(shortLabel('AI forecast (TimesFM-3)')).toBe('AI forecast');
+    expect(shortLabel('Simple rule')).toBe('Simple rule');
+    expect(shortLabel('(TimesFM-3)')).toBe('(TimesFM-3)');
+    expect(lowerFirst('Simple rule')).toBe('simple rule');
+    expect(lowerFirst('Evening peak')).toBe('evening peak');
+    expect(lowerFirst('AI forecast')).toBe('AI forecast');
   });
 
   it('formats counts, percents, ranges and durations', () => {

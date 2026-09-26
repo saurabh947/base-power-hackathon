@@ -6,7 +6,7 @@
 // (race.by_location). Labels come from race.label and the live strategy's label.
 
 import type { Race, Tick, TickAction, Totals } from '../../api/types.ts';
-import { fmtPercent, fmtUsd, shortLabel, strategyName } from '../../lib/format.ts';
+import { fmtPercent, fmtUsd, lowerFirst, shortLabel, strategyName } from '../../lib/format.ts';
 import type { Scope } from './map/scope.ts';
 
 function finite(v: unknown): v is number {
@@ -51,11 +51,6 @@ export interface RaceInput {
   /** The latest tick, for the live fleet's charge level and actions. */
   tick: Tick | null;
   scope: Scope;
-}
-
-/** "Simple rule" → "simple rule", but "AI forecast" stays. */
-function lowerFirst(label: string): string {
-  return /^[A-Z][a-z]/.test(label) ? label[0].toLowerCase() + label.slice(1) : label;
 }
 
 /** "the simple rule", "the AI forecast": how the race's strategy is named in a sentence. */

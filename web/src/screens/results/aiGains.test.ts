@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { AiGains, StrategyGains } from '../../api/types.ts';
-import { shortLabel } from '../../lib/format.ts';
 import {
   fleetSizeOf,
   fmtMwh,
@@ -153,12 +152,11 @@ describe('formatting', () => {
     expect(fmtTimes(Number.NaN, 5)).toBeNull();
   });
 
-  it('writes energy in MWh and shortens method names', () => {
+  it('writes energy in MWh', () => {
     expect(fmtMwh(7011.3)).toBe('7,011 MWh');
     expect(fmtMwh(610.9)).toBe('611 MWh');
     expect(fmtMwh(2.46)).toBe('2.5 MWh');
-    expect(shortLabel('AI forecast (TimesFM-3)')).toBe('AI forecast');
-    expect(shortLabel('Simple rule')).toBe('Simple rule');
+    expect(fmtMwh(Number.NaN)).toBe('–');
   });
 });
 

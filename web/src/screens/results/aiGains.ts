@@ -14,6 +14,7 @@ import {
   fmtPriceMwh,
   fmtUsd,
   fmtUsdLarge,
+  lowerFirst,
   plural,
   shortLabel,
   strategyName,
@@ -158,11 +159,6 @@ export function fmtTimes(a: number, b: number): string | null {
 export function fmtMwh(mwh: number): string {
   if (!finite(mwh)) return '–';
   return `${fmtNumber(mwh, Math.abs(mwh) < 10 ? 1 : 0)} MWh`;
-}
-
-/** "Simple rule" → "simple rule" (but "AI forecast" stays): for "vs the simple rule". */
-function lowerFirst(label: string): string {
-  return /^[A-Z][a-z]/.test(label) ? label[0].toLowerCase() + label.slice(1) : label;
 }
 
 /** A 0-1 bar length. */

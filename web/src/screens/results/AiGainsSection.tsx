@@ -8,7 +8,7 @@ import { Icon, type IconName } from '../../components/Icon.tsx';
 import { Panel } from '../../components/Panel.tsx';
 import { Segmented } from '../../components/Segmented.tsx';
 import { TechBlock } from '../../components/Tech.tsx';
-import { fmtCount, fmtNumber } from '../../lib/format.ts';
+import { fmtCount, fmtNumber, lowerFirst, shortLabel } from '../../lib/format.ts';
 import {
   gainsView,
   SPIKE_YEAR,
@@ -145,7 +145,7 @@ function Surplus({ card }: { card: SurplusCard }) {
         <>
           {card.times ? (
             <p>
-              <strong className="gains-plus">{card.times}</strong> as much as the {card.base.short.toLowerCase()}.
+              <strong className="gains-plus">{card.times}</strong> as much as the {lowerFirst(card.base.short)}.
             </p>
           ) : null}
           {card.homes ? <p className="muted">The AI’s {card.aiText} is {card.homes}.</p> : null}
@@ -218,13 +218,14 @@ export function AiGainsSection({ gains, fleetSize }: { gains: AiGains; fleetSize
   const note = yearsNote(gains);
   const { headline } = view;
   const aiLabel = view.year.strategies[gains.ai].label;
+  const baseLabel = view.year.strategies[gains.baseline].label;
   const batteries = fleetSize ? `${fmtCount(fleetSize)} ` : '';
 
   return (
     <Panel
       className="span-12 ai-gains"
       title="What the AI adds"
-      what={`The AI forecast against the simple rule over a full year: the same ${batteries}batteries and the same real prices. Only the decisions differ.`}
+      what={`The ${shortLabel(aiLabel)} against the ${lowerFirst(shortLabel(baseLabel))} over a full year: the same ${batteries}batteries and the same real prices. Only the decisions differ.`}
       how={
         <p>
           Both methods replay every 5-minute price of the year with the same code as the live fleet. “Surplus power”
