@@ -101,8 +101,8 @@ describe('buildCells', () => {
   });
 
   it('scales cells with the map, within 4-9 px', () => {
-    expect(spacingFor(300)).toBe(4);
-    expect(spacingFor(700)).toBeCloseTo(5, 5);
-    expect(spacingFor(5000)).toBe(9);
+    expect(spacingFor(300)).toBe(6);
+    expect(spacingFor(760)).toBeCloseTo(8, 5);
+    expect(spacingFor(5000)).toBe(13);
   });
 });

@@ -148,9 +148,12 @@ export function aggregateCodes(cells: Cells, codes: Uint8Array, out?: Uint32Arra
   return counts;
 }
 
-/** The cell spacing for a map this many CSS pixels tall: about 140 cells from top to bottom, 4-9 px. */
+/**
+ * The cell spacing for a map this many CSS pixels tall: about 95 cells from top to bottom, 6-13 px.
+ * The fleet sits in four metros that are small on a statewide map, so bold dots read better than fine ones.
+ */
 export function spacingFor(mapHeight: number): number {
-  return Math.max(4, Math.min(9, mapHeight / 140));
+  return Math.max(6, Math.min(13, mapHeight / 95));
 }
 
 /** Dot radius for `n` batteries: area proportional to n, with the reference cell nearly filling its hex. */
