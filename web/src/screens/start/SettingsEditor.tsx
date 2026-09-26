@@ -44,7 +44,7 @@ export function SettingsEditor({ model, draft, onDraft, onDone }: Props) {
                     <span className="choice-title">{p.label}</span>
                     <span className="choice-desc">
                       {date ? fmtLocalDate(date) : null}
-                      {p.start_utc ? `, from ${fmtTimeOfDay(p.start_utc, { compact: true })}` : null}
+                      {p.start_utc ? `, from ${fmtTimeOfDay(p.start_utc, { compact: true, words: true })}` : null}
                       {p.description ? ` · ${p.description}` : null}
                     </span>
                   </span>

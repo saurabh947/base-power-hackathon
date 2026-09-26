@@ -291,8 +291,11 @@ function toDate(value: string | number | Date): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** "7:45 pm"; with `compact`, whole hours drop the minutes: "4 pm". */
-export function fmtTimeOfDay(value: string | number | Date, options: { compact?: boolean } = {}): string {
+/**
+ * "7:45 pm"; with `compact`, whole hours drop the minutes: "4 pm"; with `words` as well,
+ * 12 am and 12 pm read "midnight" and "noon".
+ */
+export function fmtTimeOfDay(value: string | number | Date, options: { compact?: boolean; words?: boolean } = {}): string {
   const d = toDate(value);
   if (!d) return '–';
   const parts = timeFormat.formatToParts(d);
@@ -300,7 +303,10 @@ export function fmtTimeOfDay(value: string | number | Date, options: { compact?:
   const hour = get('hour');
   const minute = get('minute');
   const period = get('dayPeriod').toLowerCase();
-  if (options.compact && minute === '00') return `${hour} ${period}`;
+  if (options.compact && minute === '00') {
+    if (options.words && hour === '12') return period === 'am' ? 'midnight' : 'noon';
+    return `${hour} ${period}`;
+  }
   return `${hour}:${minute} ${period}`;
 }
 
@@ -336,6 +342,6 @@ export function fmtPresetLabel(preset: Preset): string {
   const date = preset.date_local ?? (preset.start_utc ? localDateOf(preset.start_utc) : null);
   const bits = [preset.label];
   if (date) bits.push(fmtLocalDate(date));
-  if (preset.start_utc) bits.push(`from ${fmtTimeOfDay(preset.start_utc, { compact: true })}`);
+  if (preset.start_utc) bits.push(`from ${fmtTimeOfDay(preset.start_utc, { compact: true, words: true })}`);
   return bits.join(', ');
 }

@@ -8,7 +8,7 @@ WEB_DIR := web
 web-install:
 	cd $(WEB_DIR) && $(NPM) ci
 
-# Dev server on http://localhost:5173 with the built-in mock API (simulated; real prices for 2025-05-16/17).
+# Dev server on http://localhost:5173 with the built-in mock API (simulated; real prices for the preset days).
 web-dev:
 	cd $(WEB_DIR) && $(NPM) run dev
 
@@ -37,6 +37,6 @@ web-build:
 web-check:
 	cd $(WEB_DIR) && $(NPM) run check
 
-# Re-export the mock's real-price fixture from data/snapshot (needs `make setup`).
+# Re-export the mock's real-price fixture for every preset in config.yaml (needs `make setup`).
 web-prices:
 	$(UV) run python web/mock/export_prices.py

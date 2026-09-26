@@ -9,6 +9,16 @@ import { HowItWorks } from '../../components/Panel.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
 import { useLive } from '../../live/liveStore.ts';
 import {
+  areaOfBattery,
+  batteryId as batteryIdOf,
+  batteryIndex,
+  batteryRanges,
+  controllerName,
+  DEFAULT_FLEET_SIZE,
+  DEFAULT_SHARES,
+  parseBatteryInput,
+} from '../../lib/fleet.ts';
+import {
   areaName,
   fmtCount,
   fmtNumber,
@@ -121,8 +131,8 @@ function ControllerOffline() {
     setBusy(true);
     await applyChange({ scope: 'worker', worker_id: workerId, available }, (r) =>
       available
-        ? `Controller ${workerId}'s batteries are back online.`
-        : `Controller ${workerId}'s ${fmtCount(r.affected)} batteries are offline. The controller keeps running.`,
+        ? `${controllerName(workerId)}'s batteries are back online.`
+        : `${controllerName(workerId)}'s ${fmtCount(r.affected)} batteries are offline. The controller keeps running.`,
     );
     setBusy(false);
     setChoice('');
@@ -145,7 +155,7 @@ function ControllerOffline() {
             <option value="">Choose a controller…</option>
             {candidates.map((w) => (
               <option key={w.worker_id} value={String(w.worker_id)}>
-                Controller {w.worker_id} ({fmtCount(w.batteries)} {plural(w.batteries, 'battery', 'batteries')})
+                {controllerName(w.worker_id)} ({fmtCount(w.batteries)} {plural(w.batteries, 'battery', 'batteries')})
               </option>
             ))}
           </select>
@@ -159,7 +169,7 @@ function ControllerOffline() {
           {offline.map((id) => (
             <li key={id}>
               <span>
-                <Icon name="plug" size={16} /> Controller {id}: batteries offline
+                <Icon name="plug" size={16} /> {controllerName(id)}: batteries offline
               </span>
               <button type="button" className="btn btn-sm" onClick={() => void set(id, true)} disabled={busy}>
                 Bring back online
@@ -172,22 +182,25 @@ function ControllerOffline() {
   );
 }
 
-const ID_PATTERN = /^\s*([A-Z_]+)-(\d+)\s*$/i;
-
+/** Battery ids are fleet-wide b00000–b19999 (docs/API.md); each area holds a consecutive block. */
 function FindBattery() {
-  const [area, setArea] = useState<string>(LOCATIONS[0]);
-  const [number, setNumber] = useState('');
+  const fleetSize = useLive((s) => s.settings?.fleet_size ?? DEFAULT_FLEET_SIZE);
+  const shares = useLive((s) => s.settings?.locations ?? DEFAULT_SHARES);
+  const [text, setText] = useState('');
   const [battery, setBattery] = useState<BatteryInfo | null>(null);
   const [error, setError] = useState<FriendlyError | null>(null);
   const [busy, setBusy] = useState(false);
-  const ids = { area: useId(), number: useId(), hint: useId() };
+  const ids = { input: useId(), hint: useId() };
 
-  const batteryId = (() => {
-    const full = ID_PATTERN.exec(number);
-    if (full) return `${full[1].toUpperCase()}-${full[2].padStart(6, '0')}`;
-    const n = number.trim();
-    return /^\d+$/.test(n) ? `${area}-${n.padStart(6, '0')}` : null;
-  })();
+  const ranges = batteryRanges(fleetSize, shares);
+  const lastId = batteryIdOf(fleetSize - 1);
+  const batteryId = parseBatteryInput(text, fleetSize);
+  const index = batteryId ? batteryIndex(batteryId) : null;
+  const area = index === null ? null : areaOfBattery(index, ranges);
+  let hint = `Type a number from 0 to ${fmtCount(fleetSize - 1)}, or an ID like b00123. `;
+  hint += ranges.map((r) => `${areaName(r.location)}: ${batteryIdOf(r.first)}–${batteryIdOf(r.last)}`).join('; ') + '.';
+  if (text.trim() && !batteryId) hint = `That is not a battery in this fleet. IDs run from b00000 to ${lastId}.`;
+  else if (batteryId) hint = `Looks up ${batteryId}${area ? `, in the ${areaName(area)}` : ''}.`;
 
   const load = async (id: string) => {
     setBusy(true);
@@ -221,31 +234,19 @@ function FindBattery() {
         }}
       >
         <div className="field">
-          <label className="field-label" htmlFor={ids.area}>
-            Area
-          </label>
-          <select id={ids.area} value={area} onChange={(e) => setArea(e.target.value)}>
-            {LOCATIONS.map((l) => (
-              <option key={l} value={l}>
-                {areaName(l)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field">
-          <label className="field-label" htmlFor={ids.number}>
+          <label className="field-label" htmlFor={ids.input}>
             Battery number or ID
           </label>
           <input
-            id={ids.number}
+            id={ids.input}
             type="text"
-            inputMode="text"
             autoComplete="off"
             spellCheck={false}
-            placeholder="e.g. 123"
+            placeholder="e.g. 123 or b00123"
             aria-describedby={ids.hint}
-            value={number}
-            onChange={(e) => setNumber(e.target.value)}
+            aria-invalid={text.trim() !== '' && !batteryId}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
           />
         </div>
         <button type="submit" className="btn" disabled={!batteryId || busy}>
@@ -254,7 +255,7 @@ function FindBattery() {
         </button>
       </form>
       <span className="field-hint" id={ids.hint}>
-        {batteryId ? `Looks up ${batteryId}.` : 'Type a number like 123, or a full ID like LZ_HOUSTON-000123.'}
+        {hint}
       </span>
       {error ? <ErrorNotice error={error} /> : null}
       {battery ? (
@@ -264,7 +265,7 @@ function FindBattery() {
             <dt>Area</dt>
             <dd>{areaName(battery.location)}</dd>
             <dt>Controller</dt>
-            <dd>Controller {battery.worker_id}</dd>
+            <dd>{controllerName(battery.worker_id)}</dd>
             <dt>Size</dt>
             <dd>
               {fmtNumber(battery.power_kw, 1)} kW, {fmtNumber(battery.capacity_kwh, 1)} kWh
