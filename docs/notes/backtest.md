@@ -238,7 +238,10 @@ over `data/results/runs/*.json` and the `pitch_<year>_runs.json` sets. Skip mark
 - `uplift` = AI minus simple rule: per battery, fleet, and `pct` = uplift / the simple rule's per-battery (None if
   that is <= 0).
 - Labels come from config `backtest.labels`. Money is rounded to cents, MWh to 0.1, charge level and shares to
-  0.001.
+  0.001; `uplift.pct` is a fraction (0.544 = +54.4%).
+- **Beyond the contract, as the website asked:** each year carries `fleet_size` (the batteries its runs simulated),
+  and `spike_events` is the year's count on every strategy (spikes are defined by prices; it is taken from any run
+  of the year that has insights).
 - **Runs stored before `metrics.insights` existed** (everything in Cloud SQL today) are served with their money
   fields only: the eight insight fields are **left out** of their StrategyGains, and the year stays listed. Re-run
   the full-year backtests to fill them in (commands below).
@@ -248,7 +251,7 @@ Example from local runs (2025 pitch set and 2024, 20,000 batteries, snapshot pri
 no forecasts locally, so no AI entry, no `uplift` and no complete 2024 set):
 
 ```json
-{"ai": "forecast", "baseline": "bands", "years": [{"year": 2025, "is_pitch": true,
+{"ai": "forecast", "baseline": "bands", "years": [{"year": 2025, "is_pitch": true, "fleet_size": 20000,
   "best_possible_per_battery_usd_year": 421.29, "strategies": {
    "bands": {"label": "Simple rule", "per_battery_usd_year": 123.67, "fleet_usd_year": 2473370.29,
      "share_of_best": 0.294, "surplus_mwh": 1238.8, "spike_mwh": 27.9, "spike_events": 21, "spike_charge_level": 0.237,
@@ -298,6 +301,19 @@ the forecast runs there use synthetic forecast books, labelled as test doubles),
   grace period; 409 after done; 404; start again after a cancel; a cancel during the store; the real runner),
   `tests/test_backtest_store_pg.py` (no rows from a cancelled job; a finished job's rows are stored by the job),
   `tests/test_backtest_results.py` (`--records-out`).
+
+### Requests for integrator (AI gains, cancel)
+
+1. docs/API.md AiGains: add `fleet_size` to the year example; say which fields can be absent (the eight insight
+   fields for runs stored before insights; `best_possible_per_battery_usd_year` and `share_of_best` without a
+   hindsight run; the AI entry and `uplift` for a pitch year without an AI run), that `spike_charge_level` is null
+   in a year without spikes, and that `spike_events` counts a spike once per city it hits.
+2. Re-run the cloud backtests (commands above) so Cloud SQL's records carry `metrics.insights`; until then the page
+   gets the money fields only.
+3. docs/API.md cancel: the 404 code is `unknown_job` (as `GET /backtest/{id}`); the 409 message is "That full-year
+   run has already finished."
+4. The insights CLI's JSON keys now use the API's names (`surplus_mwh`, `spike_mwh`, `spike_events`,
+   `spike_charge_level` instead of `surplus_absorbed_mwh` and `scarcity_*`); the numbers are the same.
 
 ### Picking the race's demo day: `--daily`
 

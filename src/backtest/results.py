@@ -183,7 +183,9 @@ def build_ai_gains(records: Sequence[dict], *, pitch_year: int, settings: dict |
     - best_possible_per_battery_usd_year: that year's newest hindsight run on the same fleet; it and every
       share_of_best (per-battery earnings / it) are absent when the year has none.
     - The insight fields come from metrics.insights. A run stored before insights existed has none of them:
-      they are left out of its StrategyGains (the money fields are always there).
+      they are left out of its StrategyGains (the money fields are always there). `spike_events` is the year's
+      count (spikes are defined by prices), the same on every strategy, taken from any run of the year with it.
+    - Each year also carries `fleet_size` (the batteries its runs simulated).
     Labels come from config backtest.labels. Years: the pitch year first, then the others, newest first.
     """
     from src.backtest.runner import HINDSIGHT, backtest_settings
@@ -215,10 +217,16 @@ def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
 
     best = runs.get(HINDSIGHT)
     best_pb = float(best["per_battery_avg_usd"]) if best else None
-    out: dict = {"year": int(year), "is_pitch": bool(is_pitch)}
+    main = runs.get(BASELINE) or runs.get(AI) or next(iter(runs.values()))
+    out: dict = {"year": int(year), "is_pitch": bool(is_pitch), "fleet_size": (main.get("fleet") or {}).get("size")}
     if best_pb is not None:
         out["best_possible_per_battery_usd_year"] = _money(best_pb)
-    out["strategies"] = {name: _strategy_gains(name, runs[name], best_pb, labels) for name in GAIN_ORDER if name in runs}
+    # spikes are defined by prices, so their count is the year's, the same for every strategy (taken from any run
+    # that has insights, so a run stored before insights existed shows it too)
+    events = next((r["insights"]["spike_events"] for r in runs.values()
+                   if isinstance(r.get("insights"), dict) and r["insights"].get("spike_events") is not None), None)
+    out["strategies"] = {name: _strategy_gains(name, runs[name], best_pb, labels, spike_events=events)
+                         for name in GAIN_ORDER if name in runs}
     ai, base = runs.get(AI), runs.get(BASELINE)
     if ai is not None and base is not None:
         diff = float(ai["per_battery_avg_usd"]) - float(base["per_battery_avg_usd"])
@@ -229,16 +237,17 @@ def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
     return out
 
 
-def _strategy_gains(name: str, run: dict, best_pb: float | None, labels: dict) -> dict:
+def _strategy_gains(name: str, run: dict, best_pb: float | None, labels: dict, *, spike_events: int | None = None) -> dict:
     per_battery = float(run["per_battery_avg_usd"])
     out = {"label": labels.get(name) or run.get("label") or name, "per_battery_usd_year": _money(per_battery),
            "fleet_usd_year": _money(run["fleet_total_usd"])}
     if best_pb:
         out["share_of_best"] = round(per_battery / best_pb, 3)
-    insights = run.get("insights")
-    if isinstance(insights, dict):
-        for key, digits in INSIGHT_FIELDS:
-            if key in insights:
-                value = insights[key]
-                out[key] = value if value is None or digits is None else round(float(value), digits)
+    insights = run.get("insights") if isinstance(run.get("insights"), dict) else {}
+    for key, digits in INSIGHT_FIELDS:
+        if key == "spike_events" and spike_events is not None:
+            out[key] = int(spike_events)
+        elif key in insights:
+            value = insights[key]
+            out[key] = value if value is None or digits is None else round(float(value), digits)
     return out

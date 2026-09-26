@@ -94,6 +94,7 @@ def test_the_race_runs_next_to_the_live_fleet(co):
     lead = end["detail"]["live_minus_race_usd"]
     word = "ahead of" if lead > 0 else "behind"
     assert end["message"] == f"The evening-peak rule is now ${abs(lead):,.0f} {word} the simple rule."
+    assert end["severity"] == ("good" if lead > 0 else "info")  # good only when the live strategy leads
     assert end["detail"]["race"]["during_spike_usd"] > 0  # the simple rule was still selling at $1,757
     # the charge levels are the fleets' just before the spike's first 5-minute step (tick 36)
     assert race_level == pytest.approx(float(np.average(
@@ -173,4 +174,27 @@ def test_the_ai_races_a_live_simple_rule(co, monkeypatch):
     assert start["message"].startswith("Prices jumped to $1,757 in all four cities. The AI fleet had ")
     assert re.fullmatch(r"The AI is now \$[\d,]+ (ahead of|behind) the simple rule\.|The AI and the simple rule have "
                         r"earned the same so far\.", end["message"])
+    lead = end["detail"]["live_minus_race_usd"]  # the live simple rule vs the AI race
+    assert end["severity"] == ("good" if round(lead) > 0 else "info")
+    assert ("ahead of" in end["message"]) == (lead < 0)  # the AI (the race) is named first
     assert co.snapshot()["race"]["label"] == "AI forecast (TimesFM-3)"
+
+
+def test_labels_come_from_config(monkeypatch):
+    """The race's label and the run_started sentence use config backtest.labels, like the Results and /settings."""
+    url = redis_url()
+    if not reachable(url):
+        pytest.skip(f"Redis not reachable at {url}")
+    raw = load_raw_config()
+    raw = {**raw, "backtest": {**raw["backtest"], "labels": {**raw["backtest"]["labels"], "bands": "Simple rule (v1)",
+                                                               "peak": "Evening peak (6-9 pm)"}}}
+    c = Coordinator(url=url, prefix=f"test:race:{uuid.uuid4().hex[:8]}:", fleet_size=40, workers=1, raw=raw)
+    try:
+        c.boot()
+        c.start({"start_utc": SUMMER_SPIKE, "speed_tps": "max", "strategy": "peak"}, max_ticks=1, internal=True)
+        assert c.run.race.label == "Simple rule (v1)" and c.snapshot()["race"]["label"] == "Simple rule (v1)"
+        started = next(e for e in c.events if e["kind"] == "run_started")
+        assert "using the evening peak (6-9 pm)." in started["message"]
+    finally:
+        c.shutdown()
+        c.cleanup_keys()

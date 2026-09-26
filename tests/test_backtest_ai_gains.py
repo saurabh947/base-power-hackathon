@@ -65,7 +65,8 @@ def test_the_rules():
     records = [
         # the pitch set (2025), plus an older flagged forecast run that the newest one replaces
         rec("forecast", 2025, 190.95, pitch=True), rec("bands", 2025, 123.67, pitch=True),
-        rec("peak", 2025, 136.70, pitch=True), rec("hindsight", 2025, 421.29, pitch=True),
+        rec("peak", 2025, 136.70, pitch=True, insights=False),  # a pitch run stored before insights existed
+        rec("hindsight", 2025, 421.29, pitch=True),
         rec("forecast", 2025, 150.0, pitch=True, finished="2026-09-20T10:00:00Z"),
         rec("bands", 2025, 99.0, finished="2026-09-27T10:00:00Z"),  # newer but not in the pitch set: ignored
         # 2024: the newest complete set on the pitch set's fleet; old two-city runs and a newer bands run
@@ -81,7 +82,9 @@ def test_the_rules():
     assert [y["year"] for y in gains["years"]] == [2025, 2024] and [y["is_pitch"] for y in gains["years"]] == [True,
                                                                                                              False]
     y25, y24 = gains["years"]
-    assert list(y25) == ["year", "is_pitch", "best_possible_per_battery_usd_year", "strategies", "uplift"]
+    assert list(y25) == ["year", "is_pitch", "fleet_size", "best_possible_per_battery_usd_year", "strategies",
+                         "uplift"]
+    assert y25["fleet_size"] == y24["fleet_size"] == 20000
     assert list(y25["strategies"]) == ["forecast", "bands", "peak"]
     ai = y25["strategies"]["forecast"]
     assert ai["label"] == "AI forecast (TimesFM-3)" and y25["strategies"]["bands"]["label"] == "Simple rule"
@@ -94,6 +97,10 @@ def test_the_rules():
     assert y25["uplift"] == {"per_battery_usd_year": 67.28, "pct": round(67.28 / 123.67, 3),
                              "fleet_usd_year": round(67.28 * 20000, 2)}
     assert y25["best_possible_per_battery_usd_year"] == 421.29
+    # spikes are defined by prices: one count for the year, on every strategy (even a run without insights)
+    assert [s["spike_events"] for s in y25["strategies"].values()] == [21, 21, 21]
+    assert set(y25["strategies"]["peak"]) == {"label", "per_battery_usd_year", "fleet_usd_year", "share_of_best",
+                                              "spike_events"}
     # 2024: the four-city set, whose runs predate metrics.insights: money only, no insight fields
     assert y24["strategies"]["forecast"]["per_battery_usd_year"] == 271.45
     assert y24["strategies"]["bands"]["per_battery_usd_year"] == 113.71
@@ -177,7 +184,10 @@ def test_the_service_serves_the_stored_runs(stored, monkeypatch):
     assert set(gains) == set(example) and (gains["ai"], gains["baseline"]) == ("forecast", "bands")
     assert [(y["year"], y["is_pitch"]) for y in gains["years"]] == [(2025, True), (2024, False)]
     for y in gains["years"]:
-        assert set(y) == set(example["years"][0]) and list(y["strategies"]) == ["forecast", "bands", "peak"]
+        # docs/API.md's AiGains year plus fleet_size (the website asked for it; see docs/notes/backtest.md)
+        assert set(y) == set(example["years"][0]) | {"fleet_size"} and y["fleet_size"] == 20
+        assert list(y["strategies"]) == ["forecast", "bands", "peak"]
+        assert len({s["spike_events"] for s in y["strategies"].values()}) == 1  # the year's count
         assert set(y["uplift"]) == set(example["years"][0]["uplift"])
         mine = runs[y["year"]]
         assert y["best_possible_per_battery_usd_year"] == round(mine["hindsight"]["per_battery_avg_usd"], 2)

@@ -392,8 +392,10 @@ docs/API.md `Race` and the `race_update` event. Code: `src/sim/race.py`, hooks i
   as one number, weighted by each city's batteries; otherwise the highest ("as much as"). The AI is named first when
   it is in the race. Detail: `phase: "spike_started"`, the prices, both charge levels.
 - End: the lead over the whole run so far ("ahead of" / "behind" / "have earned the same so far"). Severity `good`
-  when the side named first is ahead. Detail: `phase: "spike_ended"`, both revenues, what each earned during the
-  spike, `live_minus_race_usd`.
+  when the live strategy leads (by a dollar or more), `info` otherwise. Detail: `phase: "spike_ended"`, both
+  revenues, what each earned during the spike, `live_minus_race_usd`.
+- Labels everywhere come from config `backtest.labels`: the race's `label`, the `run_started` sentence, the
+  Results, `/settings` and AI gains ("AI forecast (TimesFM-3)", "Simple rule", "Evening peak").
 - Real output (live evening peak, 20,000 batteries, the summer_spike preset from 6 pm at 90%, 2 ticks/s):
   *"Prices jumped to $1,757 in all four cities. The evening-peak rule had 20% charge left; the simple rule had
   30%."* then *"The evening-peak rule is now $36,904 behind the simple rule."* With the AI live (the default) the
@@ -430,6 +432,15 @@ docs/API.md `Race` and the `race_update` event. Code: `src/sim/race.py`, hooks i
   `python -m src.sim.coordinator bench --ticks 288 --speed max --strategy peak` (the bench now prints `race_ms_p50`,
   `race_ms_p99`, `race_ms_max`, the race block and the race events). `peak` live means the race runs the simple
   rule, the race of the default demo.
+
+### Requests for integrator (race)
+
+1. docs/API.md Race: `race` is also `null` while a run is `starting` and when there is nothing to race (a live
+   simple rule with no AI forecasts in any city); with forecasts for only some cities, the other cities race the
+   simple rule against itself.
+2. docs/API.md `race_update`: the end event's severity is `good` when the live strategy leads, else `info`; `detail`
+   carries `phase` (`spike_started` / `spike_ended`), the charge levels or revenues, and `live_minus_race_usd`.
+3. `FLEET_RACE=0` switches the race off without a code change (a new Cloud Run revision with that env var).
 
 ## Open issues
 

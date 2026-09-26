@@ -163,6 +163,10 @@ def test_websocket_messages_match_the_contract(live):
         state = client.get("/state").json()
         assert set(state) == SNAPSHOT_KEYS and state["run_id"] == run_id and len(state["history"]) >= len(seen)
         assert state["sim_time_utc"].endswith("Z") and state["speed_tps"] == 10
+        # GET /state carries the same race object as the snapshot and the frames
+        assert set(state["race"]) == RACE_KEYS and state["race"]["label"] == "Simple rule"
+        assert state["race"]["live_minus_race_usd"] == pytest.approx(
+            state["totals"]["revenue_usd"] - state["race"]["revenue_usd"], abs=1e-5)
         assert client.get("/health").json()["status"] == "running"
         # a reset ends the run: idle right away, carrying the run that just ended
         assert client.post("/run/reset").json() == {"status": "idle"}

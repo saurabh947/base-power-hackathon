@@ -916,6 +916,7 @@ class Coordinator:
     # --- the live race (docs/API.md Race) --------------------------------------------------------
 
     def strategy_label(self, name: str) -> str:
+        """The UI label of a strategy: config backtest.labels (the race, the Results and /settings use them too)."""
         labels = (self.raw.get("backtest") or {}).get("labels") or {}
         return labels.get(name) or ctl.STRATEGY_LABELS.get(name, (name,))[0]
 
@@ -1005,8 +1006,8 @@ class Coordinator:
         spike, race.spike = race.spike, None
         race_usd = race.revenue_usd()
         lead = run.revenue_usd - race_usd
-        ahead = round(race_mod.subject_lead(live, other, lead)) > 0  # the side named first (the AI) is ahead
-        self._emit("race_update", "good" if ahead else "info", race_mod.spike_ended_message(live, other, lead),
+        live_leads = round(lead) > 0  # severity good when the live strategy leads, info otherwise
+        self._emit("race_update", "good" if live_leads else "info", race_mod.spike_ended_message(live, other, lead),
                    sim_ts=ts, detail={
                        "phase": "spike_ended", "spike_started_utc": to_utc_iso(spike["ts"]),
                        "live": {"strategy": live, "revenue_usd": round(run.revenue_usd, 2),
@@ -1019,7 +1020,7 @@ class Coordinator:
         """One sentence: where the replay starts, how fast, and which decision method runs where."""
         where = f"{ctl.local_clock(run.start_ts)} ({ctl.TIME_ZONE_PHRASE})"
         speed = ctl.speed_phrase(run.settings["speed_tps"])
-        label = ctl.STRATEGY_LABELS.get(run.strategy_name, (run.strategy_name,))[0]
+        label = self.strategy_label(run.strategy_name)  # config backtest.labels, as the race, results and settings
         fallback = [loc for loc in self.layout.locations if loc in run.strategy_fallback]
         if not fallback:
             return f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)}.", "info"
