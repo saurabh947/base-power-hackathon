@@ -88,6 +88,8 @@ describe('a controller taken offline', () => {
     expect(gaugeWords(g, null).detail).toBe(
       'Its 1,000 batteries in Houston are offline: half their charge was lost (it had 60%), and the rest holds still.',
     );
+    // Empty already: nothing was lost, so nothing is marked or said about it.
+    expect(gaugeWords(one(worker(2, { usable_charge: 0 }), null, [2]), null).detail).toBe('Its 1,000 batteries in Houston are offline and hold still.');
   });
 });
 

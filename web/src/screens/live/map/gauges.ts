@@ -179,9 +179,10 @@ export function gaugeWords(g: Gauge, scope: Scope): { title: string; detail: str
       detail = 'Restarting. It takes its batteries back in a moment.';
       break;
     default:
-      detail = g.offline
-        ? `Its ${runs}${where} are offline: half their charge was lost${g.ghost !== null ? ` (it had ${Math.round(g.ghost * 100)}%)` : ''}, and the rest holds still.`
-        : `Working, running ${runs}${where}.`;
+      if (!g.offline) detail = `Working, running ${runs}${where}.`;
+      else if (g.ghost !== null) {
+        detail = `Its ${runs}${where} are offline: half their charge was lost (it had ${Math.round(g.ghost * 100)}%), and the rest holds still.`;
+      } else detail = `Its ${runs}${where} are offline and hold still.`;
   }
   if (g.value === null && g.look !== 'crashed') detail += ' Charge not known.';
   return { title, detail };
