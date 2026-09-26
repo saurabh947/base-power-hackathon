@@ -360,3 +360,30 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
   - `battery_status` is 10 KB of packed codes per frame, about 19 KB per frame at 2 ticks/s. Computing it costs 0.05 ms per tick.
   - Battery positions are seeded inside 12–28 real city and suburb centres per metro (`src/sim/geo.py`). They are simulated, not real addresses.
 - **Start after Reset.** `/run/start` waits up to 15 s for the controllers, and otherwise returns 503 `simulator_restarting`. This fixes the 503s seen in the Cloud Run logs.
+
+## Live Texas map (deployed 2026-09-26)
+
+- **Look.** The Live screen is a full-page map: dark gray (#25282c), Texas as a bright red outline only, from the public-domain US Census 2023 1:5M file, simplified to 351 points and drawn in EPSG:3083.
+- **Dots.** The 20,000 batteries are grouped into a honeycomb of dots whose area follows the battery count. The spacing is 6–13 px (95 cells per map height, made bolder after review), so each metro reads at statewide scale.
+- **Dot colours:**
+  - waiting: green
+  - selling: bright green with a glow
+  - charging: green with a ring
+  - offline: gray
+  - controller crashed: a dark pulsing flash, then relit when its batteries are handed over
+
+  The flash is also triggered from the worker events, for speeds where a frame can miss code 4.
+- **Cities.** Dallas–Fort Worth, Houston, San Antonio and Austin are clickable, with an "All of Texas" chip and Esc to go back. Selecting a city switches the corners to its price, earnings, power, batteries and controllers.
+- **Corners:**
+  - top-left: clock and prices
+  - top-right: money and power asked for vs delivered
+  - bottom-left: controls and the presenter-only crash button
+  - bottom-right: controllers, batteries and events
+
+  "Show charts" opens the earlier detailed layout.
+- **Measured:**
+  - About 450 dots.
+  - A frame takes 0.5 ms to decode and restyle, and 0.1–0.2 ms to draw.
+  - WebSocket permessage-deflate is negotiated end to end through Cloud Run, so a 19 KB frame travels as about 1 KB.
+- **Tests:** 332 website tests, covering the projection against PROJ reference values, the outline, status-code unpacking, cell aggregation, city selection and the flash.
+- **Live:** https://fleet-sim.vercel.app (backend revision fleet-sim-00003).
