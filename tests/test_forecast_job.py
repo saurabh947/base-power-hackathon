@@ -46,7 +46,8 @@ def test_one_day_writes_every_issue_time_with_no_look_ahead(tmp_path):
     plan = make(tmp_path, "--start", "2025-05-16", "--limit-days", "1")
     fake = FakeModel()
     result = job.run(plan, model=fake)
-    assert result["forecasts"] == 24 * 2 + 24  # hourly RT for 2 locations + hourly demand
+    n_loc = len(load_settings().locations)
+    assert result["forecasts"] == 24 * n_loc + 24  # hourly RT for every city + hourly demand
 
     houston = ForecastBook.load("LZ_HOUSTON", model="timesfm-3.0", source="parquet", cache_dir=tmp_path)
     assert len(houston) == 24 and houston.horizon == 96 and houston.step_minutes == 15
@@ -72,7 +73,7 @@ def test_a_model_without_covariates_runs_univariate(tmp_path):
     plan = make(tmp_path, "--start", "2025-05-16", "--limit-days", "1", "--series", "rt_price")
     fake = FakeModel()
     fake.supports_covariates = False
-    assert job.run(plan, model=fake)["forecasts"] == 48
+    assert job.run(plan, model=fake)["forecasts"] == 24 * len(load_settings().locations)
     assert fake.calls and all(cov is None for _, _, cov in fake.calls)
 
 
@@ -81,7 +82,8 @@ def test_resume_skips_what_is_stored(tmp_path):
     job.run(plan, model=FakeModel())
     again = FakeModel()
     result = job.run(plan, model=again)
-    assert result["forecasts"] == 0 and result["skipped_existing"] == 48 and again.calls == []
+    stored = 24 * len(load_settings().locations)
+    assert result["forecasts"] == 0 and result["skipped_existing"] == stored and again.calls == []
 
 
 def test_demand_skips_issue_times_with_too_little_history(tmp_path):
@@ -97,8 +99,16 @@ def test_full_year_plan_counts():
     plan = job.make_plan(args, job.apply_overrides(load_settings(), args))
     assert plan.start == pd.Timestamp("2025-01-01T06:00Z") and plan.end == pd.Timestamp("2026-01-01T06:00Z")
     d = job.dry_run(plan)
-    assert d["forecasts"] == {"rt_price/LZ_HOUSTON": 8760, "rt_price/LZ_NORTH": 8760, "demand/ERCOT": 8760}
-    assert 400 < d["tflop"] < 600  # the budget the job was sized for (docs/notes/forecast.md)
+    locations = load_settings().locations
+    assert d["forecasts"] == {**{f"rt_price/{loc}": 8760 for loc in locations}, "demand/ERCOT": 8760}
+    # the budget the job was sized for (docs/notes/forecast.md) was 2 cities; each city adds the same RT share
+    two = job.dry_run(job.make_plan(*(lambda a: (a, job.apply_overrides(load_settings(), a)))(
+        job.build_parser().parse_args(["--year", "2025", "--out", "parquet", "--locations", *locations[:2]]))))
+    demand = job.dry_run(job.make_plan(*(lambda a: (a, job.apply_overrides(load_settings(), a)))(
+        job.build_parser().parse_args(["--year", "2025", "--out", "parquet", "--series", "demand"]))))["tflop"]
+    assert 400 < two["tflop"] < 600
+    per_city = (two["tflop"] - demand) / 2
+    assert d["tflop"] == pytest.approx(demand + per_city * len(locations), rel=1e-3)
 
 
 def test_cloud_run_tasks_split_the_days_contiguously(monkeypatch):
@@ -121,8 +131,12 @@ def test_every_minutes_override_must_fit_both_grids(tmp_path):
 
 
 def test_chunks_fill_batches(tmp_path):
-    assert job.chunk_days(make(tmp_path)) == job.CHUNK_DAYS  # hourly: 4 days = 192 RT forecasts
-    assert job.chunk_days(make(tmp_path, "--every-minutes", "1740")) > 60  # sparse sampling: longer chunks
+    import math
+
+    assert job.chunk_days(make(tmp_path)) == job.CHUNK_DAYS  # hourly: 4 days = 4 x 24 x cities RT forecasts
+    sparse = make(tmp_path, "--every-minutes", "1740")  # sparse sampling: longer chunks, still ~4 full batches
+    per_day = len(sparse.locations) * 1440 / 1740
+    assert job.chunk_days(sparse) == math.ceil(4 * sparse.settings.batch_size / per_day) > job.CHUNK_DAYS
 
 
 def test_parquet_rows_are_upserts(tmp_path):

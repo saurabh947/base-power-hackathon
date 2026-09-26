@@ -22,11 +22,14 @@ def _prices_loaded() -> bool:
         return False
     from src.db import connect
 
+    from src.config import load_config
+
+    locations = list(load_config().fleet.locations)
     start = datetime(2025, 5, 9, 21, tzinfo=UTC)
     with connect() as conn:
-        n = conn.execute("SELECT count(*) FROM prices WHERE market = 'RT' AND location IN ('LZ_HOUSTON', 'LZ_NORTH') "
-                         "AND ts >= %s AND ts < %s", (start, start + timedelta(days=8))).fetchone()[0]
-    return n >= 2 * 8 * 96
+        n = conn.execute("SELECT count(*) FROM prices WHERE market = 'RT' AND location = ANY(%s) "
+                         "AND ts >= %s AND ts < %s", (locations, start, start + timedelta(days=8))).fetchone()[0]
+    return n >= len(locations) * 8 * 96
 
 
 def test_postgres_prices_replay_like_the_snapshot(monkeypatch):
@@ -45,6 +48,7 @@ def test_postgres_prices_replay_like_the_snapshot(monkeypatch):
     assert any(isinstance(f, PostgresReplayFeed) and f.market == "RT" for f in coordinator._FEEDS.values())
     a, b = runs["snapshot"], runs["postgres"]
     assert a["summary"] == b["summary"] and np.array_equal(a["soc"], b["soc"])
+    assert all(usd != 0 for usd in a["summary"]["per_location_usd"].values())  # every city traded on real prices
     for loc in a["locations"]:
         assert np.array_equal(a["locations"][loc]["target_kw"], b["locations"][loc]["target_kw"])
         assert np.array_equal(a["locations"][loc]["delivered_kwh"], b["locations"][loc]["delivered_kwh"])

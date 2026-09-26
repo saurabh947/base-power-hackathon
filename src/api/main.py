@@ -9,6 +9,7 @@ which SIGKILLs a worker process found in the worker registry (presenter only).
 
 Env: REDIS_URL, FLEET_REDIS_PREFIX, CORS_ORIGINS (comma-separated), PRESENTER_PASSCODE_FILE /
 PRESENTER_PASSCODE, FLEET_FRAME_INTERVAL_S (tests), FLEET_CONTROL_TIMEOUT_S,
+FLEET_START_READY_TIMEOUT_S (how long POST /run/start waits for a restarting simulator, default 15),
 FLEET_ALLOW_MAX_SPEED=1 (tests/bench only), FLEET_PARENT_PID (set by the launcher).
 """
 from __future__ import annotations
@@ -24,12 +25,12 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.api import presenter
-from src.api.backend import Backend, kill_worker
+from src.api.backend import Backend, idle_battery_status, kill_worker
 from src.api.limits import Limits, retry_after
 from src.api.live import LiveCursor, _plain, frame_message, idle_message, snapshot_message
 from src.config import REPO_ROOT, load_config, load_raw_config
@@ -93,6 +94,13 @@ def idle_interval_s() -> float:
 
 def control_timeout_s() -> float:
     return _env_float("FLEET_CONTROL_TIMEOUT_S", float(API_CFG.get("control_timeout_s", 4.0)))
+
+
+def start_ready_timeout_s() -> float:
+    return _env_float("FLEET_START_READY_TIMEOUT_S", float(API_CFG.get("start_ready_timeout_s", 15.0)))
+
+
+RESTARTING_RETRY_S = 5
 
 
 def allow_max_speed() -> bool:
@@ -258,6 +266,32 @@ async def get_state():
     return await _call(snapshot_message, backend())
 
 
+def _simulator_ready(snap: dict | None) -> bool:
+    """False before the coordinator's first snapshot (cold start) and while it is (re)spawning workers after a
+    boot or a reset (its snapshot says 'restarting' until every worker has sent its first heartbeat)."""
+    return snap is not None and not snap.get("restarting") and not snap.get("workers_starting")
+
+
+async def _wait_until_ready(timeout_s: float) -> None:
+    """Hold a Start while a Reset (or a cold start) is still bringing the 20 controllers up, so the Start
+    that follows a Reset succeeds instead of timing out. 503 simulator_restarting if they aren't up in time."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, timeout_s)
+    while True:
+        snap = await _call(lambda: backend().coordinator_snapshot())
+        if _simulator_ready(snap):
+            return
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            if snap is None:  # no coordinator has spoken at all: not a restart, it isn't running
+                raise ctl.ControlError(503, "simulator_unavailable", "The simulator isn't running yet. "
+                                       "Please try again in a few seconds.")
+            n = RESTARTING_RETRY_S
+            raise ctl.ControlError(503, "simulator_restarting", f"The simulator is still restarting its controllers. "
+                                   f"Please try again in {n} seconds.", retry_after_s=n)
+        await asyncio.sleep(min(0.2, remaining))
+
+
 @app.post("/run/start", status_code=202)
 async def run_start(request: Request):
     body = await _body(request)
@@ -266,6 +300,7 @@ async def run_start(request: Request):
     wait = state.limits.run_start.hit()
     if wait is not None:
         raise _limited(wait)
+    await _wait_until_ready(start_ready_timeout_s())
     result = await _call(_control, "start", editable)
     return JSONResponse(status_code=202, content=result)
 
@@ -309,6 +344,25 @@ async def availability(request: Request):
 @app.get("/batteries/{battery_id}")
 async def get_battery(battery_id: str):
     return await _call(lambda: backend().battery(battery_id))
+
+
+LAYOUT_MAX_AGE_S = 300
+_layout_bodies: dict[str, bytes] = {}
+
+
+@app.get("/fleet/layout")
+async def fleet_layout(request: Request):
+    """docs/API.md Layout. Built once per (size, shares, seed); the ETag is its version (304 when unchanged)."""
+    layout = await run_in_threadpool(lambda: backend().fleet_layout())
+    version = layout["version"]
+    etag = f'"{version}"'
+    headers = {"ETag": etag, "Cache-Control": f"public, max-age={LAYOUT_MAX_AGE_S}"}
+    if etag in [t.strip() for t in request.headers.get("if-none-match", "").split(",")]:
+        return Response(status_code=304, headers=headers)
+    body = _layout_bodies.get(version)
+    if body is None:
+        body = _layout_bodies[version] = json.dumps(layout, ensure_ascii=False).encode("utf-8")
+    return Response(content=body, media_type="application/json", headers=headers)
 
 
 def _require_presenter(request: Request) -> None:
@@ -502,4 +556,4 @@ def _fallback_snapshot() -> dict:
     return {"type": "snapshot", "run_id": None, "status": "idle", "sim_time_utc": None,
             "speed_tps": idle["speed_tps"], "settings": None, "history": [], "totals": idle["totals"],
             "workers": [], "failed_commands": {"count": 0, "recent": []}, "availability": idle["availability"],
-            "events": [], "forecast": {}}
+            "events": [], "forecast": {}, "battery_status": idle_battery_status(CFG.fleet.size)}

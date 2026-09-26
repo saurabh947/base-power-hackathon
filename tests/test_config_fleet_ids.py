@@ -33,7 +33,13 @@ def test_repo_config_holds_the_agreed_values():
     assert (cfg.sim.tick_seconds, cfg.sim.decision_lag_ticks) == (300, 3)
     assert cfg.sim.dt_hours == pytest.approx(5 / 60) and cfg.sim.ticks_per_day == 288
     assert (cfg.fleet.size, cfg.fleet.workers) == (20000, 20)
-    assert dict(cfg.fleet.locations) == {"LZ_HOUSTON": 0.5, "LZ_NORTH": 0.5}
+    # the Texas Triangle by metro population, in this order (contiguous id blocks, docs/API.md)
+    assert list(cfg.fleet.locations.items()) == [("LZ_HOUSTON", 0.35), ("LZ_NORTH", 0.40), ("LZ_CPS", 0.13),
+                                                 ("LZ_AEN", 0.12)]
+    from src.sim.fleet import location_counts
+
+    assert location_counts(cfg.fleet.size, cfg.fleet.locations) == {"LZ_HOUSTON": 7000, "LZ_NORTH": 8000,
+                                                                    "LZ_CPS": 2600, "LZ_AEN": 2400}
     b = cfg.battery
     assert b.power_kw == (5.0, 11.5) and b.capacity_kwh == (10.0, 20.0) and b.cap_power_at_capacity
     assert b.efficiency == 0.90 and (b.soc_min, b.soc_max) == (0.20, 1.00)

@@ -38,7 +38,7 @@ def test_full_year_full_fleet_under_target(ctx, name, capsys):
     m = record["metrics"]
     with capsys.disabled():
         print(f"\n[speed] {name}: {sum(f.size for f in ctx.fleets.values()):,} batteries x "
-              f"{m['ticks_replayed']:,} ticks x 2 locations; lag 3 replay {m['replay_seconds']:.1f}s, "
+              f"{m['ticks_replayed']:,} ticks x {len(ctx.fleets)} locations; lag 3 replay {m['replay_seconds']:.1f}s, "
               f"lag 0 replay {m['lag0']['replay_seconds']:.1f}s, total {seconds:.1f}s (prices loaded in "
               f"{ctx.load_seconds:.1f}s)")
         print(f"[speed] {name}: ${m['per_battery_usd_year']:,.2f}/battery/yr, fleet ${m['fleet_usd_year']:,.0f}, "

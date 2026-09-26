@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
-AREA_NAMES = {"LZ_HOUSTON": "Houston", "LZ_NORTH": "Dallas–Fort Worth", "LZ_SOUTH": "San Antonio",
-              "LZ_WEST": "West Texas"}
+from src.sim import geo
+
 FORECAST_LICENCE = ("The AI forecast uses Google's TimesFM-3 research weights, licensed for non-commercial use; "
                     "a production version would use TimesFM 2.5 (Apache-2.0).")
 
@@ -124,12 +124,15 @@ def assumptions(year, source, ran, skipped, headline, ceiling, labels) -> list[s
 
 
 def _split(by_location: dict, order: list | None = None) -> str:
+    """'in all four cities: Houston (7,000), Dallas–Fort Worth (8,000), San Antonio (2,600) and Austin (2,400)'.
+    City names come from src.sim.geo, the one place that maps a load zone to a city."""
     locs = [k for k in (order or []) if k in by_location] + [k for k in by_location if k not in (order or [])]
-    names = [AREA_NAMES.get(loc, loc) for loc in locs]
+    names = [geo.city_name(loc) for loc in locs]
     counts = [by_location[loc] for loc in locs]
     if len(names) == 2 and counts[0] == counts[1]:
-        return f"split evenly between the {names[0]} and {names[1]} areas"
-    return "in " + ", ".join(f"the {n} area ({c:,})" for n, c in zip(names, counts))
+        return f"split evenly between {names[0]} and {names[1]}"
+    parts = geo.join_names([f"{n} ({c:,})" for n, c in zip(names, counts)])
+    return f"in {geo.cities_phrase(locs, total=len(locs))}: {parts}" if len(locs) > 1 else f"in {parts}"
 
 
 def _money(x) -> float | None:

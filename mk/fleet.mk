@@ -5,7 +5,7 @@ FLEET_REDIS_PORT ?= 6442
 FLEET_REDIS_URL ?= redis://localhost:$(FLEET_REDIS_PORT)/0
 FLEET_API_PORT ?= 8442
 FLEET_TESTS = tests/test_fleet_*.py tests/test_recovery.py tests/test_idempotency.py tests/test_api_*.py \
-              tests/test_redis_*.py tests/test_contracts_battery.py
+              tests/test_redis_*.py tests/test_contracts_battery.py tests/test_geo.py tests/test_battery_status.py
 
 .PHONY: fleet-up fleet-down fleet-test fleet-test-all fleet-m2 fleet-m3 fleet-m3-2tps fleet-parity fleet-serve
 
@@ -28,20 +28,23 @@ fleet-test-all:
 fleet-m2:
 	REDIS_URL=$(FLEET_REDIS_URL) $(UV) run python -m src.sim.coordinator bench --ticks 288 --speed max --strategy bands
 
-# M3: SIGKILL worker 7 during max discharge at max speed; prints error % per tick after the kill.
+# M3: SIGKILL worker 17 (600 San Antonio + 400 Austin batteries) during max discharge at max speed;
+# prints error % per tick after the kill, the controller-down batteries per tick and who holds what after.
+FLEET_KILL_WORKER ?= 17
 fleet-m3:
 	REDIS_URL=$(FLEET_REDIS_URL) $(UV) run python -m src.sim.coordinator bench --ticks 24 --speed max \
-	  --strategy peak --start-utc 2025-05-16T22:50:00Z --soc 0.9 --kill-at 6 --kill-worker 7
+	  --strategy peak --start-utc 2025-05-16T22:50:00Z --soc 0.9 --kill-at 6 --kill-worker $(FLEET_KILL_WORKER)
 
 # M3 at the demo speed, 2 ticks/s (~12 s).
 fleet-m3-2tps:
 	REDIS_URL=$(FLEET_REDIS_URL) $(UV) run python -m src.sim.coordinator bench --ticks 24 --speed 2 \
-	  --strategy peak --start-utc 2025-05-16T22:50:00Z --soc 0.9 --kill-at 6 --kill-worker 7
+	  --strategy peak --start-utc 2025-05-16T22:50:00Z --soc 0.9 --kill-at 6 --kill-worker $(FLEET_KILL_WORKER)
 
-# One real sim day through the worker fleet and through src.backtest: bit-identical SoC, kWh and ledger.
+# One real sim day through the worker fleet and through src.backtest: bit-identical SoC, kWh and ledger
+# (four cities, 20 workers; 2025-02-19 at the full 20,000, the day worker 17's two cities part ways).
 fleet-parity:
 	REDIS_URL=$(FLEET_REDIS_URL) $(UV) run pytest tests/test_fleet_backtest_parity.py tests/test_fleet_parity.py \
-	  tests/test_fleet_strategy_parity.py -v
+	  tests/test_fleet_strategy_parity.py -v -s
 
 # The whole backend (coordinator + 20 workers + API on :$(FLEET_API_PORT)) against the fleet Redis.
 # Presenter mode needs PRESENTER_PASSCODE (dev) or a passcode file at PRESENTER_PASSCODE_FILE.

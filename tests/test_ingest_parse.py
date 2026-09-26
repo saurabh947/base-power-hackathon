@@ -327,13 +327,15 @@ def test_real_fuel_mix_2025_equals_the_snapshot_mw():
     assert np.array_equal(wide.to_numpy(), snap.to_numpy())
 
 
-def test_real_native_load_2025_matches_the_snapshot_except_its_fall_back_swap():
+def test_real_native_load_2025_matches_the_snapshot_including_its_corrected_fall_back_hour():
+    """data/snapshot/README.md, correction of 2026-09-25: the snapshot's 2025-11-02 fall-back passes are in
+    ERCOT's order now (they used to be swapped), so the parsed workbook equals it everywhere, to the last bit
+    of the snapshot's rounding."""
     _, data = parse.read_zip_member(_raw("Native_Load_2025.zip"))
     mine = parse.parse_native_load(parse.read_workbook(data))["ERCOT"]
     snap = pd.read_parquet(SNAP / "ercot_hourly_native_load_2025.parquet")
     ref = pd.Series(snap["ERCOT"].to_numpy(), index=pd.DatetimeIndex(snap["Interval Start"]).tz_convert("UTC"))
     assert mine.index.equals(ref.index)
     a, b = utc(2025, 11, 2, 6), utc(2025, 11, 2, 7)
-    assert mine[a] == ref[b] and mine[b] == ref[a]  # the snapshot has the two passes swapped
-    rest = mine.drop([a, b])
-    assert np.allclose(rest.to_numpy(), ref.drop([a, b]).to_numpy(), rtol=1e-15, atol=0)
+    assert mine[a] != mine[b]  # the two passes of the repeated hour really differ, so their order is tested
+    assert np.allclose(mine.to_numpy(), ref.to_numpy(), rtol=1e-15, atol=0)

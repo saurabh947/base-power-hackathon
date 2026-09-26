@@ -27,6 +27,8 @@ Keys (all under an optional prefix, "" in production; tests use a unique one):
   workers                hash: worker registry, worker_id -> {pid, epoch, ...}.
   layout                 JSON: fleet layout (size, workers, locations and counts).
   kw                     float32 bytes: last delivered kW per battery (global order).
+  battery_status         packed 4-bit status code per battery at the latest tick (src.sim.battery_status),
+                         overwritten every tick; the API sends it base64-encoded.
   epoch                  INCR counter for worker epochs.
 
 Every stream is trimmed with MAXLEN ~.
@@ -121,6 +123,7 @@ class Keys:
         self.workers = p + "workers"
         self.layout = p + "layout"
         self.kw = p + "kw"
+        self.battery_status = p + "battery_status"
         self.epoch = p + "epoch"
         self.coordinator = p + "coordinator"
 
@@ -174,8 +177,9 @@ class FleetLayout:
 
     Global index g in [0, size) is battery b{g:05d} of src.sim.fleet.generate_batteries, and
     src.sim.fleet.assign_locations gives each location a contiguous block in config order
-    (at 20,000 / 50-50: LZ_HOUSTON b00000-b09999, LZ_NORTH b10000-b19999): the same split the
-    backtest uses, so a fleet run and a backtest see the same batteries in the same places.
+    (at 20,000 with the Texas Triangle shares: LZ_HOUSTON b00000-b06999, LZ_NORTH b07000-b14999,
+    LZ_CPS b15000-b17599, LZ_AEN b17600-b19999): the same split the backtest uses, so a fleet run
+    and a backtest see the same batteries in the same places.
     """
 
     locations: tuple[str, ...]
@@ -240,15 +244,20 @@ class FleetLayout:
         return parse_battery_id(bid, self.size)
 
     def default_owners(self, workers: int | None = None) -> np.ndarray:
-        """Initial cohorts: each location is split into `workers` contiguous chunks, so worker w
-        runs chunk w of every location (1,000 = 500 Houston + 500 Dallas-Fort Worth at 20k/20)."""
+        """Initial cohorts: the fleet in global id order is split into `workers` contiguous chunks, so
+        each controller serves one city, or two where a city boundary falls inside its chunk. At 20k/20:
+        workers 0-6 Houston, 7-14 Dallas-Fort Worth, 15-16 San Antonio, 17 = 600 San Antonio (b17000-
+        b17599) + 400 Austin (b17600-b17999), 18-19 Austin; 1,000 batteries each."""
         workers = self.workers if workers is None else workers
         owners = np.empty(self.size, dtype=np.int16)
-        for li, n in enumerate(self.counts):
-            start = self.offsets[li]
-            for w, chunk in enumerate(np.array_split(np.arange(n), workers)):
-                owners[start + chunk] = w
+        for w, chunk in enumerate(np.array_split(np.arange(self.size), workers)):
+            owners[chunk] = w
         return owners
+
+    def counts_by_location(self, idx: np.ndarray) -> dict[str, int]:
+        """{location: batteries among these global indices}, only locations that have some, in fleet order."""
+        n = np.bincount(self.loc_of[np.asarray(idx, dtype=np.int64)], minlength=len(self.locations))
+        return {loc: int(c) for loc, c in zip(self.locations, n.tolist()) if c}
 
     def nameplate_kw(self) -> float:
         return float(self.power_kw.sum())

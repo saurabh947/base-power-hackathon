@@ -1,6 +1,7 @@
 """WebSocket /live messages (docs/API.md): one `snapshot` on connect, then a `frame` every
 second with EVERY tick since the previous frame (never sampled) while a run exists, and an
 `idle` message every 5 s when none does. A new run (run_id changed) gets a fresh `snapshot`.
+The snapshot and every frame carry `battery_status` (the latest tick's packed codes, base64).
 """
 from __future__ import annotations
 
@@ -50,7 +51,13 @@ def snapshot_message(backend: Backend, cursor: LiveCursor | None = None, *, hist
         "availability": snap.get("availability"),
         "events": events,
         "forecast": forecast,
+        "battery_status": backend.battery_status(_fleet_size(snap)),
     }
+
+
+def _fleet_size(snap: dict) -> int | None:
+    settings = snap.get("settings") or {}
+    return settings.get("fleet_size")
 
 
 def idle_message(snap: dict | None) -> dict:
@@ -84,6 +91,7 @@ def frame_message(backend: Backend, cursor: LiveCursor) -> dict:
         "failed_commands": backend.failed_commands(),
         "availability": snap.get("availability"),
         "events": events,
+        "battery_status": backend.battery_status(_fleet_size(snap)),
     }
     forecast = forecasts.at(snap.get("sim_time_utc"), backend)
     issued = {loc: f.get("issued_utc") for loc, f in forecast.items()}
@@ -135,18 +143,25 @@ class ForecastCache:
         with self._lock:
             self._slot, self._value = slot, out
         if backend is not None:
+            fresh: dict[str, list[str]] = {}  # issued_utc -> cities: forecasts issued together share one event
             for loc, f in out.items():
                 issued = f.get("issued_utc")
                 if issued and (loc, issued) not in self._announced:
                     self._announced.add((loc, issued))
-                    from src.sim.control import area
+                    fresh.setdefault(issued, []).append(loc)
+            for issued, locs in fresh.items():
+                from src.sim import geo
 
-                    try:
-                        backend.emit("forecast_issued", "info", f"A new AI price forecast for the {area(loc)} is ready.",
-                                     detail={"location": loc, "issued_utc": issued, "model": f.get("model")},
-                                     once_key=f"forecast:{loc}:{issued}")
-                    except Exception as exc:
-                        print(f"[api] forecast_issued event not published: {exc!r}", flush=True)
+                where = geo.cities_phrase(locs, total=len(backend.cfg.fleet.locations))
+                msg = (f"A new AI price forecast for {where} is ready." if len(locs) == 1
+                       else f"New AI price forecasts for {where} are ready.")
+                try:
+                    backend.emit("forecast_issued", "info", msg,
+                                 detail={"location": locs[0], "locations": locs, "issued_utc": issued,
+                                         "model": out[locs[0]].get("model")},
+                                 once_key=f"forecast:{issued}:{','.join(sorted(locs))}")
+                except Exception as exc:
+                    print(f"[api] forecast_issued event not published: {exc!r}", flush=True)
         return out
 
 

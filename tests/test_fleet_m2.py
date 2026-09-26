@@ -67,10 +67,20 @@ def test_m2_one_sim_day_20k_batteries_20_workers(coordinator):
     assert np.array_equal(hash_soc, co.replay_journal(0.5))
     last = int(datetime.fromisoformat(log[-1]["ts_utc"].replace("Z", "+00:00")).timestamp())
     assert {int(float(t)) for t in co.read_hash_state((F_TICK,))[F_TICK]} == {last}
-    # the ledger saw every tick at both locations, priced at real RT prices
+    # the ledger saw every tick in every city, priced at real RT prices
     summary = co.run.ledger.summary()
     assert summary["total_usd"] == pytest.approx(sum(r["revenue_usd"]["fleet"] for r in log), rel=1e-6)
-    assert all(r["price"]["LZ_HOUSTON"] is not None and r["price"]["LZ_NORTH"] is not None for r in log)
+    assert all(r["price"][loc] is not None for r in log for loc in co.layout.locations)
+    assert list(summary["per_location_usd"]) == list(co.layout.locations)
+    totals = co.snapshot()["totals"]
+    for loc in co.layout.locations:  # totals.by_location: the run's sums per city
+        assert totals["by_location"][loc]["revenue_usd"] == pytest.approx(summary["per_location_usd"][loc], abs=1e-4)
+        assert totals["by_location"][loc]["sold_kwh"] + totals["by_location"][loc]["bought_kwh"] > 0  # it traded
+    for key in ("revenue_usd", "sold_kwh", "bought_kwh"):
+        assert sum(v[key] for v in totals["by_location"].values()) == pytest.approx(totals[key], abs=1e-3)
+    status = [r["status_ms"] for r in log]
+    print(f"battery_status: p50 {np.percentile(status, 50):.3f} ms, max {max(status):.3f} ms per tick")
+    assert np.percentile(status, 50) < 2.0  # low milliseconds per tick at 20,000 batteries
 
 
 def test_a_run_finishes_at_the_end_of_the_loaded_prices(coordinator):

@@ -95,13 +95,32 @@ def backtest_settings(raw: Mapping | None = None) -> dict:
 class StrategyUnavailable(RuntimeError):
     """The strategy is not in this build or cannot be constructed."""
 
+    plain: str | None = None  # the Results' reason, when there is a better one than "not available yet"
 
-def make_named_strategy(name: str, cfg: Config) -> Strategy:
-    """make_strategy(cfg.strategy, tick_seconds, name): plugs in 'forecast' once it is built."""
+
+class ForecastsMissing(StrategyUnavailable):
+    """The forecast strategy's cached forecasts don't cover the year in every city."""
+
+    def __init__(self, message: str, locations: Sequence[str], year: int) -> None:
+        super().__init__(message)
+        self.locations = list(locations)
+        from src.sim import geo
+
+        self.plain = (f"its AI price forecasts for {geo.join_names([geo.city_name(loc) for loc in self.locations])} "
+                      f"aren't ready for {year} yet.")
+
+
+def make_named_strategy(name: str, cfg: Config, location: str | None = None) -> Strategy:
+    """make_strategy(cfg.strategy, tick_seconds, name): plugs in 'forecast' once it is built.
+
+    With `location`, a forecast instance loads only that city's forecasts: it never reads another city's
+    (target_kw looks up tick.location), so the decisions are the same and the database is read once per city.
+    """
     from src.strategy import make_strategy
 
+    context = {"locations": [location]} if name == "forecast" and location is not None else {}
     try:
-        return make_strategy(cfg.strategy, cfg.sim.tick_seconds, name)
+        return make_strategy(cfg.strategy, cfg.sim.tick_seconds, name, **context)
     except Exception as exc:  # unknown name, missing module, missing forecasts...
         raise StrategyUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
@@ -173,7 +192,7 @@ def replay(
     for loc, fleet in fleets.items():
         ts = series[loc]
         # one Strategy instance per location (RUNLOG "Per-location objects")
-        strategy = strategies[loc] if strategies is not None else make_named_strategy(name, cfg)
+        strategy = strategies[loc] if strategies is not None else make_named_strategy(name, cfg, loc)
         reprs.add(repr(strategy))
         targets = None
         if fast and uses_bands_fast_path(strategy):
@@ -321,14 +340,17 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     """
     started = datetime.now(UTC)
     if strategies is None:
-        strategies = {loc: make_named_strategy(name, ctx.cfg) for loc in ctx.fleets}
+        strategies = {loc: make_named_strategy(name, ctx.cfg, loc) for loc in ctx.fleets}
     need = float(ctx.settings.get("forecast_min_coverage", 0.99))
+    short = {}  # every city must be covered: one headline number is one decision method for the whole fleet
     for loc, strategy in strategies.items():
         coverage = forecast_coverage(strategy, loc, ctx.series[loc].replayed)
         if coverage is not None and coverage < need:
-            raise StrategyUnavailable(
-                f"forecasts cover {coverage:.1%} of {ctx.year} at {loc} (need {need:.0%}); "
-                "run the forecast job first (make cloud-forecast)")
+            short[loc] = coverage
+    if short:
+        where = ", ".join(f"{cov:.1%} at {loc}" for loc, cov in short.items())
+        raise ForecastsMissing(f"forecasts cover {where} of {ctx.year} (need {need:.0%} in every city); "
+                               "run the forecast job first (make cloud-forecast)", list(short), ctx.year)
     lag = ctx.cfg.sim.decision_lag_ticks
     main_run = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=lag, fast=fast, expected_ticks=ctx.expected_ticks,
                       window_cache=ctx.window_cache, strategies=strategies)
@@ -367,11 +389,11 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     }
 
 
-def skipped_record(name: str, ctx: Context, reason: str, *, unavailable: bool) -> dict:
+def skipped_record(name: str, ctx: Context, reason: str, *, unavailable: bool, plain: str | None = None) -> dict:
     """A marker row: the strategy was asked for but could not run. The Results say so."""
     now = utc_iso(datetime.now(UTC))
-    plain = ("it isn't available in this version of the simulator yet." if unavailable
-             else "it stopped with an error during the full-year run.")
+    plain = plain or ("it isn't available in this version of the simulator yet." if unavailable
+                      else "it stopped with an error during the full-year run.")
     return {
         "run_id": str(uuid.uuid4()), "strategy": name, "label": ctx.settings["labels"].get(name, name),
         "year": ctx.year, "started_at": now, "finished_at": now, "fleet_total_usd": None,
@@ -429,7 +451,8 @@ def run_backtest(
             if not unavailable:
                 log(traceback.format_exc())
             skipped[name] = reason
-            records.append(skipped_record(name, ctx, reason, unavailable=unavailable))
+            records.append(skipped_record(name, ctx, reason, unavailable=unavailable,
+                                          plain=getattr(exc, "plain", None)))
             log(f"{name}: skipped ({reason})")
             continue
         records.append(record)
