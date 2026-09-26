@@ -15,6 +15,8 @@ import { SettingsEditor } from './SettingsEditor.tsx';
 
 interface Props {
   model: SettingsModel;
+  /** Where the values come from, for "Show technical details". */
+  origin: 'loading' | 'server' | 'fallback';
   draft: EditableSettings;
   onDraft: (next: EditableSettings) => void;
   editing: boolean;
@@ -22,7 +24,7 @@ interface Props {
 }
 
 /** What will run, in plain words, placed above the Start button (docs/UX.md, Start screen). */
-export function RunSettingsCard({ model, draft, onDraft, editing, onEditing }: Props) {
+export function RunSettingsCard({ model, origin, draft, onDraft, editing, onEditing }: Props) {
   const headingId = useId();
   const editorId = useId();
   const d = model.defaults;
@@ -95,7 +97,13 @@ export function RunSettingsCard({ model, draft, onDraft, editing, onEditing }: P
           ['editable', model.editable.join(', ')],
         ]}
       >
-        {model.fallback ? <div>GET /settings failed; showing the documented defaults.</div> : null}
+        <div>
+          {origin === 'server'
+            ? 'Values from GET /settings.'
+            : origin === 'loading'
+              ? 'Waiting for GET /settings; showing the documented defaults.'
+              : 'GET /settings failed; showing the documented defaults.'}
+        </div>
       </TechBlock>
 
       <div id={editorId} hidden={!editing}>

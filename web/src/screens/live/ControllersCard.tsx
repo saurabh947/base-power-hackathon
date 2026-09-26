@@ -14,7 +14,28 @@ const STATUS: Record<WorkerStatus, { label: string; icon: IconName }> = {
   starting: { label: 'Starting', icon: 'clock' },
 };
 
-const Tile = memo(function Tile({ worker, offline, technical }: { worker: Worker; offline: boolean; technical: boolean }) {
+interface TileProps {
+  worker: Worker;
+  offline: boolean;
+  technical: boolean;
+}
+
+/** Re-render a tile only when something it shows changed (every frame brings new worker objects). */
+function sameTile(a: TileProps, b: TileProps): boolean {
+  const x = a.worker;
+  const y = b.worker;
+  return (
+    a.offline === b.offline &&
+    a.technical === b.technical &&
+    x.worker_id === y.worker_id &&
+    x.status === y.status &&
+    x.batteries === y.batteries &&
+    (!a.technical ||
+      (x.pid === y.pid && x.last_tick_utc === y.last_tick_utc && x.adopted_from.join() === y.adopted_from.join()))
+  );
+}
+
+const Tile = memo(function Tile({ worker, offline, technical }: TileProps) {
   const s = STATUS[worker.status] ?? STATUS.starting;
   const handedOff = worker.status === 'dead' && worker.batteries === 0;
   return (
@@ -37,7 +58,7 @@ const Tile = memo(function Tile({ worker, offline, technical }: { worker: Worker
       ) : null}
     </li>
   );
-});
+}, sameTile);
 
 function Summary({ workers }: { workers: Worker[] }) {
   const availability = useLive((s) => s.availability);

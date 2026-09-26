@@ -121,9 +121,10 @@ function SpeedSelect() {
   const can = status === 'running' || status === 'paused' || status === 'starting';
   const options = speed !== null && !SPEEDS.includes(speed) ? [...SPEEDS, speed].toSorted((a, b) => a - b) : SPEEDS;
   return (
-    <label className="speed-control">
-      Speed
+    <span className="speed-control">
+      <label htmlFor="speed-select">Speed</label>
       <select
+        id="speed-select"
         value={speed === null ? '' : String(speed)}
         disabled={!can}
         onChange={(e) => void setSpeed(Number(e.target.value))}
@@ -137,9 +138,9 @@ function SpeedSelect() {
         ))}
       </select>
       <span id="speed-help" className="sr-only">
-        One hour of market time every few seconds of real time.
+        How much market time passes per second: for example, 1 hour every 6 seconds.
       </span>
-    </label>
+    </span>
   );
 }
 

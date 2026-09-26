@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
 import { editablePart, FALLBACK_SETTINGS, readSettingsResponse, type SettingsModel } from '../../api/settings.ts';
@@ -19,9 +19,10 @@ function draftFrom(d: Settings): EditableSettings {
 export function StartScreen() {
   const backend = useBackend();
   const [model, setModel] = useState<SettingsModel>(FALLBACK_SETTINGS);
-  const [loaded, setLoaded] = useState(false);
+  const [origin, setOrigin] = useState<'loading' | 'server' | 'fallback'>('loading');
   const [draft, setDraft] = useState<EditableSettings>(() => draftFrom(FALLBACK_SETTINGS.defaults));
-  const [touched, setTouched] = useState(false);
+  // Once the visitor edits the draft, arriving server defaults must not overwrite it.
+  const touched = useRef(false);
   const [editing, setEditing] = useState(false);
   const [startOver, setStartOver] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -40,26 +41,26 @@ export function StartScreen() {
   const ready = backend.phase === 'ready';
 
   useEffect(() => {
-    if (!ready || loaded) return;
+    if (!ready || origin !== 'loading') return;
     const controller = new AbortController();
-    api
-      .settings(controller.signal)
-      .then((raw) => {
+    api.settings(controller.signal).then(
+      (raw) => {
         const next = readSettingsResponse(raw);
         setModel(next);
-        if (!touched) setDraft(draftFrom(next.defaults));
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setModel(FALLBACK_SETTINGS);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoaded(true);
-      });
+        setOrigin(next.fallback ? 'fallback' : 'server');
+        if (!touched.current) setDraft(draftFrom(next.defaults));
+      },
+      () => {
+        if (controller.signal.aborted) return;
+        setModel(FALLBACK_SETTINGS);
+        setOrigin('fallback');
+      },
+    );
     return () => controller.abort();
-  }, [ready, loaded, touched]);
+  }, [ready, origin]);
 
   const onDraft = (next: EditableSettings) => {
-    setTouched(true);
+    touched.current = true;
     setDraft(next);
   };
 
@@ -137,7 +138,7 @@ export function StartScreen() {
         </section>
       ) : (
         <>
-          <RunSettingsCard model={model} draft={draft} onDraft={onDraft} editing={editing} onEditing={setEditing} />
+          <RunSettingsCard model={model} origin={origin} draft={draft} onDraft={onDraft} editing={editing} onEditing={setEditing} />
           {runExists ? (
             <Notice kind="warn" title="Starting over replaces the simulation that is running now, for everyone watching." />
           ) : null}
