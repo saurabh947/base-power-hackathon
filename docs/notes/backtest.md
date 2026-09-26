@@ -346,9 +346,148 @@ gcloud beta run jobs logs read fleet-sim-backtest --project appintellect --regio
 
   Add `--year;2024` for the out-of-sample year. The job reads prices and forecasts from Cloud SQL (its `DB_*` env).
 
+## Results follow the chosen year: 2026 across real_until_utc (2026-09-26)
+
+docs/API.md (aee2832) "Results": `?year=`, `real_until_utc`, `real_per_battery_usd` / `projected_per_battery_usd`,
+`POST /backtest {"year": 2026}`. The human chose "Results follows the chosen year". Tests:
+`tests/test_backtest_years.py`, `tests/test_backtest_store_pg.py` (Postgres), the updated contract tests.
+
+### The 2026 replay is the live replay
+
+- `build_context(year)` reads the year's `real_until_utc` (`src.data.years`) **from the backtest's own price source**
+  (`engine.price_source()`: Postgres when a database is configured, else the snapshot), so the cutoff is exactly where
+  the replayed real prices end. (The cloud backtest job has `DB_*` but no `PRICE_SOURCE`; reading the cutoff through
+  PRICE_SOURCE there would have taken the image's snapshot while the prices came from Cloud SQL.)
+- The feed is the live coordinator's (`coordinator.run_feed`): the real feed, then `PredictedFeed` with the AI's
+  stored prediction p50 (`predictions.load_all`, the latest cutoff at or before real_until), forward-filled to its three
+  5-minute ticks, rounded to cents. A caller-supplied feed is treated as the real feed and gets the same prediction
+  appended. A city without a prediction stops the run with a plain `NoPriceData`: "Real 2026 prices end on Sep 19, and
+  the AI's prediction for the rest of the year isn't ready yet for Houston, ..., so the full year can't be replayed."
+  (a full-year headline must not silently stop at the cutoff).
+- The AI forecast strategy is built by `make_forecast_strategy` as the live fleet builds it: the real rolling forecasts
+  issued before the cutoff, then hourly virtual forecasts sliced from the same prediction (`ForecastBook.load(...,
+  virtual=True)`); the backtest passes `price_source` through `make_named_strategy` so its virtual periods start at the
+  same real_until as its prices. After the cutoff its forecast is exact by construction (docs/notes/forecast.md), and the
+  Results say so. The 99% coverage rule is unchanged, so the 2026 rolling forecasts must cover the real part.
+- `params.real_until_utc` and `params.prices.after_real_until` ({model, cutoff_utc, issued_utc, locations, end_utc})
+  record what was replayed. A fully real year (2025) is untouched: no cutoff, the same feed, the same numbers.
+
+### The split: real and projected money
+
+- **Strategies** (`runner.money_split`, `metrics.split`): real = the ticks before real_until_utc, each city's grid kWh
+  at that tick's price; projected = the Ledger's total minus that, per city and for the fleet, so the two add up to the
+  Ledger exactly. Per battery: `real_per_battery_usd` + `projected_per_battery_usd` = `per_battery_usd_year`. Plus
+  `ticks_real`, `ticks_projected`, `by_location`. A real year: all real, projected 0.
+- **The ceiling** splits the same way (`metrics.split`, and `split.capped` for the one-cycle variant): the per-day LP's
+  days before the cutoff are real, the days from it on projected, and a day that straddles the cutoff is split
+  interval by interval along its optimal schedule (not needed so far: real_until has been local midnight). The curves
+  gain `uncapped_usd_real` / `capped_usd_real`; the cache key includes the cutoff only for such years, so 2025's cached
+  curves and its numbers are exactly as before. Caveat: the ceiling doesn't carry charge across midnight, a strategy
+  does, so a strategy can beat the ceiling's projected part alone (charge bought before the cutoff, sold after it); the
+  ceiling still beats every strategy over the year.
+- **Results** (`results.build_results`): `real_until_utc` (null for a real year), and on every strategy and the ceiling
+  `real_per_battery_usd` and `projected_per_battery_usd`, in cents that add up to `per_battery_usd_year` to the cent
+  (projected = the rounded total minus the rounded real part). Records stored before the split existed (2024, 2025)
+  are real years: their split is (total, 0). For 2026 the assumptions say where real prices end and that the rest is
+  the AI's prediction (a projection, shown separately), and, when the AI ran, that it trades on slices of that same
+  prediction there.
+- **AiGains** (`results.build_ai_gains(year=)`): the requested year first, as its own pitch set, with `is_pitch: true`;
+  every other year after it with `is_pitch: false` (its own pitch set when that has all three strategies, else its
+  latest complete set, on the requested set's fleet). Money is the year's total (real + projected); every
+  StrategyGains and the uplift also carry `real_per_battery_usd` / `projected_per_battery_usd`, and each year
+  `real_until_utc`. The slim records carry `metrics.split` (the Postgres query reads `metrics->'split'`).
+
+### Per-year pitch sets, the API and the job
+
+- `is_pitch` was already per (year, strategy) in `backtest_runs` and per year in the JSON export
+  (`pitch_<year>_runs.json`, `pitch_<year>.json`): a 2026 pitch run replaces only 2026's rows. Tested in JSON and in
+  Postgres (the 2025 flags are compared before and after).
+- `GET /results/pitch?year=` and `GET /results/ai-gains?year=` pass the year to the service (default: the pitch year,
+  config `backtest.year` = 2025). A malformed year is `400 invalid_year`; a year without results `404 no_results`
+  ("No full-year results yet.", as the contract words it).
+- `POST /backtest {"year": 2026}` runs the runner CLI for 2026 (`--pitch --records-out`) and the job stores 2026's
+  pitch set; a cancel stores nothing and its `backtest_done` names the year: "The full-year 2026 run was stopped before
+  it finished, so there are no full-year results for 2026 yet." (or "The full-year re-run was stopped. The previous
+  results are still shown." when that year has results).
+- `scripts/cloud/jobs.sh backtest` takes `YEAR` (default 2025); `make cloud-backtest YEAR=2026`.
+
+### Example: 2026 from local data
+
+20,000 batteries, the committed snapshot's real 2026 prices (to 2026-09-20T05:00Z), then a **SYNTHETIC** prediction
+for the rest of the year (a test double: a smooth daily wave of ~$14-51/MWh per city, not TimesFM; the real one is in
+Cloud SQL), `--no-db`. No TimesFM forecasts locally, so the AI is skipped (its virtual forecasts cover the predicted
+28.2% of the year only). bands 25.5 s, peak 34.0 s, the ceiling 19.9 s (4 processes, 16 ratios × 1,460 city-days).
+
+| | per battery | real (to Sep 19) | projected (Sep 20 - Dec 31) |
+|---|---|---|---|
+| Simple rule | $102.73 | $68.66 | $34.07 |
+| Evening peak | $125.63 | $94.68 | $30.95 |
+| Best possible (hindsight) | $317.49 | $277.68 | $39.81 |
+
+The projected parts only show the mechanics: they are the synthetic wave's, not a forecast of anything. The payload
+(`GET /results/pitch?year=2026`, top days cut to two):
+
+```json
+{"year": 2026, "generated_utc": "2026-09-26T22:06:41Z", "real_until_utc": "2026-09-20T05:00:00Z",
+ "fleet_size": 20000, "fleet_power_mw": 164.9, "fleet_energy_mwh": 300.4,
+ "assumptions": [
+  "Gross wholesale energy value at real-time prices from ERCOT, the Texas grid operator (15-minute settlement), for every 5-minute step of 2026 up to Sep 19, 2026.",
+  "ERCOT's real prices end on Sep 19, 2026. After that, the prices are the AI's prediction (TimesFM-3, its median), so the money after that date is a projection, shown separately.",
+  "Excludes retail and delivery charges, payments for grid-support services, and battery wear.", "…",
+  "The AI forecast (TimesFM-3) method isn't in these results: its AI price forecasts for Houston, Dallas–Fort Worth, San Antonio and Austin aren't ready for 2026 yet."],
+ "strategies": [
+  {"strategy": "bands", "label": "Simple rule", "run_id": "ee55f932-…", "is_headline": true,
+   "per_battery_usd_year": 102.73, "real_per_battery_usd": 68.66, "projected_per_battery_usd": 34.07,
+   "fleet_usd_year": 2054562.17, "usd_per_kwh_year": 6.84, "usd_per_kw_year": 12.46, "cycles_per_year": 234.4,
+   "per_location_usd": {"LZ_HOUSTON": 694118.37, "LZ_NORTH": 857859.0, "LZ_CPS": 264368.2, "LZ_AEN": 238216.6},
+   "top_days": [{"date_local": "2026-01-31", "usd": 52632.23}, {"date_local": "2026-09-02", "usd": 43890.65}]},
+  {"strategy": "peak", "label": "Evening peak", "run_id": "c53dfa15-…", "is_headline": false,
+   "per_battery_usd_year": 125.63, "real_per_battery_usd": 94.68, "projected_per_battery_usd": 30.95,
+   "fleet_usd_year": 2512669.72, "usd_per_kwh_year": 8.37, "usd_per_kw_year": 15.24, "cycles_per_year": 365.0,
+   "per_location_usd": {"LZ_HOUSTON": 706422.69, "LZ_NORTH": 1198874.08, "LZ_CPS": 320256.3, "LZ_AEN": 287116.66},
+   "top_days": [{"date_local": "2026-01-25", "usd": 141248.78}, {"date_local": "2026-09-16", "usd": 91666.0}]}],
+ "ceiling": {"label": "Best possible (perfect hindsight)", "per_battery_usd_year": 317.49,
+             "real_per_battery_usd": 277.68, "projected_per_battery_usd": 39.81, "fleet_usd_year": 6349737.4}}
+```
+
+### In the cloud (after the merge is deployed)
+
+2026 needs, in Cloud SQL: the 2026 prices (ingested), the 2026 rolling forecasts up to real_until (the AI's 99%
+coverage rule), and the prediction from the same real_until (`price_predictions`). Then:
+
+```sh
+YEAR=2026 scripts/cloud/jobs.sh forecast          # if not done for the current real_until (resumes: new days only)
+SKIP_BUILD=1 scripts/cloud/jobs.sh predict        # if no prediction for the current real_until yet (reuses the forecast image)
+YEAR=2026 scripts/cloud/jobs.sh backtest          # the api image of this TAG; stores 2026's own pitch set
+```
+
+Or from the Results page, `POST /backtest {"strategies": ["bands","forecast","peak"], "year": 2026}` (the service runs
+the same runner in its container).
+
 ## Open issues
 
 - **Forecast strategy.** It is not in this build, so it is skipped and the pitch headline is currently the simple rule.
   - Keep its per-tick call well under 100 µs, for example by preloading the year's forecasts, to stay under 60 s.
 - **No structured field in the Results contract** for the lag-0 variant, the 1-cycle ceiling or skip reasons. They are plain-language `assumptions` lines.
 - **Ceiling scope.** It is per-day (no carry-over across midnight), and relaxed at negative prices. Both are documented above.
+- **The split's projected part of the ceiling can be below a strategy's** (charge carried over the cutoff; the
+  per-day LP can't): only the year's total is an upper bound. See "The split" above.
+- **2026's AI number needs the 2026 rolling forecasts in Cloud SQL** up to real_until (99% coverage over the whole
+  replay, real part included); without them the forecast strategy is skipped, as for any year.
+
+### Requests for integrator (results by year)
+
+1. docs/API.md Results: the JSON example lacks the new keys the prose names: `real_until_utc` (top level), and
+   `real_per_battery_usd` / `projected_per_battery_usd` on each strategy and on the ceiling. They are always present
+   (a fully real year: `real_until_utc` null, projected 0, real = the total).
+2. docs/API.md AiGains: each year now carries `real_until_utc`, and every StrategyGains and the `uplift` carry
+   `real_per_battery_usd` / `projected_per_battery_usd` (totals stay in `per_battery_usd_year`). `is_pitch: true`
+   marks the requested year's pitch set (always the first entry, when it exists); other years are `is_pitch: false`
+   and use their own pitch set when it is complete (bands, forecast, peak), else their latest complete set.
+3. docs/API.md `?year=`: a malformed year is `400 invalid_year`; a year with no results is `404 no_results` with the
+   same message as today ("No full-year results yet.").
+4. A 2026 run without a stored prediction fails with a plain sentence (`GET /backtest/{id}` `error`): "Real 2026
+   prices end on Sep 19, and the AI's prediction for the rest of the year isn't ready yet for …, so the full year
+   can't be replayed." It never stores a year cut at the cutoff.
+5. The cancel event of a year other than the pitch year names it: "The full-year 2026 run was stopped before it
+   finished, so there are no full-year results for 2026 yet."

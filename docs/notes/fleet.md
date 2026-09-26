@@ -20,6 +20,8 @@ make fleet-down
 - Plain `make test` runs everything; tests marked `redis` skip cleanly when `REDIS_URL` (default `redis://127.0.0.1:6379/0`) is unreachable.
 - Other ports: `make fleet-up fleet-test FLEET_PGPORT=5445 FLEET_REDIS_PORT=6445` (the Texas Triangle work used these).
 - `make fleet-m3 FLEET_KILL_WORKER=7` kills another controller.
+- `python -m src.sim.coordinator bench ... --kill-at 6 --kill-worker 17 --restart-at 14` also restarts it (a user
+  restart) and reports the feasible target by tick, the energy destroyed, the hand-over and the restart time.
 - Tests use unique key prefixes and delete only their own keys, so they are safe on a shared Redis.
 - Container: `python -m src.launcher` with `START_REDIS=1` (the Dockerfile already sets it).
 
@@ -348,6 +350,7 @@ b17600–b19999). Everything below is built against docs/API.md as written.
 | `test_years.py` | Years 2025/2026 and where 2026's real prices end (the snapshot), per-year presets (From January 1, the computed "Where real prices end"), year/preset resolution and its 400s. |
 | `test_fleet_prediction.py` | 2026 through the real fleet: real prices then the prediction's p50, `predicted` per tick and in the stored history, one `prediction_started`, the AI on virtual forecasts, the replay ending at real_until without a prediction, the late-December 2025 warm-up. |
 | `test_fleet_launcher.py` | SIGTERM → exit 0 with nothing left running; dead coordinator → exit 1; SIGKILLed launcher → no orphans. |
+| `test_failure_model.py` | The human's failure model (v3 below): a crash empties the cohort (mirror, hashes, race; not the potential) before the hand-over, the feasible target excludes it and tracking holds, the adopters load 0.2; nothing restarts on its own; a user restart takes the original batteries back with an owner-epoch bump (paused, idle and running), no zombie writes, `worker_recovered`; a controller taken offline is halved exactly (mirror, hashes, the worker's own state, the race), frozen while offline, resumes from half; city/battery/all don't touch charge; the potential's shortfall equals the crashed cohort's lost sales. |
 | `test_contracts_battery.py[redis]` | The Redis BatteryAdapter passes the frozen seam's 25 contract tests. |
 
 ## The live race (2026-09-26): a shadow fleet on the simple rule
@@ -549,6 +552,124 @@ Built against docs/API.md as of 4879fde. Code: `src/data/years.py`, `src/feeds/p
 | Same run, paused: worker 7 offline | the next frame: code 0 on exactly its 1,000 batteries, the other 19,000 unchanged, `shows_potential` true |
 | Same run, paused: `POST /chaos/kill?worker_id=12` (no passcode), then another at once | 200, then 429 `rate_limited` (retry 2 s); code 4 on its 1,000 batteries in a frame 0.97 s after the kill (1 s frames); declared dead 5.0 s after (6 s TTL), then code 4 on none |
 
+## v3 (2026-09-26): the human's failure model (crash empties, user restart, offline halves)
+
+Built against docs/API.md at aee2832 (Worker `usable_charge`, the **Failure model** paragraph, `worker_recovered`,
+`POST /workers/{worker_id}/restart`). Code: `src/sim/coordinator.py` (the "failure model" section: `_crash_empty`,
+`_set_soc`, `_race_adjust`, `_ctl_restart`, `_restart_worker`, `_take_back`, `_progress_recoveries`,
+`_halve_controller`, `_apply_pending_halvings`), `src/sim/worker.py` (`on_set_soc`), `src/sim/race.py` (`adjust`),
+`src/api/main.py` (the endpoint), `src/api/limits.py`. Tests: `tests/test_failure_model.py`, plus the M3, race, API
+live and unit suites updated to the new rules.
+
+### Crash: the batteries lose their charge, then the hand-over
+
+- **When:** at the first of (a) the supervision seeing the worker's process exit (`Popen.poll`, every 0.2 s and at the
+  end of every tick) and (b) the DEAD declaration (2 missed ticks, heartbeat expiry, no heartbeat at start). So a
+  frozen controller that is declared dead loses its charge too: every DEAD is a crash. Once per crash (`h.crash`).
+- **How (`_crash_empty`):** fence the lease (`dead:{epoch}`: nothing the process left in Redis's socket buffer can
+  commit any more), drain the telemetry (book whatever it did commit, metered from the SoC it had), then `_set_soc`
+  its batteries (owned plus adopted-but-unloaded) to `soc_min` in the SoC mirror (and its tick fence) and the battery
+  hashes (raw RESP, ~1-2 ms per 1,000), and the race shadow's copies. The energy is lost, not sold: nothing is metered.
+- **The hand-over is unchanged** (reassigned for the very next tick after DEAD) and comes after the emptying, so the
+  adopters' lazy HMGET loads 0.2. `worker_adopted` says so: "... were handed to the other 19 controllers in 5 ms,
+  emptied by the crash." with `detail.emptied` and `detail.emptied_kwh` (the usable energy lost).
+- **No run** (idle): nothing is emptied (a Start sets every battery's charge anyway). **Starting** (init_run): a
+  battery the run hasn't initialised yet gets the run's fresh state around 0.2, so its adopter loads exactly that.
+- **The gauge:** between the exit and the DEAD (~1 s at 2 ticks/s, up to 6 s while paused) the crashed controller
+  still owns its batteries and shows `usable_charge` 0.0; once dead it owns none: `charge_level` and `usable_charge`
+  null, `batteries` 0, `by_location` {}.
+- **Tracking:** the empty batteries have no discharge headroom, so the feasible target drops by what they could have
+  delivered, and M3 holds against it. Where the exit is noticed before the next tick (2 ticks/s: within 0.2 s) the
+  kill tick's error is 0.000% during a sell; at max speed the kill lands between two back-to-back ticks and the kill
+  tick is the cohort's share as before (4.96%).
+- **The journal** (`replay_journal`) now applies these SoC changes between the ticks they came between
+  (`journal_sets`), so "the hashes equal a replay of every reported delivery" still proves nothing was lost or
+  double-applied.
+- **A fix on the way:** a dead worker's adopted-but-unloaded batteries were in both `owned` and `pending_load`, so
+  `np.sort(np.concatenate(...))` handed them over twice (two adopters for one battery) when a controller died before
+  loading what it had adopted (two crashes in a row, or while paused). The cohort is now `np.unique(...)`.
+
+### A user restart, and the take-back
+
+- **Nothing restarts on its own** (the correction of 2026-09-26: no `auto_restart_s`, no `recovers_in_s`). A crashed
+  controller stays `dead` until `POST /workers/{worker_id}/restart` or Reset.
+- **The endpoint:** open to everyone, one restart per 2 s globally (`api.rate_limits.worker_restart_s`, like the kill;
+  429 with `retry_after_s` and `Retry-After`). A malformed id is 400 `invalid_worker` before it spends the budget; a
+  refused one still spends it. `200 {"worker_id": 7, "status": "starting"}` at once; `409 not_crashed` ("Controller 8
+  hasn't crashed, so there's nothing to restart." / "Controller 8 is already restarting."); `404 unknown_worker`. A
+  controller whose process has exited but that isn't declared dead yet is declared dead first (emptied, handed over),
+  then restarted: a user clicking Restart right after Crash gets it at once.
+- **The restart (`_restart_worker`):** a still-running old process (a frozen one declared dead) is SIGKILLed and
+  reaped (never two processes per worker id); a new epoch (`INCR epoch`, `SET lease:{w}`), `commands:{w}` and `hb:{w}`
+  deleted (the new process reads its stream from 0-0), then `subprocess.Popen` like the others: status `starting`.
+- **The take-back (`_take_back`), once it has heartbeated (healthy):** its original batteries (`home` = the boot
+  cohort, `default_owners`) come back from whoever runs them now, with whatever charge they have by then: ownership
+  moves in the coordinator, and in the hashes `owner`/`owner_epoch` are bumped to the new epoch (the owner-epoch fence:
+  an adopter could never load them again). It happens only between ticks and only when none of the holders (nor the
+  restarted worker) has a tick in flight, so no adopter can write those batteries after the move (no zombie writes);
+  a holder with a late tick defers it to the next supervision (0.2 s). The adopters' `owned`, `pending_load` and
+  `adopted_from` lose them. With a run, a `load` message (init flags from `run.initialized`) makes the fresh process
+  load their stored state (the adopters' last committed SoC and fence).
+- **worker_recovered** goes out once that `load` is `ready` (no run: at the take-back), severity good: "Controller 18
+  is back and has taken back its 1,000 San Antonio and Austin batteries, starting from empty." (or "..., now 37%
+  charged." when the adopters recharged them; no run: no charge phrase). `detail`: `worker_id`, `controller`,
+  `batteries`, `by_location`, `usable_charge`, `charge_level`, `taken_from`, `pid`, `ms` (request to ready),
+  `take_back_ms`. Its gauge then shows those batteries' current charge.
+- **While restarting** it adopts nothing (it would reload its whole state at the take-back): adopters are healthy
+  controllers that aren't waiting to take theirs back. Reset replaces every handle (a restart in flight is dropped).
+- The work that must not happen inside a tick (take-backs, deferred halvings) runs in `_between_ticks`: at the start
+  of every `step()`, in `loop_once` (at max speed the forced supervision only ever runs inside ticks) and in the
+  supervision outside ticks.
+
+### Controller offline: the usable charge is halved
+
+- **When:** `/availability` scope `worker`, `available: false`, for a controller that wasn't already offline (asking
+  again changes nothing), during a run (not idle, not while starting). Every battery it owns at that moment:
+  `soc = floor + (soc - floor) / 2`. City, battery and "all" scopes never touch charge; nothing brings batteries back
+  online but a user.
+- **Where:** the SoC mirror and the hashes (`_set_soc`), the race shadow's copies (`Race.adjust`), and the worker's
+  in-process state: a new command-stream message `{"t": "soc", "run", "idx", "soc"}` (not the frozen Command) makes the
+  worker set exactly those values for the batteries it holds, after every tick queued before it (adopted-but-unloaded
+  ones read the hash when they load). The fence is untouched.
+- **Never under a tick being applied:** if the controller has a tick in flight (it missed the deadline), the halving
+  waits until that tick's report has been booked (or the crash empties them anyway): otherwise the late report would
+  be metered from the halved mirror. With a healthy controller that is never the case between ticks.
+- **The event:** "Controller 2's 100 batteries in Houston are offline and have lost half of their usable charge;
+  300 of 400 batteries are online." (`detail.halved` = how many).
+- While offline they don't move (setpoint 0, as before); back online they sell or charge from the halved level: the
+  test proves the worker used the halved values (the hashes it writes equal the journal's replay with the halving).
+
+### Race mirroring and the potential
+
+- The race shadow gets the same emptying (at the moment the live fleet's happens) and the same halving, on the same
+  batteries (`Race.adjust`: its own SoC for the halving), so the race compares decisions only. It still doesn't
+  mirror the crash's outage itself (the ticks until the hand-over): it has no controllers.
+- The potential never loses charge (no emptying, no halving, every battery online), so `shortfall_usd` includes the
+  energy destroyed: on the same evening with and without a crash after tick 5, the potential earns the no-crash
+  revenue bit for bit and the shortfall equals the crashed cohort's lost sales to the cent ($256.84 at 400 batteries;
+  `test_the_potential_shortfall_includes_the_energy_a_crash_destroyed`).
+
+### Measured (M3 Pro; Redis :6448; 20,000 batteries × 20 workers; `bench --strategy peak --start-utc 2025-05-16T22:50:00Z --soc 0.9 --kill-at 6 --kill-worker 17 --restart-at 14`)
+
+| | max speed | 2 ticks/s |
+|---|---|---|
+| Kill-tick error (tick 7) | 4.964% (the cohort was commanded full and missed it) | **0.000%** (emptied before tick 7's allocation) |
+| Then | 0.000% every tick | 0.000% every tick |
+| Feasible fleet target, ticks 5-8 | 164,881 → 164,881 → 164,881 → **156,696.5 kW** | 164,881 → 164,881 → **156,696.5** → 156,696.5 kW |
+| Energy destroyed (1,000 batteries: 600 San Antonio + 400 Austin) | 6,898.0 kWh usable | the same |
+| Hand-over (fence + drain + reassign; emptied already at the exit) | 4.6 ms | 3.7 ms |
+| DEAD declared at | tick 8 (2 misses) | tick 8 |
+| Code 4 on the cohort | ticks 7-8, then none | ticks 7-8, then none |
+| User restart → worker_recovered (spawn, first heartbeat, take-back, load, ready) | **195 ms** (take-back 2.4 ms) | **468 ms** (take-back 5.1 ms) |
+| After the restart | 20/20 controllers report, 0.000% | 20/20, 0.000% |
+| dead_letter | 2,000 `expired_owner_dead` | 2,000 |
+| `shortfall_usd` at the end (the potential's lead) | $5,160.61 | $5,160.61 |
+
+- The feasible target drop (8.18 MW) persists after the hand-over: before this change the adopters sold the cohort's
+  charge from tick 9 on; now it is gone.
+- 2 ticks/s is slower to recover because the take-back and the `ready` wait for the next loop iterations between
+  ticks (the loop wakes every ≤ 200 ms); the process itself is up in ~100-150 ms either way.
+
 ## Open issues
 
 - **Cloud Run speed is unmeasured.** It needs a check once deployed: `/state` workers, plus `barrier_ms` from `python -m src.sim.coordinator bench`. At 10 ticks/s, 20k batteries write about 200k HSET/s into one Redis thread.
@@ -560,6 +681,16 @@ Built against docs/API.md as of 4879fde. Code: `src/data/years.py`, `src/feeds/p
 - **Hand-over time** measured 5–8 ms in these runs (3–7 ms for worker 7 in repeated runs), vs 2–4 ms in the earlier notes; the timed code didn't change, so this looks like run-to-run noise (it includes draining pending telemetry).
 - **`src/forecast/evaluate.py`** (the forecast area's research evaluation) still compares strategies on two cities with its own half/half split. It isn't on any live or backtest path.
 - **A stale test was fixed on the way:** `test_ingest_parse.py`'s native-load check (it only runs when `data/raw` holds the ERCOT files, as after `--cache-dir data/raw`) still expected the snapshot's old swapped fall-back hour, which data/snapshot/README.md says was corrected.
+- **Availability follows the current owner (v3).** `scope: worker` acts on the batteries a controller owns now. A
+  controller taken offline and then crashed hands its (offline, emptied) batteries to the others; "Controller 8 back
+  online" then finds none until it is restarted and has taken them back ("all" or the city slider still reach them).
+- **The restart's `ready` and the take-back wait for the loop between ticks** (it wakes every ≤ 200 ms): ~0.2 s at max
+  speed, ~0.5 s at 2 ticks/s on the laptop. Cloud Run's process start is slower (the Python imports); expect ~1 s.
+- **The M3 kill-tick error now depends on when the exit is noticed and what the fleet does**: noticed before the next
+  tick (every visitor speed) during a sell, the empty cohort drops out of the feasible target and that tick shows ~0%;
+  during a charge the empty batteries can still take charge, so they are commanded, miss it, and the kill tick shows
+  their share as before; at max speed the kill lands between back-to-back ticks and the kill tick shows the cohort's
+  share (4.96%). From the next tick on it is 0.000% either way.
 
 ## Requests for integrator
 
@@ -583,3 +714,29 @@ Built against docs/API.md as of 4879fde. Code: `src/data/years.py`, `src/feeds/p
 15. **docs/API.md `Year`:** a configured year with no prices loaded (e.g. 2026 in a database not yet ingested) is left out of `years`, and its presets out of `presets`; a Start asking for it is 400 `invalid_year` (a new code for the error table, as `invalid_*`).
 16. **The weekly refresh:** ERCOT republishes 2026 about weekly. After each re-ingest (`INGEST_YEARS=2026 scripts/cloud/jobs.sh ingest`), re-run `YEAR=2026 scripts/cloud/jobs.sh forecast` (it resumes: only the new days) and `scripts/cloud/jobs.sh predict` (a new cutoff adds a new path). The "Where real prices end" preset and `years` follow real_until by themselves (cached 60 s).
 
+
+### Requests for integrator (v3, the failure model)
+
+17. **Every DEAD is a crash.** The contract says "a crash (public kill or any worker exit)". A controller that is
+    declared dead without exiting (frozen: 2 missed ticks, or its heartbeat expired) is handed over exactly like a
+    crashed one, so it loses its charge too. Say so in the Failure model paragraph, or tell me to empty only on exit.
+18. **The gauge between a crash and the hand-over.** The exit is noticed within 0.2 s and the batteries are emptied at
+    once, but the controller is declared dead only after 2 missed ticks (or the heartbeat's 6 s while paused): until
+    then `workers[]` shows it `healthy`/`suspect` with `usable_charge` 0.0 and its batteries (code 4 on the map). Then
+    `dead`, 0 batteries, `usable_charge` null.
+19. **`POST /workers/{worker_id}/restart` details beyond the table:** a malformed id is `400 invalid_worker` (before the
+    rate limit, like the kill); the two `409 not_crashed` messages are "Controller 8 hasn't crashed, so there's nothing
+    to restart." and "Controller 8 is already restarting."; a controller whose process has exited but that isn't
+    declared dead yet is declared dead (emptied, handed over) and restarted at once. `status` in the 200 is
+    `starting`; `worker_recovered` follows in ~0.2-0.5 s.
+20. **Event wording:** `worker_adopted` now ends "..., emptied by the crash." (`detail.emptied`, `detail.emptied_kwh`);
+    `worker_recovered` is the contract's sentence ("..., starting from empty.") or "..., now 37% charged." when the
+    adopters recharged them, and has no charge phrase with no run; its `detail` also carries `by_location`,
+    `usable_charge`, `charge_level`, `taken_from`, `pid`, `ms` and `take_back_ms`; a controller taken offline:
+    "Controller 2's 100 batteries in Houston are offline and have lost half of their usable charge; ..."
+    (`detail.halved`).
+21. **RUNLOG's M3 numbers are the old model's.** With emptying, the kill tick at 2 ticks/s is 0.000% during a sell (the
+    exit is noticed before the next tick and the empty batteries drop out of the feasible target), 4.96% at max
+    speed; the feasible target stays ~8.2 MW lower after the hand-over (1,000 empty batteries). Table above.
+22. **Asking to take an already-offline controller offline again doesn't halve again.** Bringing it back online and
+    offline again does (a new "taking offline").

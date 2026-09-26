@@ -294,6 +294,42 @@ def test_taking_a_controller_offline_halves_its_usable_charge(coordinator):
     assert np.array_equal(co.read_hash_soc(), co.replay_journal(0.9))
 
 
+def test_a_halving_waits_for_the_controllers_late_tick(coordinator):
+    """A controller taken offline while one of its ticks is still in flight (it missed the deadline): the halving
+    waits until that tick's late report is booked, then halves the SoC that tick left, so nothing is metered from a
+    halved SoC and the worker never applies a tick over a changed one."""
+    co = coordinator()
+    co.start({"start_utc": EVENING, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
+             max_ticks=20, internal=True)
+    for _ in range(3):
+        co.step()
+    h = co.workers[1]
+    mine = np.flatnonzero(co.owner == 1)
+    os.kill(h.pid, signal.SIGSTOP)
+    try:
+        co.step()  # it misses tick 3: suspect, with tick 3 in flight
+        assert h.status == "suspect" and 3 in h.inflight
+        before = co.soc[mine].copy()
+        co.handle_control({"cmd": "availability", "args": {"scope": "worker", "worker_id": 1, "available": False}})
+        assert len(h.pending_halve) == 100 and np.array_equal(co.soc[mine], before)  # not yet
+        co._between_ticks()
+        assert len(h.pending_halve) == 100  # still frozen: still waiting
+    finally:
+        os.kill(h.pid, signal.SIGCONT)
+    deadline = time.monotonic() + 10
+    while len(h.pending_halve) and time.monotonic() < deadline:
+        time.sleep(0.02)
+        co._between_ticks()  # its late tick-3 report is booked first, then the halving
+    assert not len(h.pending_halve) and not h.inflight
+    assert (co.soc_k[mine] >= 3).all() and (co.soc[mine] < before).all()  # halved from after its tick 3
+    halved = co.soc[mine].copy()
+    assert np.array_equal(hash_soc(co, mine), halved)
+    for _ in range(3):
+        co.step()
+    assert np.array_equal(co.soc[mine], halved)  # offline: frozen at the halved level
+    assert np.array_equal(co.read_hash_soc(), co.replay_journal(0.9))
+
+
 def test_the_potential_shortfall_includes_the_energy_a_crash_destroyed(coordinator):
     """Same evening twice: without and with a crash after tick 5. The potential never loses charge, so it earns the
     no-crash revenue bit for bit, and the shortfall is exactly what the crashed cohort would have earned from the kill

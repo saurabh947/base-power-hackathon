@@ -466,7 +466,8 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     if short:
         where = ", ".join(f"{cov:.1%} at {loc}" for loc, cov in short.items())
         raise ForecastsMissing(f"forecasts cover {where} of {ctx.year} (need {need:.0%} in every city); "
-                               "run the forecast job first (make cloud-forecast)", list(short), ctx.year)
+                               f"run the forecast job first (YEAR={ctx.year} make cloud-forecast)", list(short),
+                               ctx.year)
     lag = ctx.cfg.sim.decision_lag_ticks
     main_run = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=lag, fast=fast, expected_ticks=ctx.expected_ticks,
                       window_cache=ctx.window_cache, strategies=strategies)

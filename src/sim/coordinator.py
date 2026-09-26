@@ -4,6 +4,7 @@ Run:
     python -m src.sim.coordinator serve                 # what src.launcher starts
     python -m src.sim.coordinator bench --ticks 288     # M2: 1 sim day at max speed, prints ticks/s
     python -m src.sim.coordinator bench --ticks 60 --kill-at 20 [--speed 2]   # M3: SIGKILL a worker mid-run
+    python -m src.sim.coordinator bench --ticks 24 --kill-at 6 --restart-at 14  # ... then a user restart
 
 One tick (5 sim-minutes):
   1. Per location, the Strategy sees decision_tick(now, published) with published =
@@ -1133,8 +1134,10 @@ class Coordinator:
             if h.status == DEAD:  # it crashed meanwhile: the crash emptied them
                 h.pending_halve = np.empty(0, dtype=np.int32)
                 continue
-            if h.inflight:
-                continue  # it hasn't reported a tick yet: never change SoC under a worker applying one
+            if h.inflight or h.ready_run != run.run_id:
+                # it hasn't reported a tick yet (never change SoC under a worker applying one), or hasn't loaded its
+                # batteries for this run yet (its load would start them afresh over the halving): once it has
+                continue
             idx = h.pending_halve[self.owner[h.pending_halve] == h.worker_id].astype(np.int32)
             h.pending_halve = np.empty(0, dtype=np.int32)
             if not len(idx):
@@ -2353,8 +2356,13 @@ def _bench(args) -> int:
                 victim = co.workers[args.kill_worker]
                 os.kill(victim.pid, signal.SIGKILL)
                 killed.update(worker_id=victim.worker_id, pid=victim.pid, after_tick=rec["k"],
-                              cohort=victim.owned.copy(), by_location=co.layout.counts_by_location(victim.owned))
+                              cohort=victim.owned.copy(), by_location=co.layout.counts_by_location(victim.owned),
+                              usable_kwh=round(usable_kwh(co.soc[victim.owned], co.cap[victim.owned], co.soc_min), 1))
                 _log(f"SIGKILLed worker {victim.worker_id} (pid {victim.pid}) after tick {rec['k']}")
+            if args.restart_at is not None and killed and rec["k"] == args.restart_at and "restart" not in killed:
+                reply = co.handle_control({"cmd": "restart", "args": {"worker_id": args.kill_worker}})  # a user restart
+                killed["restart"] = {"after_tick": rec["k"], "reply": reply}
+                _log(f"restart of worker {args.kill_worker} requested after tick {rec['k']}: {reply}")
 
         co.tick_hooks.append(kill_hook)
         t0 = time.perf_counter()
@@ -2394,6 +2402,25 @@ def _bench(args) -> int:
             ka = killed["after_tick"]
             out["error_pct_after_kill"] = [f"tick {r['k']}: {r['error_pct']:.3f}% ({r['healthy_workers']} healthy)"
                                            for r in log if ka < r["k"] <= ka + 5]
+            # the feasible fleet target drops by what the emptied batteries could have delivered
+            out["feasible_kw_by_tick"] = {f"tick {r['k']}": round(sum(r["feasible_exact"].values()), 1)
+                                          for r in log if ka - 1 <= r["k"] <= ka + 5}
+            out["killed_usable_kwh"] = killed.get("usable_kwh")
+            adopted = next((e for e in co.events if e["kind"] == "worker_adopted"), None)
+            if adopted is not None:
+                out["handover"] = {k: adopted["detail"].get(k) for k in ("ms", "batteries", "emptied", "emptied_kwh",
+                                                                          "declared_at_tick_index")}
+            recovered = next((e for e in co.events if e["kind"] == "worker_recovered"), None)
+            if "restart" in killed:
+                out["restart"] = {"requested_after_tick": killed["restart"]["after_tick"],
+                                  "reply": killed["restart"]["reply"],
+                                  "recovered": None if recovered is None else {
+                                      k: recovered["detail"].get(k) for k in ("ms", "take_back_ms", "batteries",
+                                                                              "usable_charge", "taken_from")},
+                                  "message": None if recovered is None else recovered["message"]}
+                if recovered is not None:  # after the take-back every controller reports every tick again
+                    out["after_restart"] = [f"tick {r['k']}: {r['reported']}/{r['sent']} reported, "
+                                            f"{r['error_pct']:.3f}%" for r in log[-3:]]
             out["events"] = [f"{e['kind']}: {e['message']}" for e in co.events if e["kind"].startswith("worker_")]
             out["dead_letter"] = int(co.r.get(co.keys.dead_letter_count) or 0)
             out["controller_down_by_tick"] = {f"tick {k}": n for k, n in sorted(down_by_tick.items())}
@@ -2425,6 +2452,8 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--soc", type=float, default=0.5)
     bench.add_argument("--kill-at", type=int, default=None, help="SIGKILL a worker right after this tick index")
     bench.add_argument("--kill-worker", type=int, default=7)
+    bench.add_argument("--restart-at", type=int, default=None,
+                       help="a user restart of the killed worker right after this tick index (it takes its batteries back)")
     bench.add_argument("--timeout", type=float, default=600.0)
     args = ap.parse_args(argv)
     if args.cmd == "bench":
