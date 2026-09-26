@@ -16,13 +16,14 @@ Change it only through the integrator.
     - Austin (`LZ_AEN`): 2,400, b17600–b19999
   - City names shown to people come from `GET /fleet/layout` `cities[].name`.
 - **Amounts:** `top_days[].usd`, `per_location_usd` and `revenue_usd` are **fleet totals** (all batteries), not per battery. `error_pct` is already a percentage: `0.02` means 0.02%.
-- **CORS:** origins come from env `CORS_ORIGINS` (comma-separated) plus a regex for `https://*.vercel.app` and `http://localhost:5173`. Allowed request headers: `Content-Type` and `X-Presenter-Passcode`. Exposed response header: `Retry-After`.
+- **CORS:** origins come from env `CORS_ORIGINS` (comma-separated) plus a regex for `https://*.vercel.app` and `http://localhost:5173`. Allowed request header: `Content-Type`. Exposed response header: `Retry-After`.
 - **Errors:** always `{"error": "<code>", "message": "<plain-language sentence>"}` with a 4xx/5xx status. A 429 also carries `retry_after_s` in the body and a `Retry-After` header.
 
 ## Settings
 
 ```json
 {
+  "year": 2025,
   "preset": "ai_best_evening",
   "start_utc": "2025-05-30T23:00:00Z",
   "speed_tps": 2,
@@ -36,7 +37,8 @@ Change it only through the integrator.
 ```
 - `speed_tps` is 5-minute ticks per wall-clock second. Allowed values: 1, 2, 5, 10.
 - `strategy` is one of `bands`, `forecast` or `peak`.
-- Only `preset`, `speed_tps`, `strategy` and `start_charge_level` can be changed by visitors. The server ignores other keys.
+- Only `year`, `preset`, `speed_tps`, `strategy` and `start_charge_level` can be changed by visitors. The server ignores other keys.
+- `year` is 2025 or 2026. A preset belongs to one year; picking a year offers that year's presets.
 
 ## REST endpoints
 
@@ -52,8 +54,7 @@ Change it only through the integrator.
 | `POST /availability` | anyone | see below | `{"applied_from_tick_utc": "…", "affected": 6000, "available": 14000, "total": 20000}` |
 | `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "city", "lonlat", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
 | `GET /fleet/layout` | anyone | – | Layout (below): where every battery sits, for the map. It is static per fleet, so cache it by `version`. |
-| `POST /presenter/check` | anyone | header `X-Presenter-Passcode` | `200 {"ok": true}` or `403` |
-| `POST /chaos/kill` | **presenter only** | header `X-Presenter-Passcode`; optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. |
+| `POST /chaos/kill` | anyone | optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. Rate-limited: one kill per 2 s. |
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
 | `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed\|cancelled", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
 | `POST /backtest/{job_id}/cancel` | anyone | – | Stops a running full-year job: `200 {"status": "cancelled"}`. Nothing is stored, and the previous results stay. `409 not_running` ("That full-year run has already finished.") if the job has already finished; `404 unknown_job` if the id is unknown. A cancelled job emits a `backtest_done` event whose message says it was stopped. |
@@ -65,8 +66,6 @@ Change it only through the integrator.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 403 | `forbidden` | Missing or wrong passcode |
-| 503 | `presenter_passcode_not_set` | No passcode is configured yet |
 | 409 | `already_dead` | That worker is already dead |
 | 409 | `too_few_healthy` | The kill would leave fewer than 2 healthy workers |
 
@@ -83,14 +82,19 @@ Change it only through the integrator.
 | `simulator_restarting` | 503 from `/run/start` when the controllers aren't back within 15 s of a Reset. Carries `retry_after_s` and a `Retry-After` header, like a 429. |
 
 **`GET /settings` item shapes:**
-- Preset: `{"id", "label", "date_local", "start_utc", "start_local", "description"}`
+- Preset: `{"id", "year", "label", "date_local", "start_utc", "start_local", "description"}`. Each year has a "From January 1" preset.
+- Year:
+  - `{"year": 2025, "label": "2025", "description": "Real ERCOT prices for the whole year.", "real_until_utc": null}`
+  - `{"year": 2026, "label": "2026", "description": "Real prices through Sep 20, then the AI's prediction.", "real_until_utc": "2026-09-21T05:00:00Z"}`
+  - `real_until_utc` is the end of the last real interval.
+  - `GET /settings` adds `"years": [Year]`.
 - Strategy: `{"id": "bands", "label": "Simple rule", "description": "…"}`
 - Speed: `{"tps": 2, "label": "1 hour every 6 s"}`
 
 **Rate limits** (global, because everyone shares one fleet):
 - `/run/start` and `/run/reset`: one call per 5 s.
 - `/availability`: 10 calls per second.
-- Wrong passcodes: 5 per minute per IP.
+- `/chaos/kill`: one call per 2 s.
 - A limited call returns `429 {"error": "rate_limited", "retry_after_s": n}`.
 
 **`POST /availability` bodies** take effect from the next tick:
@@ -131,9 +135,10 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
  "error_pct": 0.02,
  "revenue_usd": {"LZ_HOUSTON": -1.61, "LZ_NORTH": 0.0, "fleet": -1.61},
  "charge_level": {"LZ_HOUSTON": 0.62, "LZ_NORTH": 0.55, "fleet": 0.585},
- "healthy_workers": 20}
+ "healthy_workers": 20, "predicted": false}
 ```
 - `decision_price` is the last *published* price the strategy saw (the 15-min lag).
+- `predicted` is `true` for ticks after the year's `real_until_utc`. Their prices come from the AI's prediction (TimesFM-3, p50), not ERCOT. The money earned on them is a projection.
 - `action` is `charge`, `sell` or `hold`.
 - `target_kw` is the feasible fleet target, not the raw request.
 - `error_pct` is `|actual − target| / max(|target|, 0.5% of nameplate)`.
@@ -179,6 +184,7 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
   | 3 | charging |
   | 4 | controller down: its controller is suspect or dead, and the battery hasn't been handed over yet |
 
+- An availability change or a controller crash shows in `battery_status` within one frame, including while paused.
 - With no run, every battery is 1 (online batteries) or 0 (offline). `idle` messages carry no `battery_status`, so after an availability change while idle, clients refetch `GET /state`.
 - Code 4 lasts about 2 ticks: the missed tick and the hand-over tick. At 5–10 ticks/s a 1 s frame can miss it, so clients should also flash a crashed controller's batteries on `worker_suspect`, `worker_dead` and `worker_adopted` events.
 
@@ -190,9 +196,14 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 ```json
 {"strategy": "bands", "label": "Simple rule",
  "revenue_usd": 31020.5, "by_location": {"LZ_HOUSTON": {"revenue_usd": 0, "charge_level": 0.41, "action": "sell"}},
- "charge_level": 0.43, "live_minus_race_usd": 15290.1}
+ "charge_level": 0.43, "live_minus_race_usd": 15290.1,
+ "potential": {"label": "AI forecast, all batteries online", "revenue_usd": 47100.0,
+               "by_location": {"LZ_HOUSTON": {"revenue_usd": 0}}, "shortfall_usd": 790.9},
+ "shows_potential": true}
 ```
 - `live_minus_race_usd` is the live fleet's `totals.revenue_usd` minus the race's. Positive means the live strategy is ahead.
+- `potential` is a second shadow fleet: the live strategy with every battery online and no controller crashes. `shortfall_usd` is `potential.revenue_usd` minus the live revenue, which is what outages cost.
+- `shows_potential` turns true (and stays true for the run) once any battery was taken offline or any controller crashed. The UI shows the third bar only then.
 - `race` is `null` while idle, while a run is starting, and when there is nothing to race: a live simple rule with no forecasts in any city.
 - The after-spike `race_update` has severity `good` when the live strategy leads, and `info` otherwise.
 
@@ -237,7 +248,8 @@ StrategyGains is:
 ```json
 {"id": "…", "wall_utc": "…", "sim_utc": "…", "kind": "…", "severity": "info", "message": "…", "detail": {}}
 ```
-- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`, `race_update`.
+- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`, `race_update`, `prediction_started`.
+  - `prediction_started`: "From here on, prices are the AI's prediction (TimesFM-3), not real ERCOT data." It is emitted once, at the first predicted tick.
   - `race_update` is a plain-language comparison with the race fleet. A "spike" here is any city's price reaching `api.race_spike_usd_mwh` ($300/MWh), which is lower than the $1,000 `price_spike` alert. It comes at the start of each price spike (e.g. "Prices jumped to $1,757 in all four cities. The AI fleet had 54% charge left; the simple rule had 21%.") and after it ends ("The AI is now $12,400 ahead of the simple rule.").
   - A run finishes when the replay reaches the end of the loaded data.
 - Worker events carry `detail.worker_id` (0-based) and `detail.controller` (1-based, as shown to people). `worker_adopted` also carries `detail.adopted_by` (worker ids) and `detail.ms`.

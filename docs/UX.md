@@ -59,7 +59,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **If a run is already going:** "A simulation is running. Watch live" plus a secondary "Start over".
 
 ### 2. Live
-- **Top bar:** replay clock ("Jul 11, 2025, 8:45 pm, Central time"), Pause/Resume, Speed, Reset. Presenter mode shows the extra button "Crash a controller".
+- **Top bar:** replay clock ("Jul 11, 2025, 8:45 pm, Central time"), Pause/Resume, Speed, Reset, and **Crash a controller**, open to everyone.
 - **The race** sits in the map's money corner, under the money: "AI forecast ahead by $15,290" over two bars (the live strategy vs the simple-rule shadow fleet, from `race`). It switches to the selected city's numbers, and `race_update` events show in the feed with a flag icon.
 - **Price card** ("Electricity price right now"):
   - Real price line per area, shaded teal while charging and amber while selling.
@@ -103,11 +103,9 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
   - No limitations line in this section (the human's call). The fine print stays in "How we got this number".
   - A 404 hides the section.
 
-## Presenter mode
-- Reached from the **"Presenter mode" link in the header** (top right, left of "Show technical details"). The dialog says "Enter a passcode to enter presenter mode" and calls `POST /presenter/check`. While presenter mode is on, the link reads "Leave presenter mode".
-- **There is no footer** on any page.
-- The passcode is kept in `sessionStorage` only, and is sent as the `X-Presenter-Passcode` header.
-- Unlocks "Crash a controller". Crashing a controller is presenter-only; everything else is public.
+## Crashing controllers
+- Open to everyone: there is no presenter mode and no passcode. Rate-limited to one crash per 2 s, and it never leaves fewer than 2 healthy controllers.
+- **Reset** brings every controller back and every battery online.
 
 ## Live map (the default Live view, added 2026-09-26, per the human's direction)
 - **Page.** Full screen with a **dark gray background** (`#25282c`), the same as every other page.
@@ -133,7 +131,40 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **Corners.** Compact translucent dark panels, with the plain language and units rules as elsewhere:
   - **Top-left:** replay clock; the selected city's price right now, with its ¢/kWh translation and a mini price line; its forecast band if present.
   - **Top-right:** money earned so far (city or fleet); power asked for vs delivered, as numbers plus a sparkline and an On target badge.
-  - **Bottom-left:** Pause/Resume, Speed, Reset, Take batteries offline, and the presenter-only Crash a controller.
+  - **Bottom-left:** Pause/Resume, Speed, Reset, Take batteries offline, and Crash a controller (public).
   - **Bottom-right:** 20 mini controller tiles (serving the selected city = highlighted, using `workers[].by_location`); batteries online/offline for the selection; the last 3 "What just happened" events.
 - **"Show charts."** A button that opens the existing detailed Live layout; nothing is lost.
 - **Honesty.** A small caption: "Battery locations are simulated inside real metro areas."
+
+
+## Live map v2 (the human's feedback, 2026-09-26). This supersedes the earlier dot looks.
+- **Dot colours: one meaning each, and shape as well as colour.** The legend in the bottom-right corner doubles as the battery counts.
+
+  | Dot | Meaning |
+  |---|---|
+  | **Green solid** | selling power to the grid |
+  | **Blue solid** | charging (buying) |
+  | **Gray, small** | waiting |
+  | **Red ring** (hollow) | offline, because a visitor took it offline |
+  | **Red pulsing** | its controller crashed. It returns to its normal look once another controller takes it over. |
+
+  - Offline and crashed batteries are drawn red at **their own locations**. That's the random subset for a city slider, or that controller's block of batteries.
+  - Aggregated dots use the majority state. A cell with any offline or crashed batteries gets a red edge, so outages are never hidden inside a green dot.
+- **Zoom: exactly one level.** The map loads showing all of Texas.
+  - A **+ / −** control, or a double-click, zooms to the **Texas Triangle** (the bounding box of the four metros, with margin), centred on screen.
+  - When zoomed in, dots re-aggregate at the new scale, so they are clearly visible (smaller cells, more dots).
+  - The zoom animates smoothly; Esc zooms back out.
+- **Timeline slider** in the top-left corner, compact: it must not inflate the corner.
+  - The track is a mini price line for the run so far, with green bands where the fleet was selling and blue bands where it was buying, and small ▲/▼ markers at the highs and lows.
+  - Dragging, or the ← → keys, shows the map and corners **as they were at that moment**, with a "Viewing 7:45 pm · Back to live" chip. The simulation keeps running.
+  - Map dots for the past come from the frames this page has seen. Before the page was opened, the corners still work from history, and the map shows the city totals only.
+- **Availability drawer.**
+  - "Bring every battery back online" moves to the **top** of the panel.
+  - The "Find a battery" section is removed.
+- **Race.** When batteries or controllers went offline (`race.shows_potential`), a **third bar** appears: "All batteries online (projected)", from `race.potential`, together with the shortfall. So the race shows actual AI vs simple rule vs what the AI would have earned with everything online.
+- **Year.** The Start settings get **Year: 2025 / 2026** (no 2024). For 2026, prices are real until `real_until_utc`, then the AI's prediction.
+  - The timeline shades the predicted part.
+  - The clock shows a "Predicted" badge on predicted ticks.
+  - The `prediction_started` event appears in the feed.
+  - Money on predicted ticks is labelled "projected".
+- **Presenter mode** is removed from the header, and its dialog and session storage are removed too.
