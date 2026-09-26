@@ -307,3 +307,19 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
   - Evening peak: $126.58. Simple rule: $119.78.
   - Best possible (hindsight): $406.10. The AI reaches 45% of it.
 - **Script:** DEMO.md.
+
+## Out-of-sample check: 2024 (2026-09-26)
+
+- **Why.** The forecast rule's settings (a 12 h horizon and its k values) were chosen on 152 days of 2025. So we also ran TimesFM-3 over all of 2024: 26,232 forecasts in about 21 min on Cloud Run. Then we backtested 2024 with the same code, fleet and settings.
+- **Results.** 20,000 batteries, lag 3, gross wholesale:
+
+  | Strategy | Per battery / yr | Fleet / yr | Cycles / yr |
+  |---|---|---|---|
+  | **AI forecast (TimesFM-3)** | **$265.01** | $5.30M | 376 |
+  | Evening peak | $142.91 | $2.86M | 366 |
+  | Simple rule (bands) | $113.13 | $2.26M | 199 |
+  | Best possible (hindsight) | $515.51 | $10.31M | 1,298 |
+  | Best possible, capped at 1 cycle/day | $425.60 | $8.51M | 365 |
+
+- **Reading.** The AI's lead over the simple rule holds out of sample: 2.3× in 2024 and 1.5× in 2025. It reaches 51% of the hindsight ceiling in 2024 and 45% in 2025. It does cycle about once a day, and battery wear is not priced in (see the pitch footnote).
+- **Storage.** The 2024 runs are in Cloud SQL `backtest_runs` without the pitch flag. The pitch stays 2025, the spec's year.

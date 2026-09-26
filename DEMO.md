@@ -36,7 +36,9 @@
 
 ## Honest answers to likely questions
 - **"Does the AI always win?"** No. On May 16, 2025 (the *Price-spike evening* preset) it sold at 3–4 pm and missed the 7:45 pm spike. Forecasts rarely see spikes coming. Over the whole year it still earns 53% more than the simple rule.
-- **"Is $183 cherry-picked?"** The forecast rule's two settings were tuned on part of 2025. The 2024 re-run with 2024 forecasts is the out-of-sample check; see RUNLOG.
+- **"Is $183 cherry-picked?"** The forecast rule's two settings were tuned on part of 2025, so we ran 2024 as a clean test, with fresh TimesFM-3 forecasts for 2024.
+  - The AI earned **$265 per battery**, against $113 for the simple rule and $143 for evening peak. That is 51% of the $516 hindsight ceiling.
+  - 2024 had bigger spikes than 2025, so it is the stronger year, not a tuned one.
 - **"Real hardware?"** Everything talks through four frozen interfaces (price feed, battery adapter, strategy, ledger), so real price feeds and battery APIs can plug in later.
 
 ## If something goes wrong
