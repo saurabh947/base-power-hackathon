@@ -286,3 +286,24 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
 - **Cost:**
   - Cloud Run bills only while an instance is up, about $0.29/h at 4 vCPU / 4 GiB. It scales to zero when idle, but an open browser tab keeps it up.
   - Cloud SQL f1-micro runs about $10/month.
+
+## M6: demo hardening (2026-09-25)
+
+- **Default demo preset: `summer_spike` (2025-07-11, from 6 pm).**
+  - With the AI forecast strategy, the fleet waits and tops up until 8 pm, then sells at the full 165 MW.
+  - It is still selling when both areas jump to $1,755/MWh at 9 pm: $10,376 in that one 5-minute step.
+  - On May 16 (`spike_evening`) the AI sells at 3–4 pm and misses the spike. That preset stays available as the honest counter-example.
+- **Three consecutive runs** against the live Cloud Run backend. Each ran the default settings at 2 ticks/s, took 30% of Houston offline at 8:15 pm, and ran through 9:15 pm:
+
+  | Run | Earned | Worst tracking error | Healthy controllers | Online batteries | Selling at the 9 pm spike ($1,755/MWh) |
+  |---|---|---|---|---|---|
+  | 1 | $39,731 | 0.000% | 20/20 | 17,000/20,000 | 57.9 MW |
+  | 2 | $40,375 | 0.000% | 20/20 | 17,000/20,000 | 57.9 MW |
+  | 3 | $39,673 | 0.000% | 20/20 | 17,000/20,000 | 57.9 MW |
+
+- **Controller crashes on Cloud Run** were verified with the `fleet-sim-bench` job, because the presenter passcode is the human's: 5.02% on the kill tick, then 0.000%. The passcode-gated button was tested locally and in the API tests.
+- **Full-year pitch, 2025** (cloud backtest, in Cloud SQL `backtest_runs`):
+  - AI forecast (TimesFM-3): $183.46 per battery, $3.67M for the fleet.
+  - Evening peak: $126.58. Simple rule: $119.78.
+  - Best possible (hindsight): $406.10. The AI reaches 45% of it.
+- **Script:** DEMO.md.
