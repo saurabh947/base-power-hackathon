@@ -76,7 +76,12 @@ interface Props {
   notice: ReactNode;
 }
 
+/** Space kept between the two right-hand corners, and between them and the map's top and bottom edges. */
+const RIGHT_GAP = 10;
+const EDGE = 12;
+
 export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const baseRef = useRef<HTMLCanvasElement>(null);
@@ -145,16 +150,33 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
     }
   }, []);
 
+  /**
+   * The money corner (top right, which also holds the race) and the fleet corner (bottom right) share the
+   * right edge. In a short window, cap the money corner's height at the room the fleet corner leaves, so the
+   * two never overlap; it scrolls inside only then (css: .corner-slot-tr > .corner).
+   */
+  const fitRightCorners = useCallback(() => {
+    const root = rootRef.current;
+    const br = brRef.current;
+    if (!root || !br) return;
+    const room = root.clientHeight - br.offsetHeight - 2 * EDGE - RIGHT_GAP;
+    root.style.setProperty('--corner-tr-max', `${Math.max(180, Math.floor(room))}px`);
+  }, []);
+
   // After every render that may move or resize a label, and whenever a corner panel changes size.
   useLayoutEffect(() => {
+    fitRightCorners();
     placeLabelsNow();
   });
 
   useEffect(() => {
-    const ro = new ResizeObserver(() => placeLabelsNow());
-    for (const el of [tlRef.current, trRef.current, blRef.current, brRef.current]) if (el) ro.observe(el);
+    const ro = new ResizeObserver(() => {
+      fitRightCorners();
+      placeLabelsNow();
+    });
+    for (const el of [rootRef.current, tlRef.current, trRef.current, blRef.current, brRef.current]) if (el) ro.observe(el);
     return () => ro.disconnect();
-  }, [placeLabelsNow]);
+  }, [placeLabelsNow, fitRightCorners]);
 
   // ---- the renderer --------------------------------------------------------------
 
@@ -276,7 +298,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
   const selectedCity = selected === null ? null : (cities.find((c) => c.location === selected) ?? null);
 
   return (
-    <div className="livemap">
+    <div className="livemap" ref={rootRef}>
       <h1 className="sr-only">Live map</h1>
 
       <div className="corner-slot corner-slot-tl" ref={tlRef}>

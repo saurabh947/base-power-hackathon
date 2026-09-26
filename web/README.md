@@ -52,7 +52,7 @@ rebuilds the Texas outline (below).
 | `npm run mock` | Standalone mock API on port 8787 (`MOCK_PORT` to change) |
 | `npm run typecheck` | `tsc -b` over the app, the mock and the configs |
 | `npm run lint` | oxlint (correctness, suspicious, React hooks, jsx-a11y), warnings fail |
-| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, results rows, map (projection, outline, layout and status decoding, cells, looks, selection, labels), mock, AA contrast of the site's one theme |
+| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, results rows, "What the AI adds" (uplift maths, wording, year switch, the 2024 spike card), the full-year re-run's Stop, the race and its events, map (projection, outline, layout and status decoding, cells, looks, selection, labels), mock, AA contrast of the site's one theme |
 | `npm run build` | typecheck, `vite build` to `dist/` (no source maps), then `scripts/check-dist.mjs` fails if any mock code shipped |
 | `npm run check` | all of the above |
 
@@ -69,8 +69,9 @@ One setting, read at **build time**:
 - Unset on Vercel (`VERCEL=1`): the build fails on purpose with a message saying what to set.
 
 Presenter mode needs no configuration here. The passcode lives in Secret Manager on the backend; a presenter
-types it after clicking the small "Presenter" link in the footer. The site keeps it in `sessionStorage` only
-(gone when the tab closes) and sends it as the `X-Presenter-Passcode` header.
+types it after clicking the "Presenter mode" link in the header (top right, left of "Show technical details"),
+which reads "Leave presenter mode" while it is on. The site keeps the passcode in `sessionStorage` only (gone
+when the tab closes) and sends it as the `X-Presenter-Passcode` header. The site has no footer.
 
 ## Deploy to Vercel
 
@@ -86,8 +87,8 @@ The human owns the Vercel account; the integrator deploys. The project's **Root 
 4. Deploy: `npx vercel --prod`.
 5. CORS: the API allows `https://*.vercel.app` (docs/API.md). For a custom domain, pass it to
    `scripts/cloud/deploy.sh https://your.domain` so it lands in `CORS_ORIGINS`.
-6. Check: open the site, turn on "Show technical details" and look at the footer: it shows the API URL and the
-   backend version. The Live screen's top bar should say "Live updates".
+6. Check: open the site, turn on "Show technical details" and look at the header: it shows the API URL and the
+   backend version. The Live screen should say "Live updates".
 
 `vercel.json` also rewrites every path to `index.html` (the site uses `/`, `/live` and `/results`), caches the
 hashed files in `/assets` for a year, and sets a few security headers. Vercel runs Node 22 per `engines`.
@@ -144,10 +145,26 @@ layout (remembered for the tab); "Show map" switches back.
   dots also selects it; the "All of Texas" chip, Esc or clicking empty map go back. The corners then show that
   city: per-location tick values, `totals.by_location`, `availability.by_location`, and the controllers with
   batteries there (`workers[].by_location`) highlighted.
+- **The race.** The money corner shows the live fleet against a copy of the same batteries on the simple rule
+  (`race` in every frame, docs/API.md): "RACE ↑ AI forecast ahead by $15,290" over two bars, for all of Texas or
+  the selected city (`race.by_location`), hidden while idle. "Show charts" has the same in its money card, with
+  the charge left on each side; `race_update` events get a flag in both "What just happened" lists. The wording
+  is in `src/screens/live/race.ts` (tested). In a short window the money corner is capped at the room the fleet
+  corner below it leaves, so the two never overlap.
 - **Always dark, everywhere.** The map's look is the whole site's: one set of tokens (`src/styles/tokens.css`),
   always dark whatever the browser's colour preference, with the same translucent panels on every page, green for
   the primary action and links, and red only for failures and the Texas outline. Start and Results have no map;
   the map is the Live page's.
+
+### Results: "What the AI adds"
+
+Right under the headline row, from `GET /results/ai-gains`: what the AI forecast earns over the simple rule
+("+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet",
+built from `uplift` and the fleet size), then four cards, each with a "What this means" line: earns more, gets
+closer to perfect (`share_of_best` as bars), soaks up surplus power (`surplus_mwh`) and ready for spikes. A
+"2025 (headline year) / 2024 (check year)" switch drives the headline and the first three cards; the spike card
+always shows 2024 and says so, and is hidden without a 2024 entry. A 404 `no_results` hides the section. The
+model and every sentence are in `src/screens/results/aiGains.ts` (tested).
 
 - **Charts**: [uPlot](https://github.com/leeoniya/uPlot) (about 50 KB): canvas, fast with 2,000-point series,
   live appends, bands for the forecast, draw hooks for the charge/sell shading and crash markers.

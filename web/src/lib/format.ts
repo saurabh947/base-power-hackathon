@@ -109,6 +109,16 @@ export function strategyTechName(id: string): string {
   return STRATEGY_TECH[id] ?? id;
 }
 
+/** A method's name without its bracketed detail, for tight spaces: "AI forecast (TimesFM-3)" → "AI forecast". */
+export function shortLabel(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, '').trim() || label;
+}
+
+/** A name inside a sentence: "Simple rule" → "simple rule", but "AI forecast" stays. */
+export function lowerFirst(label: string): string {
+  return /^[A-Z][a-z]/.test(label) ? label[0].toLowerCase() + label.slice(1) : label;
+}
+
 const ACTION_LABELS: Record<TickAction, string> = { charge: 'Charging', sell: 'Selling', hold: 'Waiting' };
 
 export function actionLabel(action: TickAction | undefined | null): string {

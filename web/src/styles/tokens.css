@@ -64,6 +64,8 @@
   --panel-hover: rgba(255, 255, 255, 0.07);
   --panel-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   --panel-blur: blur(10px) saturate(1.1);
+  /* A card inside a panel ("What the AI adds"): a step lighter than the panel under it. */
+  --card: #23262a;
 
   /* The live map's red Texas outline (drawn on canvas by src/map/renderer.ts; kept in step by a test). */
   --map-outline: #ff3b3b;

@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { Footer } from './components/Footer.tsx';
 import { Header } from './components/Header.tsx';
 import { Link } from './components/Link.tsx';
 import { PracticeBanner } from './components/PracticeBanner.tsx';
@@ -60,7 +59,6 @@ export function App() {
         {route === 'results' ? <ResultsScreen /> : null}
         {route === 'notfound' ? <NotFound /> : null}
       </main>
-      {mapMode ? null : <Footer />}
       <Toasts />
     </>
   );

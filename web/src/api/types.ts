@@ -154,6 +154,30 @@ export interface Forecast {
   points: ForecastPoint[];
 }
 
+/** One city of the race fleet. */
+export interface RaceLocation {
+  revenue_usd: number;
+  charge_level: number;
+  action: TickAction;
+}
+
+/**
+ * The race (docs/API.md): a shadow copy of the fleet running the comparison strategy side by side with
+ * the live one, on the same batteries, prices, decision lag and availability (not the controller crashes).
+ * The comparison is `bands` ("Simple rule"), or `forecast` when the live run itself uses `bands`.
+ */
+export interface Race {
+  strategy: string;
+  label: string;
+  /** The race fleet's earnings so far (a fleet total). */
+  revenue_usd: number;
+  by_location: Record<string, RaceLocation>;
+  /** 0-1, the race fleet's charge level now. */
+  charge_level: number;
+  /** The live fleet's totals.revenue_usd minus the race's: positive means the live strategy is ahead. */
+  live_minus_race_usd: number;
+}
+
 interface LiveBody {
   run_id: string | null;
   status: RunStatus;
@@ -165,6 +189,8 @@ interface LiveBody {
   forecast?: Record<string, Forecast | null | undefined>;
   /** Base64 of packed 4-bit codes, one per battery (src/map/status.ts). */
   battery_status?: string;
+  /** Null while idle. */
+  race?: Race | null;
 }
 
 export interface SnapshotMessage extends LiveBody {
@@ -257,7 +283,8 @@ export interface KillResponse {
 }
 
 export interface BacktestStatus {
-  status: 'running' | 'done' | 'failed';
+  /** `cancelled`: stopped with POST /backtest/{job_id}/cancel; nothing was stored. */
+  status: 'running' | 'done' | 'failed' | 'cancelled';
   run_ids: string[];
   /** Strategies left out of the run, with the reason, e.g. {"forecast": "forecasts do not cover 2025"}. */
   skipped?: Record<string, string>;
@@ -298,6 +325,50 @@ export interface Results {
   assumptions: string[];
   strategies: StrategyResult[];
   ceiling: Ceiling | null;
+}
+
+/** One decision method's full year in GET /results/ai-gains. Energy in MWh, prices in $/MWh. */
+export interface StrategyGains {
+  label: string;
+  per_battery_usd_year: number;
+  fleet_usd_year: number;
+  /** Per-battery earnings ÷ the same year's hindsight best, 0-1. */
+  share_of_best: number;
+  /** Energy bought at prices ≤ $0/MWh. */
+  surplus_mwh: number;
+  /** Energy sold during 5-minute prices ≥ $1,000/MWh. */
+  spike_mwh: number;
+  /** How many separate spikes the year had. */
+  spike_events: number;
+  /** The fleet's charge level when each spike began, averaged, 0-1. */
+  spike_charge_level: number;
+  sold_mwh: number;
+  bought_mwh: number;
+  avg_sell_usd_mwh: number;
+  avg_buy_usd_mwh: number;
+}
+
+/** What the AI adds over the baseline in one year. `pct` is a fraction: 0.544 means +54.4%. */
+export interface Uplift {
+  per_battery_usd_year: number;
+  pct: number;
+  fleet_usd_year: number;
+}
+
+export interface AiGainsYear {
+  year: number;
+  is_pitch: boolean;
+  best_possible_per_battery_usd_year: number;
+  /** Keyed by strategy id: forecast, bands, peak. */
+  strategies: Record<string, StrategyGains>;
+  uplift: Uplift;
+}
+
+/** GET /results/ai-gains: what the AI (`ai`) adds over the simple rule (`baseline`), the pitch year first. */
+export interface AiGains {
+  ai: string;
+  baseline: string;
+  years: AiGainsYear[];
 }
 
 export interface ApiErrorBody {

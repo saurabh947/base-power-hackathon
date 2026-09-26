@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../../api/client.ts';
+import { api, ApiError } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
-import type { Results } from '../../api/types.ts';
+import type { AiGains, Results } from '../../api/types.ts';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { Term } from '../../components/Tech.tsx';
 import { useBackend } from '../../state/backend.ts';
+import { AiGainsSection } from './AiGainsSection.tsx';
+import { readAiGains } from './aiGains.ts';
 import { headlineOf } from './model.ts';
 import { BigNumber, ComparisonBars, HowWeGotThis, TopDays } from './ResultPanels.tsx';
 import { RerunPanel } from './RerunPanel.tsx';
@@ -27,9 +29,21 @@ interface Loaded {
   loading: boolean;
 }
 
+/** How long the page waits for GET /results/ai-gains before showing the results without that section. */
+const GAINS_PATIENCE_MS = 1500;
+
+interface Gains {
+  data: AiGains | null;
+  /** The first answer (or failure) is in. */
+  settled: boolean;
+}
+
 export function ResultsScreen() {
   const backend = useBackend();
   const [state, setState] = useState<Loaded>({ results: null, error: null, loading: true });
+  // "What the AI adds": shown only when GET /results/ai-gains has something to show.
+  const [gains, setGains] = useState<Gains>({ data: null, settled: false });
+  const [patienceOver, setPatienceOver] = useState(false);
 
   /** GET /results/pitch; state changes only once the answer arrives. */
   const fetchResults = useCallback((signal?: AbortSignal) => {
@@ -46,20 +60,44 @@ export function ResultsScreen() {
     );
   }, []);
 
+  /**
+   * GET /results/ai-gains, alongside the results. A 404 (no_results) or an answer with nothing usable hides
+   * the section; a network blip keeps what is already on screen.
+   */
+  const fetchGains = useCallback((signal?: AbortSignal) => {
+    api.aiGains(signal).then(
+      (raw) => setGains({ data: readAiGains(raw), settled: true }),
+      (err) => {
+        if (signal?.aborted) return;
+        const answered = err instanceof ApiError && err.status >= 400 && err.status < 500;
+        setGains((g) => ({ data: answered ? null : g.data, settled: true }));
+      },
+    );
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     fetchResults(controller.signal);
-    return () => controller.abort();
-  }, [fetchResults]);
+    fetchGains(controller.signal);
+    // The section sits right under the headline row: wait a moment for it, so it does not push the page down
+    // just after it appears, but never hold the results back for long.
+    const patience = setTimeout(() => setPatienceOver(true), GAINS_PATIENCE_MS);
+    return () => {
+      controller.abort();
+      clearTimeout(patience);
+    };
+  }, [fetchResults, fetchGains]);
 
   const reload = useCallback(() => {
     setState((s) => ({ ...s, loading: true }));
     fetchResults();
-  }, [fetchResults]);
+    fetchGains();
+  }, [fetchResults, fetchGains]);
 
   const { results, error, loading } = state;
   const headline = headlineOf(results);
   const year = results?.year ?? 2025;
+  const waitingForGains = !!results && !gains.settled && !patienceOver;
 
   return (
     <div className="page results">
@@ -73,7 +111,7 @@ export function ResultsScreen() {
         </p>
       </div>
 
-      {loading && !results ? (
+      {(loading && !results) || waitingForGains ? (
         <Notice
           kind="waiting"
           title={
@@ -96,12 +134,11 @@ export function ResultsScreen() {
         />
       ) : null}
 
-      {results && headline ? (
+      {waitingForGains ? null : results && headline ? (
         <div className="results-grid">
           <BigNumber results={results} headline={headline} />
           <ComparisonBars results={results} headline={headline} />
-          {/* "What the AI adds" (coming later) goes here, as its own row: a full-width panel (className="span-12"),
-              or two panels of span-7 and span-5 like the rows around it. */}
+          {gains.data ? <AiGainsSection gains={gains.data} fleetSize={results.fleet_size} /> : null}
           <TopDays results={results} headline={headline} />
           <div className="span-5 stack">
             <HowWeGotThis results={results} />
@@ -109,7 +146,7 @@ export function ResultsScreen() {
           </div>
         </div>
       ) : !loading ? (
-        <RerunPanel year={year} onDone={reload} />
+        <RerunPanel year={year} onDone={reload} hasResults={false} />
       ) : null}
     </div>
   );
