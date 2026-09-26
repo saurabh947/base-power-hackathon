@@ -217,3 +217,31 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
   - On the demo day (2025-05-16) it sold at 3–4 pm and missed the evening spike.
 - **Cloud.** `make cloud-forecast` builds an image with both models baked in (~2.2 GB) and runs the job. Estimated 30–60 min on 8 vCPU.
 - **Details:** docs/notes/forecast.md.
+
+## M4: full-year backtest (done 2026-09-25)
+
+- **Running it.** `python -m src.backtest.runner --strategies bands,forecast,peak --year 2025 --pitch`, or `make backtest-pitch`.
+- **Speed.** A full year × 20,000 batteries takes 18 s for bands and 30 s for peak, including the lag-0 variant. The spec's limit is 10 min.
+- **Same path as live.** It uses the same seam, `decision_tick`, headroom, allocation and physics as the live fleet. Tests show bit-identical results against a per-battery `Command` loop and against the M0 skeleton.
+- **2025 results.** Real ERCOT RT prices, 20,000 batteries (164.9 MW / 300.4 MWh), decision lag 15 min, gross wholesale:
+
+  | Strategy | Per battery / yr | Fleet / yr |
+  |---|---|---|
+  | Simple rule (bands) | $119.78 | $2.40M |
+  | Evening peak | $126.58 | $2.53M |
+  | Best possible (hindsight), whole fleet via LP | $406.10 | $8.12M |
+  | Best possible, capped at 1 cycle/day | $323.58 | $6.47M |
+
+- **The forecast strategy** runs only when forecasts cover at least 99% of the year's ticks (`backtest.forecast_min_coverage`). Otherwise it is skipped, and the Results say why. Without this rule it would hold all year and could become a $0 headline.
+- **The fleet split is shared.** `src.sim.fleet.assign_locations` puts Houston on b00000–b09999 and North on b10000–b19999, for both the live fleet and the backtest.
+- **Details:** docs/notes/backtest.md.
+
+## Website (done 2026-09-25)
+
+- **Stack.** `web/` is React + Vite + TypeScript, built to docs/UX.md and docs/API.md. Typecheck, lint, 149 tests and the build all pass. JavaScript is 121 KB gzipped.
+- **Practice mock.** `npm run dev` runs the site against a built-in mock that uses real prices for 2025-05-16/17; everything else in the mock is simulated. A "Practice data" banner says so, and a build step fails if mock code ever reaches `dist/`.
+- **Deploying.** On Vercel, set Root Directory to `web` and `VITE_API_BASE_URL` to the Cloud Run URL. A build without that variable fails on purpose.
+- **Reviewed at 1280 px:**
+  - The Start card sits above the button.
+  - The Live screen shows the price chart with charge/sell shading and the forecast band, plus 20 controller tiles (numbered 1–20) and a plain-language feed.
+- **Details:** docs/notes/web.md.
