@@ -3,6 +3,7 @@
 // and closes 30 s after the last one lets go, so quick navigation doesn't churn.
 
 import { api } from '../api/client.ts';
+import type { Settings } from '../api/types.ts';
 import { API_BASE, toWebSocketUrl } from '../api/config.ts';
 import { createStore, useStore } from '../lib/store.ts';
 import { asSnapshot, initialConnectionState, LiveConnection, type ConnectionState } from './connection.ts';
@@ -17,6 +18,26 @@ export function useLive<S>(selector: (state: LiveState) => S): S {
 
 export function useConnection<S>(selector: (state: ConnectionState) => S): S {
   return useStore(connectionStore, selector);
+}
+
+/**
+ * A run was just started from this page: forget the previous run right away, so
+ * the Live screen never flashes old data before the first frame of the new one.
+ */
+export function beginRun(runId: string, settings: Settings): void {
+  liveStore.set((s) => ({
+    ...initialLiveState,
+    received: true,
+    runId,
+    status: 'starting',
+    settings,
+    speedTps: settings.speed_tps,
+    workers: s.workers,
+    availability: s.availability,
+    messages: s.messages,
+    lastMessageAtMs: s.lastMessageAtMs,
+    runChanged: s.runChanged,
+  }));
 }
 
 export function dispatchLive(message: unknown): void {

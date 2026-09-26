@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { api } from '../../api/client.ts';
+import { api, ApiError } from '../../api/client.ts';
+import { friendlyError } from '../../api/errors.ts';
+import type { KillResponse } from '../../api/types.ts';
 import { Dialog } from '../../components/Dialog.tsx';
 import { Icon } from '../../components/Icon.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
@@ -7,7 +9,7 @@ import { reconnectNow, useConnection, useLive } from '../../live/liveStore.ts';
 import { fmtClock, fmtDate, fmtSpeedShort, fmtSpeed, localDateOf, fmtLocalDate } from '../../lib/format.ts';
 import { presenterPasscode, useIsPresenter, leavePresenter } from '../../state/presenter.ts';
 import { showToast } from '../../state/toasts.ts';
-import { pauseRun, resetRun, resumeRun, runAction, setSpeed } from './actions.ts';
+import { pauseRun, resetRun, resumeRun, setSpeed } from './actions.ts';
 
 const SPEEDS = [1, 2, 5, 10];
 
@@ -190,7 +192,15 @@ function CrashControl() {
     if (!passcode) return;
     setBusy(true);
     const workerId = target === 'random' ? undefined : Number(target);
-    const result = await runAction(() => api.kill(passcode, workerId), 'kill');
+    let result: KillResponse | null = null;
+    try {
+      result = await api.kill(passcode, workerId);
+    } catch (err) {
+      const f = friendlyError(err, 'kill');
+      // A rejected passcode is useless from now on: drop it so the presenter can unlock again.
+      if (err instanceof ApiError && err.status === 403) leavePresenter();
+      showToast({ kind: 'error', title: f.title, detail: f.detail, technical: f.technical });
+    }
     setBusy(false);
     if (result) {
       showToast({

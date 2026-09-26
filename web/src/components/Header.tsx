@@ -1,14 +1,21 @@
 import type { Route } from '../lib/router.ts';
+import { useConnection, useLive } from '../live/liveStore.ts';
 import { useBackend } from '../state/backend.ts';
 import { setTechnical, useTechnical } from '../state/prefs.ts';
 import { Icon } from './Icon.tsx';
 import { Link } from './Link.tsx';
 import { Switch } from './Switch.tsx';
 
+const ACTIVE = new Set(['running', 'starting', 'paused']);
+
 export function Header({ route }: { route: Route }) {
   const technical = useTechnical();
   const { health } = useBackend();
-  const running = health?.status === 'running' || health?.status === 'starting' || health?.status === 'paused';
+  // While the live feed is connected it knows best; otherwise use the last GET /health.
+  const feedUp = useConnection((c) => c.mode === 'live' || c.mode === 'polling');
+  const liveStatus = useLive((s) => (s.received ? s.status : null));
+  const status = feedUp && liveStatus ? liveStatus : health?.status;
+  const running = !!status && ACTIVE.has(status);
 
   const current = (r: Route) => (route === r ? ('page' as const) : undefined);
 

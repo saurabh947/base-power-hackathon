@@ -7,6 +7,7 @@ import { Icon } from '../../components/Icon.tsx';
 import { Link } from '../../components/Link.tsx';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { fmtCount } from '../../lib/format.ts';
+import { beginRun } from '../../live/liveStore.ts';
 import { navigate } from '../../lib/router.ts';
 import { useRetryAfter } from '../../lib/useCountdown.ts';
 import { checkBackend, useBackend } from '../../state/backend.ts';
@@ -73,7 +74,8 @@ export function StartScreen() {
     setBusy(true);
     setError(null);
     try {
-      await api.start(editablePart(draft, model.editable));
+      const started = await api.start(editablePart(draft, model.editable));
+      if (started && typeof started.run_id === 'string' && started.settings) beginRun(started.run_id, started.settings);
       void checkBackend();
       navigate('/live');
     } catch (err) {
@@ -142,7 +144,8 @@ export function StartScreen() {
           {runExists ? (
             <Notice kind="warn" title="Starting over replaces the simulation that is running now, for everyone watching." />
           ) : null}
-          {error ? <ErrorNotice error={error} /> : null}
+          {/* A rate-limit notice is only useful until its countdown ends. */}
+          {error && !(error.retryAfterS !== null && waitS === 0) ? <ErrorNotice error={error} /> : null}
           <div className="start-actions">
             <button
               type="button"

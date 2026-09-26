@@ -49,11 +49,12 @@ interface Debounce {
   pending: number | null;
 }
 
-function AreaSlider({ location }: { location: string }) {
+function AreaSlider({ location, startAtZero }: { location: string; startAtZero: boolean }) {
   const id = useId();
   const counts = useLive((s) => s.availability?.by_location?.[location] ?? null);
+  // Start from what is offline now (the next frame may not reflect a change just made, hence startAtZero).
   const [percent, setPercent] = useState<number>(() =>
-    counts && counts.total ? Math.round(((1 - counts.available / counts.total) * 100) / 5) * 5 : 0,
+    !startAtZero && counts && counts.total ? Math.round(((1 - counts.available / counts.total) * 100) / 5) * 5 : 0,
   );
   const debounce = useRef<Debounce>({ timer: null, pending: null });
 
@@ -288,13 +289,18 @@ function FindBattery() {
 
 export function AvailabilityDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const availability = useLive((s) => s.availability);
-  const [resetKey, setResetKey] = useState(0);
+  // Bumped by "Bring every battery back online" so the sliders remount at 0%; cleared when the drawer closes.
+  const [allBackCount, setAllBackCount] = useState(0);
   const allBack = async () => {
     const ok = await applyChange({ scope: 'all', available: true }, () => 'Every battery is back online.');
-    if (ok) setResetKey((k) => k + 1);
+    if (ok) setAllBackCount((k) => k + 1);
+  };
+  const close = () => {
+    setAllBackCount(0);
+    onClose();
   };
   return (
-    <Dialog open={open} onClose={onClose} title="Take batteries offline" variant="drawer">
+    <Dialog open={open} onClose={close} title="Take batteries offline" variant="drawer">
       <p className="panel-what">
         Offline batteries can't charge or sell, so the fleet's plan shrinks. This is different from crashing a
         controller.
@@ -313,15 +319,15 @@ export function AvailabilityDrawer({ open, onClose }: { open: boolean; onClose: 
         </p>
       ) : null}
 
-      <section className="drawer-section" key={resetKey}>
+      <section className="drawer-section" key={allBackCount}>
         <h3>By area</h3>
         {LOCATIONS.map((l) => (
-          <AreaSlider key={l} location={l} />
+          <AreaSlider key={l} location={l} startAtZero={allBackCount > 0} />
         ))}
       </section>
 
       <section className="drawer-section">
-        <h3>All batteries of one controller</h3>
+        <h3>Take a controller's batteries offline</h3>
         <ControllerOffline />
       </section>
 
