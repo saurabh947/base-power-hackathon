@@ -35,7 +35,7 @@ TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_
              "revenue_usd", "charge_level", "healthy_workers", "predicted"}
 SETTINGS_KEYS = {"year", "preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
                  "capacity_kwh_range", "locations"}
-WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location"}
+WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location", "charge_level"}
 EVENT_KEYS = {"id", "wall_utc", "sim_utc", "kind", "severity", "message", "detail"}
 
 

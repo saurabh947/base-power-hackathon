@@ -153,8 +153,10 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 **Worker**
 ```json
 {"worker_id": 7, "status": "healthy", "pid": 1234, "batteries": 1000, "last_tick_utc": "…", "adopted_from": [3],
- "by_location": {"LZ_NORTH": 1000}}
+ "by_location": {"LZ_NORTH": 1000}, "charge_level": 0.62}
 ```
+`charge_level` is the capacity-weighted average charge of the batteries this controller owns right now, 0.2–1.0. It is `null` when it owns none, e.g. a dead controller after the hand-over.
+
 `by_location` lists only the cities this controller currently holds. It is `{}` for a dead controller, and changes after hand-overs. `totals.by_location` always has every city.
 
 `status` is `starting`, `healthy`, `suspect` or `dead`.

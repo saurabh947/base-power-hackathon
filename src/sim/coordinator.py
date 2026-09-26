@@ -417,14 +417,26 @@ class WorkerHandle:
     exit_code: int | None = None
     ready_run: str | None = None
 
-    def public(self, layout: FleetLayout | None = None) -> dict:
-        """docs/API.md Worker. by_location: the batteries it owns right now per city (changes on hand-overs)."""
+    def public(self, layout: FleetLayout | None = None, soc: np.ndarray | None = None,
+               cap: np.ndarray | None = None) -> dict:
+        """docs/API.md Worker. by_location: the batteries it owns right now per city (changes on hand-overs).
+        charge_level: capacity-weighted average charge of those batteries (None when it owns none)."""
         out = {"worker_id": self.worker_id, "status": self.status, "pid": self.pid,
                "batteries": int(len(self.owned)), "last_tick_utc": to_utc_iso(self.last_tick_ts),
                "adopted_from": list(self.adopted_from)}
         if layout is not None:
             out["by_location"] = layout.counts_by_location(self.owned)
+        if soc is not None and cap is not None:
+            out["charge_level"] = worker_charge_level(self.owned, soc, cap)
         return out
+
+
+def worker_charge_level(owned: np.ndarray, soc: np.ndarray, cap: np.ndarray) -> float | None:
+    """Capacity-weighted average state of charge of the batteries `owned` (indices), rounded; None if none."""
+    if len(owned) == 0:
+        return None
+    c = cap[owned]
+    return round(float((soc[owned] * c).sum() / c.sum()), 4)
 
 
 @dataclass
@@ -1748,7 +1760,7 @@ class Coordinator:
             "speed_tps": (run.settings["speed_tps"] if run else ctl.default_settings(self.cfg, self.raw, self.N)["speed_tps"]),
             "totals": self._totals(),
             "last_run": self.last_run,
-            "workers": [h.public(self.layout) for h in self.workers],
+            "workers": [h.public(self.layout, self.soc, self.cap) for h in self.workers],
             "availability": self.availability.summary(),
             "strategy_effective": run.strategy_name if run else None,
             "race": (run.race.public(run.revenue_usd, run.potential, run.shows_potential)
