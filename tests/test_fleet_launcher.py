@@ -76,8 +76,16 @@ def stack():
             r.unlink(key)
 
 
+def _nice(pid: int) -> int:
+    out = subprocess.run(["ps", "-o", "ni=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    return int(out.stdout.strip())
+
+
 def test_sigterm_stops_everything_cleanly(stack):
     proc, base, workers, coordinator = stack
+    api = [int(p) for p in subprocess.run(["pgrep", "-P", str(proc.pid), "-f", "uvicorn"], capture_output=True,
+                                          text=True).stdout.split()]
+    assert len(api) == 1 and _nice(api[0]) == 5 and _nice(coordinator) == 0  # backtests can't starve the fleet
     assert httpx.post(f"{base}/run/start", json={"speed_tps": 10, "strategy": "peak"}, timeout=10).status_code == 202
     assert _wait(lambda: httpx.get(f"{base}/state", timeout=2).json()["totals"]["ticks"] >= 3, 20)
     proc.send_signal(signal.SIGTERM)

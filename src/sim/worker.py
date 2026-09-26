@@ -41,7 +41,8 @@ import redis
 from src.sim import battery as physics
 from src.sim.redis_layout import (
     DEFAULT_MAXLEN, F_AVAIL, F_CAP, F_CID, F_EFF, F_EPOCH, F_POW, F_RUN, F_SOC, F_TICK, NO_TICK,
-    CommandIds, Keys, arr, connect, dead_letter_entry, pack, redis_url, resp, unpack, write_dead_letters,
+    CommandIds, Keys, arr, connect, dead_letter_entry, fleet_battery_id, pack, redis_url, resp, unpack,
+    write_dead_letters,
 )
 
 LOAD_FIELDS = (F_SOC, F_CID, F_TICK, F_EPOCH, F_AVAIL, F_CAP, F_POW, F_EFF, F_RUN)
@@ -461,25 +462,11 @@ class Worker:
         write_dead_letters(self.r, self.keys, entries)
 
     def _dead_letter_batch(self, idx, sp, ts, reason, run) -> None:
-        """Dead-letter commands for batteries we hold no state for (ids come from the published layout)."""
-        try:
-            raw = self.r.get(self.keys.layout)
-            layout = json.loads(raw) if raw else None
-        except TRANSIENT:
-            layout = None
-        from src.sim.redis_layout import battery_id as make_bid
-
+        """Dead-letter commands for batteries we hold no state for (fleet-wide ids are b{index:05d})."""
         entries = []
         ids_factory = CommandIds(run)
         for j, g in enumerate(np.asarray(idx).tolist()):
-            bid = str(g)
-            if layout:
-                off = 0
-                for loc, n in layout["locations"]:
-                    if g < off + n:
-                        bid = make_bid(loc, g - off)
-                        break
-                    off += n
+            bid = fleet_battery_id(g)
             cid = ids_factory.ids([bid], ts)[0]
             sp_j = float(sp[j])
             entries.append(dead_letter_entry(command_id=cid, battery_id=bid, worker_id=self.worker_id, tick_ts=ts,

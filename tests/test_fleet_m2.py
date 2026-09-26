@@ -71,3 +71,15 @@ def test_m2_one_sim_day_20k_batteries_20_workers(coordinator):
     summary = co.run.ledger.summary()
     assert summary["total_usd"] == pytest.approx(sum(r["revenue_usd"]["fleet"] for r in log), rel=1e-6)
     assert all(r["price"]["LZ_HOUSTON"] is not None and r["price"]["LZ_NORTH"] is not None for r in log)
+
+
+def test_a_run_finishes_at_the_end_of_the_loaded_prices(coordinator):
+    """docs/API.md run_finished: the replay reached the end of the loaded data (2025 ends 05:55 UTC Jan 1)."""
+    co = coordinator(fleet_size=200, workers=2)
+    co.start({"start_utc": "2026-01-01T05:00:00Z", "speed_tps": "max", "strategy": "peak"}, internal=True)
+    assert co.serve_until(lambda: co.run.status == "finished", timeout_s=60)
+    assert len(co.tick_log) == 12 and co.tick_log[-1]["ts_utc"] == "2026-01-01T05:55:00Z"
+    finished = [e for e in co.events if e["kind"] == "run_finished"]
+    assert len(finished) == 1 and "end of the loaded price data" in finished[0]["message"]
+    assert finished[0]["detail"]["ticks"] == 12 and co.status == "finished"
+    assert co.snapshot()["status"] == "finished"

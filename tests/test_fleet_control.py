@@ -27,10 +27,10 @@ def test_default_settings_follow_docs_api(cfg, raw):
 
 
 def test_resolve_settings_takes_only_editable_keys(cfg, raw):
-    s = ctl.resolve_settings({"preset": "winter_spike", "speed_tps": 5, "strategy": "peak", "start_charge_level": 0.5,
+    s = ctl.resolve_settings({"preset": "summer_spike", "speed_tps": 5, "strategy": "peak", "start_charge_level": 0.5,
                               "fleet_size": 3, "start_utc": "2020-01-01T00:00:00Z"}, cfg, raw)
     assert (s["preset"], s["start_utc"], s["speed_tps"], s["strategy"], s["start_charge_level"]) == (
-        "winter_spike", "2025-01-15T10:00:00Z", 5, "peak", 0.5)
+        "summer_spike", "2025-07-11T23:00:00Z", 5, "peak", 0.5)
     assert s["fleet_size"] == 20000  # ignored
     internal = ctl.resolve_settings({"start_utc": "2025-03-01T06:00:00Z"}, cfg, raw, allow_internal=True)
     assert internal["start_utc"] == "2025-03-01T06:00:00Z"
@@ -85,7 +85,7 @@ def test_worker_battery_and_all_scopes(cfg, layout):
     bid = layout.ids[int(np.flatnonzero(owners == 2)[0])]
     a.apply({"scope": "battery", "battery_id": bid, "available": True}, owners, 4)
     assert a.summary()["offline_workers"] == []  # not all of worker 2's batteries are offline any more
-    a.apply({"scope": "battery", "battery_id": "LZ_NORTH-000003", "available": False}, owners, 4)
+    a.apply({"scope": "battery", "battery_id": "b01003", "available": False}, owners, 4)
     d = a.apply({"scope": "all", "available": True}, owners, 4)
     assert d["affected"] == 500 and a.summary()["available"] == 2000
 
@@ -95,7 +95,7 @@ def test_worker_battery_and_all_scopes(cfg, layout):
     ({"scope": "location", "location": "LZ_NORTH", "offline_fraction": 1.5}, 400, "invalid_fraction"),
     ({"scope": "worker", "worker_id": 9, "available": False}, 404, "unknown_worker"),
     ({"scope": "worker", "worker_id": 1, "available": "no"}, 400, "invalid_available"),
-    ({"scope": "battery", "battery_id": "LZ_NORTH-999999", "available": False}, 404, "unknown_battery"),
+    ({"scope": "battery", "battery_id": "b99999", "available": False}, 404, "unknown_battery"),
     ({"scope": "galaxy"}, 400, "invalid_scope"),
 ])
 def test_bad_availability_requests(cfg, layout, req, status, code):
@@ -125,29 +125,78 @@ def test_plain_language_wording():
         ctl.make_event("run_started", "loud", "x")
 
 
-def test_forecast_strategy_falls_back_to_bands_until_it_lands(cfg, monkeypatch):
-    import sys
+START = 1747429200  # 2025-05-16T21:00:00Z, the demo preset
+LOCS = ["LZ_HOUSTON", "LZ_NORTH"]
 
+
+def _synthetic_books(first_issue_s: int, hours: int) -> dict:
+    """Synthetic forecast books (test doubles, not real forecasts): hourly issues, 24 h of 15-min points."""
+    from src.forecast.provider import ForecastBook
+
+    issued = (first_issue_s + np.arange(hours, dtype=np.int64) * 3600) * 10**9
+    shape = np.tile(np.linspace(20.0, 80.0, 96, dtype=np.float32), (hours, 1))
+    return {loc: ForecastBook(loc, "rt_price", "synthetic", 15, issued, issued.copy(), shape - 5, shape, shape + 5)
+            for loc in LOCS}
+
+
+@pytest.fixture
+def strategy_factory(monkeypatch):
+    """make_strategy with 'forecast' swapped for a stand-in, and the coordinator's strategy cache emptied."""
     import src.strategy
+    from src.sim import coordinator
+
+    monkeypatch.setattr(coordinator, "_STRATEGY_CACHE", {})
+    real = src.strategy.make_strategy
+    box = {}
+
+    def fake(c, tick_seconds, name=None, **context):
+        if name == "forecast":
+            return box["forecast"]()
+        return real(c, tick_seconds, name, **context)
+
+    monkeypatch.setattr(src.strategy, "make_strategy", fake)
+    return box
+
+
+def test_forecast_strategy_falls_back_to_bands_when_it_cannot_be_built(cfg, strategy_factory):
     from src.sim.coordinator import build_strategies
     from src.strategy.bands import BandsStrategy
     from src.strategy.peak import PeakStrategy
 
-    real = src.strategy.make_strategy
+    def broken():
+        raise ImportError("timesfm weights missing")
 
-    def no_forecast(c, tick_seconds, name=None):
-        if name == "forecast":
-            raise ValueError("unknown strategy 'forecast'")
-        return real(c, tick_seconds, name)
-
-    monkeypatch.setattr(src.strategy, "make_strategy", no_forecast)
-    monkeypatch.setitem(sys.modules, "src.strategy.forecast", None)  # import raises ImportError
-    strategies, name, warning = build_strategies("forecast", cfg, ["LZ_HOUSTON", "LZ_NORTH"])
-    assert name == "bands" and warning and "src.strategy.forecast" in warning
+    strategy_factory["forecast"] = broken
+    strategies, name, warning = build_strategies("forecast", cfg, LOCS, start_ts=START)
+    assert name == "bands" and "ImportError: timesfm weights missing" in warning
     assert all(isinstance(s, BandsStrategy) for s in strategies.values())
     assert strategies["LZ_HOUSTON"] is not strategies["LZ_NORTH"]  # one instance per location
-    peak, name, warning = build_strategies("peak", cfg, ["LZ_HOUSTON"])
+    peak, name, warning = build_strategies("peak", cfg, ["LZ_HOUSTON"], start_ts=START)
     assert name == "peak" and warning is None and isinstance(peak["LZ_HOUSTON"], PeakStrategy)
+
+
+def test_forecast_strategy_needs_forecasts_covering_the_replay(cfg, strategy_factory):
+    from src.sim.coordinator import build_strategies, forecast_coverage
+    from src.strategy.forecast import ForecastStrategy
+
+    strategy_factory["forecast"] = lambda: ForecastStrategy({}, duration_h=2.0)  # nothing cached
+    _, name, warning = build_strategies("forecast", cfg, LOCS, start_ts=START)
+    assert name == "bands" and "forecasts cover 0% of the first day" in warning
+
+    covering = ForecastStrategy(_synthetic_books(START - 1800, 30), duration_h=2.0)
+    assert forecast_coverage(covering, "LZ_NORTH", START, 300) == 1.0
+    strategy_factory["forecast"] = lambda: covering
+    strategies, name, warning = build_strategies("forecast", cfg, LOCS, start_ts=START)
+    assert name == "forecast" and warning is None and strategies["LZ_HOUSTON"] is covering
+
+    stale = ForecastStrategy(_synthetic_books(START - 40 * 3600, 30), duration_h=2.0)  # ended 10 h before start
+    assert forecast_coverage(stale, "LZ_HOUSTON", START, 300) == 0.0
+    from src.sim import coordinator
+
+    coordinator._STRATEGY_CACHE.clear()
+    strategy_factory["forecast"] = lambda: stale
+    _, name, warning = build_strategies("forecast", cfg, LOCS, start_ts=START)
+    assert name == "bands" and "cover 0%" in warning
 
 
 def test_coordinator_drops_control_requests_the_api_gave_up_on():

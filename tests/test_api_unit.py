@@ -32,10 +32,18 @@ def test_health_and_settings(client):
     assert set(s) == {"defaults", "editable", "presets", "strategies", "speeds"}
     assert s["editable"] == ["preset", "speed_tps", "strategy", "start_charge_level"]
     assert s["defaults"]["fleet_size"] == 20000 and s["defaults"]["speed_tps"] == 2
-    assert [p["id"] for p in s["presets"]][0] == "spike_evening"
-    assert [c["value"] for c in s["speeds"]] == [1, 2, 5, 10]
-    assert {c["value"] for c in s["strategies"]} == {"bands", "forecast", "peak"}
-    assert all({"value", "label"} <= set(c) for c in s["speeds"] + s["strategies"])
+    # docs/API.md item shapes
+    assert all(set(p) == {"id", "label", "date_local", "start_utc", "start_local", "description"} for p in s["presets"])
+    first = s["presets"][0]
+    assert (first["id"], first["start_utc"], first["start_local"]) == (
+        "spike_evening", "2025-05-16T21:00:00Z", "2025-05-16T16:00:00-05:00")
+    assert s["strategies"] == [
+        {"id": "bands", "label": "Simple rule", "description": s["strategies"][0]["description"]},
+        {"id": "forecast", "label": "AI forecast (TimesFM-3)", "description": s["strategies"][1]["description"]},
+        {"id": "peak", "label": "Evening peak", "description": s["strategies"][2]["description"]},
+    ]
+    assert s["speeds"] == [{"tps": 1, "label": "1 hour every 12 s"}, {"tps": 2, "label": "1 hour every 6 s"},
+                           {"tps": 5, "label": "1 hour every 2.4 s"}, {"tps": 10, "label": "1 hour every 1.2 s"}]
 
 
 def test_errors_are_plain_json(client):
@@ -119,6 +127,13 @@ def test_cors(client):
         r = client.options("/run/start", headers={"Origin": origin, "Access-Control-Request-Method": "POST",
                                                    "Access-Control-Request-Headers": "x-presenter-passcode,content-type"})
         assert r.status_code == 200 and r.headers["access-control-allow-origin"] == origin
+        allowed = {h.strip().lower() for h in r.headers["access-control-allow-headers"].split(",")}
+        assert {"content-type", "x-presenter-passcode"} <= allowed
+    r = client.get("/health", headers={"Origin": "http://localhost:5173"})
+    assert r.headers["access-control-expose-headers"].lower() == "retry-after"
+    r = client.options("/run/start", headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST",
+                                               "Access-Control-Request-Headers": "x-evil-header"})
+    assert r.status_code == 400  # only the two pinned request headers are allowed
     r = client.options("/run/start", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
     assert "access-control-allow-origin" not in r.headers
     r = client.get("/health", headers={"Origin": "https://vercel.app.evil.example"})
@@ -141,23 +156,86 @@ def test_bridges_answer_501_until_their_modules_land(client, monkeypatch):
         assert r.status_code == 501 and r.json()["error"] == "not_ready", path
 
 
-def test_bridges_call_the_parallel_modules(client, monkeypatch):
+def _fake_service(results: dict | None):
+    """A stand-in for src.backtest.service with its documented error contract (test double)."""
     svc = types.ModuleType("src.backtest.service")
     jobs = {}
-    svc.start_backtest = lambda strategies, year: jobs.setdefault("job-1", {"strategies": strategies, "year": year}) and "job-1"
-    svc.get_job = lambda job_id: {"status": "running", "run_ids": [], "error": None} if job_id in jobs else None
-    svc.pitch_results = lambda: {"year": 2025, "strategies": []}
+
+    class ResultsNotFound(LookupError):
+        pass
+
+    def start_backtest(strategies, year):
+        if not strategies or any(s not in ("bands", "forecast", "peak") for s in strategies):
+            raise ValueError("Unknown decision method 'solver'. Choose from: bands, forecast, peak.")
+        for job_id, job in jobs.items():  # one job at a time: hand back the running one
+            if job["status"] == "running":
+                return job_id
+        jobs["job-1"] = {"status": "running", "run_ids": [], "error": None, "strategies": strategies, "year": year}
+        return "job-1"
+
+    def get_job(job_id):
+        job = jobs[job_id]  # KeyError for unknown ids
+        return {"status": job["status"], "run_ids": job["run_ids"], "error": job["error"]}
+
+    def pitch_results(year=None):
+        if results is None:
+            raise ResultsNotFound("There are no full-year results for 2025 yet.")
+        return results
+
+    svc.ResultsNotFound, svc.start_backtest, svc.get_job, svc.pitch_results = ResultsNotFound, start_backtest, get_job, pitch_results
+    svc.add_listener = lambda fn: None
+    svc.jobs = jobs
+    return svc
+
+
+def test_bridges_call_the_parallel_modules(client, monkeypatch):
+    svc = _fake_service({"year": 2025, "strategies": []})
     provider = types.ModuleType("src.forecast.provider")
-    provider.latest_forecast = lambda location, at: {"location": location, "issued_utc": at.isoformat(), "points": []}
+    calls = []
+
+    def latest_forecast(location, at, series="rt_price"):
+        calls.append((location, series))
+        if location == "LZ_HOUSTON" and at.year == 2020:
+            return None
+        return {"location": location, "series": series, "issued_utc": at, "points": []}
+
+    provider.latest_forecast = latest_forecast
     monkeypatch.setitem(sys.modules, "src.backtest.service", svc)
     monkeypatch.setitem(sys.modules, "src.forecast.provider", provider)
     r = client.post("/backtest", json={"strategies": ["bands", "peak"], "year": 2025})
     assert r.status_code == 202 and r.json() == {"job_id": "job-1"}
-    assert jobs["job-1"] == {"strategies": ["bands", "peak"], "year": 2025}
-    assert client.get("/backtest/job-1").json()["status"] == "running"
-    assert client.get("/backtest/nope").status_code == 404
+    assert client.post("/backtest", json={"strategies": ["bands"], "year": 2025}).json() == {"job_id": "job-1"}
+    assert client.get("/backtest/job-1").json() == {"status": "running", "run_ids": [], "skipped": {}, "error": None}
+    r = client.get("/backtest/nope")
+    assert r.status_code == 404 and r.json()["error"] == "unknown_job"
+    r = client.post("/backtest", json={"strategies": ["solver"]})
+    assert r.status_code == 400 and r.json()["message"].startswith("Unknown decision method")
     assert client.get("/results/pitch").json()["year"] == 2025
     r = client.get("/forecast", params={"location": "LZ_NORTH", "at_utc": "2025-05-16T21:00:00Z"})
     assert r.status_code == 200 and r.json()["location"] == "LZ_NORTH"
+    assert r.json()["issued_utc"] == "2025-05-16T21:00:00Z"  # datetimes serialised as *_utc strings
+    r = client.get("/forecast", params={"location": "ERCOT", "series": "demand", "at_utc": "2025-05-16T21:00:00Z"})
+    assert r.status_code == 200 and calls[-1] == ("ERCOT", "demand")
+    r = client.get("/forecast", params={"location": "LZ_HOUSTON", "at_utc": "2020-01-01T00:00:00Z"})
+    assert r.status_code == 404 and r.json()["error"] == "no_forecast"
     assert client.get("/forecast", params={"location": "LZ_WEST"}).status_code == 400
-    assert client.post("/backtest", json={"strategies": ["solver"]}).status_code == 400
+    assert client.get("/forecast", params={"location": "LZ_NORTH", "series": "demand"}).status_code == 400
+    assert client.get("/forecast", params={"location": "LZ_NORTH", "series": "wind"}).status_code == 400
+
+
+def test_results_before_any_full_year_run_is_404(client, monkeypatch):
+    monkeypatch.setitem(sys.modules, "src.backtest.service", _fake_service(None))
+    r = client.get("/results/pitch")
+    assert r.status_code == 404 and r.json() == {"error": "no_results", "message": "No full-year results yet."}
+
+
+def test_the_real_backtest_service_is_bridged(client):
+    """src.backtest.service from main: unknown job 404, bad input 400, no results yet 404."""
+    from src.backtest import service
+
+    assert client.get("/backtest/not-a-job").status_code == 404
+    r = client.post("/backtest", json={"strategies": ["solver"], "year": 2025})
+    assert r.status_code == 400 and r.json()["error"] == "invalid_backtest"
+    r = client.post("/backtest", json={"strategies": ["bands"], "year": 1999})
+    assert r.status_code == 400
+    assert main._backtest_listener in service._listeners  # backtest_done comes from the service's hook

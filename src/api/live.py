@@ -1,6 +1,6 @@
 """WebSocket /live messages (docs/API.md): one `snapshot` on connect, then a `frame` every
-second with EVERY tick since the previous frame (never sampled), or an `idle` frame when
-no run is active. A new run (run_id changed) gets a fresh `snapshot`.
+second with EVERY tick since the previous frame (never sampled) while a run exists, and an
+`idle` message every 5 s when none does. A new run (run_id changed) gets a fresh `snapshot`.
 """
 from __future__ import annotations
 
@@ -40,6 +40,8 @@ def snapshot_message(backend: Backend, cursor: LiveCursor | None = None, *, hist
         "type": "snapshot",
         "run_id": run_id,
         "status": snap.get("status", "idle"),
+        "sim_time_utc": snap.get("sim_time_utc"),
+        "speed_tps": snap.get("speed_tps"),
         "settings": snap.get("settings"),
         "history": ticks,
         "totals": snap.get("totals"),
@@ -51,17 +53,27 @@ def snapshot_message(backend: Backend, cursor: LiveCursor | None = None, *, hist
     }
 
 
+def idle_message(snap: dict | None) -> dict:
+    """docs/API.md: {"type": "idle", "status": "idle", "run_id": null, "last_run": {run_id, totals} | null}."""
+    last = (snap or {}).get("last_run")
+    return {"type": "idle", "status": "idle", "run_id": None,
+            "last_run": {"run_id": last["run_id"], "totals": last["totals"]} if last else None}
+
+
 def frame_message(backend: Backend, cursor: LiveCursor) -> dict:
+    """The next message for one connection: a snapshot (new run), a frame (a run exists) or idle."""
     snap = backend.snapshot()
     run_id = snap.get("run_id")
-    if run_id != cursor.run_id and run_id is not None:
+    if run_id is None or snap.get("status") == "idle":
+        cursor.run_id = None
+        return idle_message(snap)
+    if run_id != cursor.run_id:
         return snapshot_message(backend, cursor)  # a new run: start the client over
-    cursor.run_id = run_id
-    ticks, cursor.ticks = backend.ticks_since(run_id, cursor.ticks) if run_id else ([], cursor.ticks)
+    ticks, cursor.ticks = backend.ticks_since(run_id, cursor.ticks)
     events, cursor.events = backend.events_since(cursor.events)
     status = snap.get("status", "idle")
     msg = {
-        "type": "idle" if status == "idle" or run_id is None else "frame",
+        "type": "frame",
         "run_id": run_id,
         "status": status,
         "sim_time_utc": snap.get("sim_time_utc"),
@@ -73,12 +85,11 @@ def frame_message(backend: Backend, cursor: LiveCursor) -> dict:
         "availability": snap.get("availability"),
         "events": events,
     }
-    if run_id:
-        forecast = forecasts.at(snap.get("sim_time_utc"), backend)
-        issued = {loc: f.get("issued_utc") for loc, f in forecast.items()}
-        if forecast and issued != cursor.forecast_issued:
-            cursor.forecast_issued = issued
-            msg["forecast"] = forecast
+    forecast = forecasts.at(snap.get("sim_time_utc"), backend)
+    issued = {loc: f.get("issued_utc") for loc, f in forecast.items()}
+    if forecast and issued != cursor.forecast_issued:
+        cursor.forecast_issued = issued
+        msg["forecast"] = forecast
     return msg
 
 

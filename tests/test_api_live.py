@@ -15,8 +15,9 @@ from src.sim.redis_layout import reachable, redis_url
 pytestmark = pytest.mark.redis
 PASS = "presenter-test-passcode"
 
-SNAPSHOT_KEYS = {"type", "run_id", "status", "settings", "history", "totals", "workers", "failed_commands",
-                 "availability", "events", "forecast"}
+SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "settings", "history", "totals", "workers",
+                 "failed_commands", "availability", "events", "forecast"}
+IDLE_KEYS = {"type", "status", "run_id", "last_run"}
 FRAME_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "ticks", "totals", "workers", "failed_commands",
               "availability", "events"}
 TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_kw", "actual_kw", "error_pct",
@@ -34,6 +35,7 @@ def live(monkeypatch):
         pytest.skip(f"Redis not reachable at {url}")
     prefix = f"test:api:{uuid.uuid4().hex[:8]}:"
     monkeypatch.setenv("FLEET_FRAME_INTERVAL_S", "0.25")
+    monkeypatch.setenv("FLEET_IDLE_INTERVAL_S", "1.0")
     monkeypatch.setenv("FLEET_CONTROL_TIMEOUT_S", "4")
     monkeypatch.setenv("PRESENTER_PASSCODE", PASS)
     monkeypatch.setenv("PRESENTER_PASSCODE_FILE", "/nonexistent/passcode")
@@ -95,16 +97,19 @@ def test_websocket_messages_match_the_contract(live):
     with client.websocket_connect("/live") as ws:
         snap = ws.receive_json()
         assert snap["type"] == "snapshot" and set(snap) == SNAPSHOT_KEYS and snap["status"] == "idle"
+        assert snap["run_id"] is None and snap["sim_time_utc"] is None and snap["speed_tps"] == 2
         _assert_common(snap)
+        t0 = time.monotonic()
         idle = ws.receive_json()
-        assert idle["type"] == "idle" and set(idle) == FRAME_KEYS and idle["ticks"] == []
+        assert idle == {"type": "idle", "status": "idle", "run_id": None, "last_run": None}
+        assert time.monotonic() - t0 >= 0.7  # idle every FLEET_IDLE_INTERVAL_S (5 s in production), not every frame
         r = client.post("/run/start", json={"preset": "spike_evening", "speed_tps": 10, "strategy": "peak",
                                             "start_charge_level": 0.9, "fleet_size": 5})
         assert r.status_code == 202 and set(r.json()) == {"run_id", "settings"}
         run_id = r.json()["run_id"]
         assert set(r.json()["settings"]) == SETTINGS_KEYS and r.json()["settings"]["fleet_size"] == 300
         fresh = _recv_until(ws, lambda m: m["type"] == "snapshot")  # a new run starts the client over
-        assert fresh["run_id"] == run_id and set(fresh) == SNAPSHOT_KEYS
+        assert fresh["run_id"] == run_id and set(fresh) == SNAPSHOT_KEYS and fresh["speed_tps"] == 10
         frames, seen = [], list(fresh["history"])
         while len(seen) < 12:
             f = _recv_until(ws, lambda m: m["type"] == "frame")
@@ -121,7 +126,14 @@ def test_websocket_messages_match_the_contract(live):
         assert any(e["kind"] == "run_started" for e in fresh["events"] + sum((f["events"] for f in frames), []))
         state = client.get("/state").json()
         assert set(state) == SNAPSHOT_KEYS and state["run_id"] == run_id and len(state["history"]) >= len(seen)
+        assert state["sim_time_utc"].endswith("Z") and state["speed_tps"] == 10
         assert client.get("/health").json()["status"] == "running"
+        # a reset ends the run: idle right away, carrying the run that just ended
+        assert client.post("/run/reset").json() == {"status": "idle"}
+        idle = _recv_until(ws, lambda m: m["type"] == "idle")
+        assert set(idle) == IDLE_KEYS and idle["status"] == "idle" and idle["run_id"] is None
+        assert idle["last_run"]["run_id"] == run_id and idle["last_run"]["totals"]["ticks"] >= len(seen)
+        assert set(idle["last_run"]["totals"]) == {"revenue_usd", "sold_kwh", "bought_kwh", "ticks"}
 
 
 def test_forecasts_ride_along_only_when_new(live, monkeypatch):
@@ -197,10 +209,10 @@ def test_availability_scopes(live):
     snap = client.get("/state").json()
     assert snap["availability"]["offline_workers"] == [1]
     assert snap["availability"]["by_location"]["LZ_NORTH"] == {"available": 100, "total": 150}
-    r = client.post("/availability", json={"scope": "battery", "battery_id": "LZ_NORTH-000149", "available": False})
+    r = client.post("/availability", json={"scope": "battery", "battery_id": "b00299", "available": False})
     assert r.json()["affected"] == 1
-    assert client.get("/batteries/LZ_NORTH-000149").json()["available"] is False
-    r = client.post("/availability", json={"scope": "battery", "battery_id": "LZ_NORTH-999999", "available": False})
+    assert client.get("/batteries/b00299").json()["available"] is False
+    r = client.post("/availability", json={"scope": "battery", "battery_id": "b99999", "available": False})
     assert r.status_code == 404 and r.json()["error"] == "unknown_battery"
     r = client.post("/availability", json={"scope": "worker", "worker_id": 99, "available": False})
     assert r.status_code == 404
@@ -214,12 +226,16 @@ def test_availability_scopes(live):
 
 def test_battery_lookup(live):
     client, co = live
-    b = client.get("/batteries/LZ_HOUSTON-000007").json()
+    b = client.get("/batteries/b00007").json()
     assert set(b) == {"battery_id", "location", "worker_id", "capacity_kwh", "power_kw", "charge_level",
                       "power_kw_now", "available"}
-    assert b["location"] == "LZ_HOUSTON" and b["worker_id"] == 0 and b["available"] is True
+    assert b["battery_id"] == "b00007" and b["location"] == "LZ_HOUSTON" and b["worker_id"] == 0
+    assert b["available"] is True
     assert b["capacity_kwh"] == pytest.approx(float(co.cap[7])) and b["power_kw"] == pytest.approx(float(co.power[7]))
-    assert client.get("/batteries/LZ_HOUSTON-000150").status_code == 404
+    north = client.get("/batteries/b00150").json()  # 300 batteries at 50/50: b00150.. are Dallas-Fort Worth
+    assert north["location"] == "LZ_NORTH" and north["worker_id"] == 0
+    assert client.get("/batteries/b00300").status_code == 404
+    assert client.get("/batteries/LZ_HOUSTON-000007").status_code == 404
     assert client.get("/batteries/garbage").status_code == 404
     assert client.get("/settings").json()["defaults"]["fleet_size"] == 300  # the fleet that is actually running
 
@@ -251,5 +267,9 @@ def test_presenter_kill_flow(live):
     assert sorted(w["adopted_from"] for w in snap["workers"] if w["worker_id"] != 1) == [[1], [1]]
     kinds = [e["kind"] for e in snap["events"]]
     assert "worker_dead" in kinds and "worker_adopted" in kinds
+    adopted = next(e for e in snap["events"] if e["kind"] == "worker_adopted")
+    assert adopted["detail"]["worker_id"] == 1 and adopted["detail"]["controller"] == 2
+    assert sorted(adopted["detail"]["adopted_by"]) == [0, 2] and adopted["detail"]["ms"] >= 0
+    assert adopted["message"].startswith("Controller 2's 100 batteries were handed to the other 2 controllers")
     # the coordinator, the API and Redis are never valid targets
     assert co.workers[1].exit_code == -9

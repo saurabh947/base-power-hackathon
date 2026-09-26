@@ -32,8 +32,9 @@ SPEEDS = (1, 2, 5, 10)
 EDITABLE = ("preset", "speed_tps", "strategy", "start_charge_level")
 AREA_NAMES = {"LZ_HOUSTON": "Houston area", "LZ_NORTH": "Dallas–Fort Worth area"}
 EVENT_KINDS = (
-    "run_started", "run_paused", "run_resumed", "speed_changed", "run_reset", "worker_suspect", "worker_dead",
-    "worker_adopted", "availability_changed", "price_spike", "action_changed", "forecast_issued", "backtest_done",
+    "run_started", "run_paused", "run_resumed", "run_finished", "speed_changed", "run_reset", "worker_suspect",
+    "worker_dead", "worker_adopted", "availability_changed", "price_spike", "action_changed", "forecast_issued",
+    "backtest_done",
 )
 SEVERITIES = ("info", "good", "warn")
 
@@ -63,13 +64,27 @@ def fmt_int(n: int | float) -> str:
     return f"{int(round(n)):,}"
 
 
+def _seconds_per_hour(tps) -> str:
+    seconds = 12.0 / float(tps)  # 12 five-minute ticks make an hour of market time
+    return f"{seconds:.1f}".rstrip("0").rstrip(".")
+
+
 def speed_phrase(tps) -> str:
     """'1 hour of market time every 6 seconds' for 2 ticks/s (5-minute ticks)."""
     if tps in (None, "max"):
         return "as fast as the computer can go"
-    seconds = 12.0 / float(tps)
-    text = f"{seconds:.1f}".rstrip("0").rstrip(".")
-    return f"1 hour of market time every {text} second{'s' if seconds != 1 else ''}"
+    text = _seconds_per_hour(tps)
+    return f"1 hour of market time every {text} second{'s' if text != '1' else ''}"
+
+
+def speed_label(tps) -> str:
+    """GET /settings Speed label: '1 hour every 6 s' for 2 ticks/s."""
+    return f"1 hour every {_seconds_per_hour(tps)} s"
+
+
+def controller(worker_id: int) -> str:
+    """People see 'Controller N' with N = worker_id + 1 (docs/API.md)."""
+    return f"Controller {int(worker_id) + 1}"
 
 
 def price_phrase(usd_mwh: float) -> str:
@@ -127,8 +142,16 @@ def action_message(actions: Mapping[str, str]) -> str:
 
 
 def presets(raw: Mapping) -> list[dict]:
-    items = (raw.get("presets") or {}).get("items") or []
-    return [dict(p) for p in items]
+    """Presets from config.yaml, with start_local added (docs/API.md Preset shape)."""
+    out = []
+    for p in (raw.get("presets") or {}).get("items") or []:
+        item = dict(p)
+        try:
+            item["start_local"] = to_local_iso(parse_utc(item["start_utc"]))
+        except (KeyError, ValueError):
+            item["start_local"] = None
+        out.append({k: item.get(k) for k in ("id", "label", "date_local", "start_utc", "start_local", "description")})
+    return out
 
 
 def default_preset_id(raw: Mapping) -> str:
@@ -219,14 +242,13 @@ def parse_utc(value: str | datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
-def choices(raw: Mapping, forecast_available: bool) -> dict:
+def choices(raw: Mapping) -> dict:
+    """GET /settings item shapes (docs/API.md): Strategy {id, label, description}, Speed {tps, label}."""
+    labels = dict((raw.get("backtest") or {}).get("labels") or {})
     return {
-        "strategies": [
-            {"value": s, "label": STRATEGY_LABELS[s][0], "description": STRATEGY_LABELS[s][1],
-             "available": (forecast_available if s == "forecast" else True)}
-            for s in STRATEGIES
-        ],
-        "speeds": [{"value": s, "label": speed_phrase(s).capitalize()} for s in SPEEDS],
+        "strategies": [{"id": s, "label": labels.get(s, STRATEGY_LABELS[s][0]), "description": STRATEGY_LABELS[s][1]}
+                       for s in STRATEGIES],
+        "speeds": [{"tps": s, "label": speed_label(s)} for s in SPEEDS],
     }
 
 
@@ -276,7 +298,8 @@ class AvailabilityState:
         elif scope == "worker":
             w = req.get("worker_id")
             if isinstance(w, bool) or not isinstance(w, int) or not (0 <= w < n_workers):
-                raise ControlError(404, "unknown_worker", f"There is no controller {w!r}. Controllers are numbered 0 to {n_workers - 1}.")
+                raise ControlError(404, "unknown_worker",
+                                   f"There's no controller with worker_id {w!r}; ids run from 0 to {n_workers - 1}.")
             available = _bool(req.get("available"))
             idx = np.flatnonzero(owners == w)
             self.offline[idx] = not available
@@ -284,7 +307,7 @@ class AvailabilityState:
                 self.offline_workers.discard(w)
             else:
                 self.offline_workers.add(w)
-            detail.update(worker_id=w, available=available, batteries=int(len(idx)))
+            detail.update(worker_id=w, controller=w + 1, available=available, batteries=int(len(idx)))
         elif scope == "battery":
             bid = req.get("battery_id")
             try:
@@ -341,7 +364,7 @@ def availability_message(detail: Mapping, summary: Mapping) -> str:
                 f"({fmt_int(detail['offline'])}) are now offline; {online}")
     if scope == "worker":
         verb = "back online" if detail["available"] else "offline"
-        return f"Controller {detail['worker_id']}'s {fmt_int(detail['batteries'])} batteries are {verb}; {online}"
+        return f"{controller(detail['worker_id'])}'s {fmt_int(detail['batteries'])} batteries are {verb}; {online}"
     if scope == "battery":
         return f"Battery {detail['battery_id']} is {'back online' if detail['available'] else 'offline'}; {online}"
     return f"{'Every battery is back online' if detail.get('available', True) else 'Every battery is offline'}; {online}"

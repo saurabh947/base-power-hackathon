@@ -75,7 +75,12 @@ def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, so
     assert declared == killed_after + 2  # missed ticks killed_after+1 and +2
     assert adopted["detail"]["reassigned_for_tick_index"] - declared <= 1
     assert adopted["detail"]["batteries"] == len(cohort) == 1000
-    assert len(adopted["detail"]["adopters"]) == 19
+    assert len(adopted["detail"]["adopted_by"]) == 19 and victim not in adopted["detail"]["adopted_by"]
+    # docs/API.md: detail.worker_id is 0-based, detail.controller and every message say Controller N+1
+    for e in (dead, adopted, _event(co, "worker_suspect", victim)):
+        assert e["detail"]["worker_id"] == victim and e["detail"]["controller"] == victim + 1
+        assert e["message"].startswith(f"Controller {victim + 1}")
+    assert adopted["detail"]["ms"] < 50
     # the very next tick after the declaration commands the whole cohort through its adopters
     nxt = log[declared + 1]
     assert nxt["reported"] == nxt["sent"] == 19
@@ -87,7 +92,7 @@ def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, so
     assert all(log[k]["target_kw"]["fleet"] > 0 for k in range(killed_after + 1, killed_after + 4))  # max discharge
     print(f"\nkill after tick {killed_after}: error% by tick "
           f"{[(k, round(log[k]['error_pct'], 3)) for k in range(killed_after, killed_after + 5)]}; "
-          f"handover {adopted['detail']['handover_ms']:.1f} ms")
+          f"handover {adopted['detail']['ms']:.1f} ms")
     # failures are visible in dead_letter
     count = int(co.r.get(co.keys.dead_letter_count))
     reasons = {e[1][b"j"].split(b'"reason": "')[1].split(b'"')[0].decode() for e in co.r.xrange(co.keys.dead_letter)}

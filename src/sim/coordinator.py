@@ -47,7 +47,7 @@ from src.core.models import PriceTick
 from src.ledger.backtest import BacktestLedger
 from src.sim import control as ctl
 from src.sim.allocation import allocate, fleet_headroom_kw
-from src.sim.battery import fleet_soc, headroom_kw
+from src.sim.battery import fleet_soc, grid_kwh_from_soc_change, headroom_kw
 from src.sim.decision import decision_tick
 from src.sim.redis_layout import (
     DEFAULT_MAXLEN, F_AVAIL, F_CAP, F_CID, F_EFF, F_EPOCH, F_ID, F_IDX, F_LOC, F_OWNER, F_POW, F_RUN, F_SOC,
@@ -127,9 +127,9 @@ def price_feed(years: tuple[int, ...]):
 def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...]):
     if key not in _FEEDS:
         if source == "postgres":
-            from src.feeds.replay import PostgresReplayFeed  # built in parallel (M1); imported lazily
+            from src.feeds.replay import PostgresReplayFeed  # M1: the prices table (Cloud SQL in the container)
 
-            _FEEDS[key] = PostgresReplayFeed()
+            _FEEDS[key] = PostgresReplayFeed(market="RT")
         elif source == "snapshot":
             from src.feeds.parquet import snapshot_feed
 
@@ -152,28 +152,34 @@ def snapshot_years(start: datetime) -> tuple[int, ...]:
 class PriceWindow:
     """Real prices for one run, per location, pulled from a PriceFeed a day at a time.
 
-    Keeps the trailing window (7 days + decision lag) the strategy needs, plus what is
-    loaded ahead. at(loc, ts) is the tick starting at ts; history(loc, ts) is the prices
-    of ticks strictly before ts, oldest first, at most `window` of them.
+    The warm-up starts exactly `warmup_s` before the replay start (7 days, as the M0 skeleton
+    and the backtest load it), so the strategy sees exactly what they hand it:
+      - now       = the location's tick at the delivery time,
+      - published = the tick `lag` positions earlier in that location's tick list,
+      - history   = the (at most `window`) prices before `published`, oldest first.
+    In the first ticks of a run the history is therefore clamped by the warm-up start, as there.
     """
 
     def __init__(self, feed, locations: Sequence[str], start_ts: int, *, lag: int, window: int,
-                 tick_s: int = 300, chunk_s: int = 86400) -> None:
+                 warmup_s: int, tick_s: int = 300, chunk_s: int = 86400) -> None:
         self.feed = feed
         self.locations = list(locations)
         self.lag, self.window, self.tick_s, self.chunk_s = lag, window, tick_s, chunk_s
         self._ts = {loc: np.empty(0, dtype=np.int64) for loc in self.locations}
         self._px = {loc: np.empty(0, dtype=np.float64) for loc in self.locations}
         self._ticks: dict[str, list[PriceTick]] = {loc: [] for loc in self.locations}
-        self._loaded_until = start_ts - (window + lag + 2) * tick_s
-        self._empty_chunks = 0
+        self._start = start_ts
+        self._loaded_until = start_ts - int(warmup_s)
         self.exhausted = False
         self.last_ts: int | None = None
         self.ensure(start_ts)
 
+    GIVE_UP_S = 3 * 86400  # no price for 3 days past the last one: the data has ended
+
     def ensure(self, ts: int) -> None:
         while self._loaded_until <= ts + self.tick_s and not self.exhausted:
-            a, b = self._loaded_until, self._loaded_until + self.chunk_s
+            a = self._loaded_until
+            b = max(a + self.chunk_s, ts + self.chunk_s)  # the first call spans the whole warm-up
             got = False
             for loc in self.locations:
                 ticks = list(self.feed.ticks(datetime.fromtimestamp(a, UTC), datetime.fromtimestamp(b, UTC), loc))
@@ -185,66 +191,92 @@ class PriceWindow:
                     self._ticks[loc].extend(ticks)
                     self.last_ts = max(self.last_ts or 0, int(stamps[-1]))
             self._loaded_until = b
-            self._empty_chunks = 0 if got else self._empty_chunks + 1
-            if self._empty_chunks >= 3 and self._loaded_until > ts:
+            since = self.last_ts if self.last_ts is not None else self._start
+            if not got and b - since >= self.GIVE_UP_S:
                 self.exhausted = True
-        keep_from = ts - (self.window + self.lag + 4) * self.tick_s
+        keep = self.window + self.lag + 8  # by position, so a gap can never cut into a history
         for loc in self.locations:
-            cut = int(np.searchsorted(self._ts[loc], keep_from))
+            cut = int(np.searchsorted(self._ts[loc], ts)) - keep
             if cut > 2 * self.window:  # trim rarely, in big steps
                 self._ts[loc] = self._ts[loc][cut:]
                 self._px[loc] = self._px[loc][cut:]
                 del self._ticks[loc][:cut]
 
-    def at(self, loc: str, ts: int) -> PriceTick | None:
+    def _index(self, loc: str, ts: int) -> int | None:
         stamps = self._ts[loc]
         i = int(np.searchsorted(stamps, ts))
-        return self._ticks[loc][i] if i < len(stamps) and stamps[i] == ts else None
+        return i if i < len(stamps) and stamps[i] == ts else None
 
-    def history(self, loc: str, ts: int) -> list[float]:
-        i = int(np.searchsorted(self._ts[loc], ts))
-        return self._px[loc][max(0, i - self.window):i].tolist()
+    def at(self, loc: str, ts: int) -> PriceTick | None:
+        i = self._index(loc, ts)
+        return None if i is None else self._ticks[loc][i]
+
+    def decision_inputs(self, loc: str, ts: int, lag: int) -> tuple[PriceTick | None, PriceTick | None, list[float]]:
+        """(now, published, history) for the tick delivered at ts."""
+        i = self._index(loc, ts)
+        if i is None:
+            return None, None, []
+        seen = i - lag
+        if seen < 0:
+            return self._ticks[loc][i], None, []  # nothing published yet
+        return self._ticks[loc][i], self._ticks[loc][seen], self._px[loc][max(0, seen - self.window):seen].tolist()
 
     def ended(self, ts: int) -> bool:
         self.ensure(ts)
+        if self.last_ts is None or ts > self.last_ts:  # past the last price: look ahead now, not a day at a time
+            self.ensure(ts + 3 * self.chunk_s)
         return self.exhausted and (self.last_ts is None or ts > self.last_ts)
 
 
 # --- strategies ----------------------------------------------------------------------------------
 
+_STRATEGY_CACHE: dict = {}
+STRATEGY_CACHE_S = 600.0  # forecast strategies load a year of forecasts; they are pure, so reuse them
 
-def build_strategies(name: str, cfg: Config, locations: Sequence[str]) -> tuple[dict, str, str | None]:
-    """One Strategy instance per location. 'forecast' falls back to bands if it can't be built."""
-    import importlib
 
+def build_strategies(name: str, cfg: Config, locations: Sequence[str], *, start_ts: int | None = None,
+                     tick_s: int = 300, refresh: bool = False) -> tuple[dict, str, str | None]:
+    """One Strategy instance per location, from make_strategy(cfg.strategy, tick_seconds, name) with no
+    extra context (as the backtest builds them). 'forecast' falls back to bands, with the reason, when it
+    can't be built or its cached forecasts don't cover the first day of the replay."""
     from src.strategy import make_strategy
 
     warning = None
     if name == "forecast":
         try:
-            try:
-                return {loc: make_strategy(cfg.strategy, cfg.sim.tick_seconds, "forecast") for loc in locations}, \
-                    "forecast", None
-            except ValueError:
-                mod = importlib.import_module("src.strategy.forecast")
-                factory = getattr(mod, "make_forecast_strategy", None) or getattr(mod, "ForecastStrategy", None)
-                if factory is None:
-                    raise ImportError("src.strategy.forecast has no ForecastStrategy/make_forecast_strategy")
-                out = {}
-                for loc in locations:
-                    for call in (lambda: factory(location=loc, cfg=cfg), lambda: factory(loc), lambda: factory()):
-                        try:
-                            out[loc] = call()
-                            break
-                        except TypeError:
-                            continue
-                    else:
-                        raise TypeError("could not construct the forecast strategy")
-                return out, "forecast", None
-        except Exception as exc:  # ImportError until the forecasting area lands
+            cached = None if refresh else _STRATEGY_CACHE.get(name)
+            if cached and cached[0] > time.monotonic() and set(cached[1]) >= set(locations):
+                strategies = {loc: cached[1][loc] for loc in locations}
+            else:
+                strategies = {loc: make_strategy(cfg.strategy, cfg.sim.tick_seconds, name) for loc in locations}
+                if all(len((getattr(s, "books", None) or {}).get(loc, ())) for loc, s in strategies.items()):
+                    # only instances that hold forecasts: a later forecast job's output must not be ignored
+                    _STRATEGY_CACHE[name] = (time.monotonic() + STRATEGY_CACHE_S, dict(strategies))
+            if start_ts is not None:
+                for loc, strategy in strategies.items():
+                    cover = forecast_coverage(strategy, loc, start_ts, tick_s)
+                    if cover is not None and cover < 0.9:
+                        raise LookupError(f"forecasts cover {cover:.0%} of the first day for {loc}")
+            return strategies, name, None
+        except Exception as exc:  # no forecasts cached for these dates, or the module failed to load
             warning = f"{type(exc).__name__}: {exc}"
             name = "bands"
     return {loc: make_strategy(cfg.strategy, cfg.sim.tick_seconds, name) for loc in locations}, name, warning
+
+
+def forecast_coverage(strategy, location: str, start_ts: int, tick_s: int, ticks: int = 288) -> float | None:
+    """Share of the next `ticks` ticks with a usable forecast (issued at or before, not too old), as the
+    backtest measures it. None for strategies that don't read forecasts."""
+    books = getattr(strategy, "books", None)
+    if books is None:
+        return None
+    book = books.get(location)
+    if book is None or len(book) == 0:
+        return 0.0
+    ts_ns = (start_ts + np.arange(ticks, dtype=np.int64) * tick_s) * 10**9
+    idx = np.searchsorted(book.issued, ts_ns, side="right") - 1
+    age = ts_ns - book.issued[np.clip(idx, 0, None)]
+    return float(np.mean((idx >= 0) & (age <= getattr(strategy, "max_age_ns", 6 * 3600 * 10**9))))
 
 
 @dataclass
@@ -261,11 +293,9 @@ class StrategyTargets:
         self.strategies, self.prices, self.lag, self.tick_s = strategies, prices, lag, tick_s
 
     def __call__(self, k: int, ts: int, loc: str, fsoc: float, headroom: float) -> Decision:
-        now = self.prices.at(loc, ts)
-        published = self.prices.at(loc, ts - self.lag * self.tick_s)
+        now, published, history = self.prices.decision_inputs(loc, ts, self.lag)
         if now is None or published is None:
             return Decision(0.0, now, published)
-        history = self.prices.history(loc, int(published.ts.timestamp()))
         raw = self.strategies[loc].target_kw(decision_tick(now, published), fsoc, headroom, history)
         return Decision(float(raw), now, published)
 
@@ -376,6 +406,7 @@ class Coordinator:
         self.dt_h = self.cfg.sim.dt_hours
         self.lag = self.cfg.sim.decision_lag_ticks
         self.window = self.cfg.strategy.bands.window_days * self.cfg.sim.ticks_per_day
+        self.warmup_s = self.cfg.strategy.bands.window_days * 86400  # the skeleton's and the backtest's warm-up
         self.soc_min, self.soc_max = self.cfg.battery.soc_min, self.cfg.battery.soc_max
         self.cap, self.power, self.eff = self.layout.capacity_kwh, self.layout.power_kw, self.layout.efficiency
         self.loc_idx = [self.layout.location_indices(li) for li in range(len(self.layout.locations))]
@@ -388,6 +419,7 @@ class Coordinator:
         self.availability = ctl.AvailabilityState(self.layout, self.cfg.seed)
         self.workers: list[WorkerHandle] = []
         self.run: RunState | None = None
+        self.last_run: dict | None = None  # {"run_id", "totals"} of the run a reset or a new start replaced
         self.status = "idle"
         self.parent_pid = parent_pid
         self.journal_on = journal
@@ -668,7 +700,7 @@ class Coordinator:
         return {"speed_tps": speed}, None
 
     def _ctl_reset(self, _args):
-        self.run = None
+        self._retire_run()
         self.status = "idle"
         return {"status": "idle"}, self.reset
 
@@ -700,6 +732,7 @@ class Coordinator:
         """Validate settings and replace any current run (status 'starting'). init_run() does the work."""
         settings = ctl.resolve_settings(args, self.cfg, self.raw, fleet_size=self.N,
                                         allow_max=self.allow_max_speed, allow_internal=internal)
+        self._retire_run()
         speed = settings["speed_tps"]
         start = ctl.parse_utc(settings["start_utc"])
         run = RunState(run_id=str(uuid.uuid4()), settings=settings, start_ts=int(start.timestamp()),
@@ -720,7 +753,7 @@ class Coordinator:
         start = datetime.fromtimestamp(run.start_ts, UTC)
         try:
             prices = PriceWindow(price_feed(snapshot_years(start)), self.layout.locations, run.start_ts,
-                                 lag=self.lag, window=self.window, tick_s=self.tick_s)
+                                 lag=self.lag, window=self.window, warmup_s=self.warmup_s, tick_s=self.tick_s)
         except Exception as exc:
             if not run.fixed:
                 _log(f"could not load prices: {exc!r}")
@@ -736,7 +769,8 @@ class Coordinator:
             if run.max_ticks is None:
                 run.max_ticks = run.decide.length
         else:
-            strategies, name, warning = build_strategies(s["strategy"], self.cfg, self.layout.locations)
+            strategies, name, warning = build_strategies(s["strategy"], self.cfg, self.layout.locations,
+                                                         start_ts=run.start_ts, tick_s=self.tick_s)
             run.decide = StrategyTargets(strategies, prices, self.lag, self.tick_s)
             run.strategy_name, run.strategy_warning = name, warning
         run.ledger = BacktestLedger({loc: int(n) for loc, n in zip(self.layout.locations, self.layout.counts)})
@@ -777,8 +811,9 @@ class Coordinator:
             if h.status != DEAD and h.ready_run != run.run_id:
                 h.misses += 1
                 h.status = SUSPECT
-                self._emit("worker_suspect", "warn", f"Controller {h.worker_id} is slow to get ready, so its batteries "
-                           "wait while the others start.", detail={"worker_id": h.worker_id, "phase": "load"})
+                self._emit("worker_suspect", "warn", f"Controller {h.worker_id + 1} is slow to get ready, so its "
+                           "batteries wait while the others start.",
+                           detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "phase": "load"})
         run.status = self.status = "running"
         run.next_tick_at = time.monotonic()
         where = ctl.local_clock(run.start_ts)
@@ -802,9 +837,21 @@ class Coordinator:
             raise RuntimeError("run failed to start")
         return run_id
 
+    def _retire_run(self) -> None:
+        if self.run is not None and self.run.ticks_done:
+            self.last_run = {"run_id": self.run.run_id, "totals": self._totals()}
+        self.run = None
+
+    def _totals(self) -> dict:
+        run = self.run
+        return {"revenue_usd": round(run.revenue_usd, 6) if run else 0.0,
+                "sold_kwh": round(run.sold_kwh, 6) if run else 0.0,
+                "bought_kwh": round(run.bought_kwh, 6) if run else 0.0,
+                "ticks": run.ticks_done if run else 0}
+
     def reset(self) -> None:
         """Stop the run, restart all workers (including killed ones), bring every battery back online."""
-        self.run = None
+        self._retire_run()
         self.status = "idle"
         self._stop_workers()
         self.availability.clear()
@@ -878,6 +925,10 @@ class Coordinator:
         ts = run.start_ts + k * self.tick_s
         if (run.max_ticks is not None and k >= run.max_ticks) or (not run.fixed and run.prices.ended(ts)):
             run.status = self.status = "finished"
+            end = "the end of the requested replay" if run.max_ticks is not None else "the end of the loaded price data"
+            self._emit("run_finished", "info", f"The replay reached {end} ({ctl.local_clock(self._sim_ts())}, "
+                       f"Houston time) after {ctl.fmt_int(run.ticks_done)} five-minute steps.",
+                       detail={"run_id": run.run_id, "ticks": run.ticks_done, "revenue_usd": round(run.revenue_usd, 2)})
             self._publish_snapshot(force=True)
             return None
         if run.prices is not None:
@@ -907,26 +958,33 @@ class Coordinator:
         reports = self._collect(k, {h.worker_id for h in sent}, t0 + self.deadline_s())
         barrier_ms = (time.monotonic() - t0) * 1000.0
 
+        # Grid-side energy is metered from each battery's SoC change (grid_kwh_from_soc_change, as the
+        # skeleton and the backtest meter it) and summed over the location's whole array in index order,
+        # so the ledger sees bit-identical kWh. A cohort that didn't report moved 0.
         delivered = np.zeros(self.N)
+        kwh_arr = np.zeros(self.N)
         for rep in reports.values():
             idx = np.frombuffer(rep["idx"], dtype=np.int32)
             kw = np.frombuffer(rep["kw"], dtype=np.float64)
             delivered[idx] = kw
+            kwh_arr[idx] = self._metered_kwh(idx, np.frombuffer(rep["soc"], dtype=np.float64))
             self._update_soc(idx, np.frombuffer(rep["soc"], dtype=np.float64), k)
             if self.journal_on:
                 self.journal.setdefault(k, []).append((idx.copy(), kw.copy()))
         self.kw = delivered
-        actual = {loc: float(delivered[self.loc_idx[li]].sum()) for li, loc in enumerate(self.layout.locations)}
+        kwh_by_loc = {loc: float(kwh_arr[self.loc_idx[li]].sum()) for li, loc in enumerate(self.layout.locations)}
+        actual = {loc: kwh / self.dt_h for loc, kwh in kwh_by_loc.items()}
         revenue = {}
-        for loc in self.layout.locations:
+        for loc in self.layout.locations:  # config order, as the backtest fills its ledger
             tick = decisions[loc].now
-            kwh = actual[loc] * self.dt_h
+            kwh = kwh_by_loc[loc]
             if tick is not None:
                 run.ledger.record(tick, kwh)
                 revenue[loc] = kwh * tick.price_usd_mwh / 1000.0
             else:
                 revenue[loc] = 0.0
             self._add_totals(run, kwh, revenue[loc])
+
 
         newly_dead = []
         for h in sent:
@@ -945,10 +1003,10 @@ class Coordinator:
                     h.status = SUSPECT
                     self._snapshot_dirty = True
                     self._emit("worker_suspect", "warn",
-                               f"Controller {h.worker_id} didn't answer in time, so its batteries are paused while "
+                               f"Controller {h.worker_id + 1} didn't answer in time, so its batteries are paused while "
                                f"the other controllers cover for it.", sim_ts=ts,
-                               detail={"worker_id": h.worker_id, "pid": h.pid, "tick_index": k,
-                                       "deadline_ms": round(self.deadline_s() * 1000, 1)})
+                               detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "pid": h.pid,
+                                       "tick_index": k, "deadline_ms": round(self.deadline_s() * 1000, 1)})
         for h in newly_dead:
             self._declare_dead(h, "missed_deadlines", k)
         self._supervise(force=True)  # heartbeat expiry, whichever comes first
@@ -966,7 +1024,8 @@ class Coordinator:
         self._tick_events(run, k, ts, decisions, feasible)
         self.tick_log.append({**record, "k": k, "barrier_ms": round(barrier_ms, 2),
                               "reported": len(reports), "sent": len(sent),
-                              "raw_kw": {loc: dec.raw_kw for loc, dec in decisions.items()}})
+                              "raw_kw": {loc: dec.raw_kw for loc, dec in decisions.items()},  # unrounded, for parity
+                              "feasible_exact": dict(feasible), "kwh_exact": kwh_by_loc})
         if len(self.tick_log) > 20000:  # serve mode runs for hours: keep memory bounded
             del self.tick_log[:10000]
         for hook in list(self.tick_hooks):
@@ -1095,11 +1154,13 @@ class Coordinator:
         """Telemetry for a tick already closed: the energy really moved, so book it at that tick's price."""
         idx = np.frombuffer(rep["idx"], dtype=np.int32)
         kw = np.frombuffer(rep["kw"], dtype=np.float64)
-        self._update_soc(idx, np.frombuffer(rep["soc"], dtype=np.float64), int(rep["k"]))
+        soc_new = np.frombuffer(rep["soc"], dtype=np.float64)
+        kwh_each = self._metered_kwh(idx, soc_new)
+        self._update_soc(idx, soc_new, int(rep["k"]))
         if self.journal_on:
             self.journal.setdefault(int(rep["k"]), []).append((idx.copy(), kw.copy()))
         for li, loc in enumerate(self.layout.locations):
-            kwh = float(kw[self.layout.loc_of[idx] == li].sum()) * self.dt_h
+            kwh = float(kwh_each[self.layout.loc_of[idx] == li].sum())
             tick = run.prices.at(loc, infl.ts) if run.prices is not None else None
             usd = 0.0
             if tick is not None:
@@ -1114,6 +1175,12 @@ class Coordinator:
             run.sold_kwh += kwh
         elif kwh < 0:
             run.bought_kwh -= kwh
+
+    def _metered_kwh(self, idx: np.ndarray, soc_new: np.ndarray) -> np.ndarray:
+        """Grid-side kWh per reported battery from its SoC change (0 where the worker reported no SoC)."""
+        prev = self.soc[idx]
+        after = np.where(np.isfinite(soc_new), soc_new, prev)
+        return grid_kwh_from_soc_change(prev, after, self.cap[idx], self.eff[idx])
 
     def _update_soc(self, idx: np.ndarray, soc: np.ndarray, k: int) -> None:
         ok = np.isfinite(soc) & (k >= self.soc_k[idx])
@@ -1144,19 +1211,19 @@ class Coordinator:
         why = {"missed_deadlines": f" after missing {self.orch.miss_threshold} check-ins in a row",
                "heartbeat_expired": f" (no heartbeat for {self.orch.hb_ttl_s:g} seconds)",
                "no_heartbeat_at_start": " while starting up"}.get(reason, "")
-        self._emit("worker_dead", "warn", f"Controller {h.worker_id} stopped responding{why}.", sim_ts=sim_ts, detail={
-            "worker_id": h.worker_id, "pid": h.pid, "reason": reason, "tick_index": k,
-            "unconfirmed_ticks": [kk for kk, _ in expired], "exit_code": h.exit_code})
+        self._emit("worker_dead", "warn", f"Controller {h.worker_id + 1} stopped responding{why}.", sim_ts=sim_ts,
+                   detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "pid": h.pid, "reason": reason,
+                           "tick_index": k, "unconfirmed_ticks": [kk for kk, _ in expired], "exit_code": h.exit_code})
         if len(cohort):
             others = len(adopters)
             when = "under 1 ms" if handover_ms < 1 else f"{handover_ms:.0f} ms"
             if others:
-                msg = (f"Controller {h.worker_id}'s {ctl.fmt_int(len(cohort))} batteries were handed to the other "
+                msg = (f"Controller {h.worker_id + 1}'s {ctl.fmt_int(len(cohort))} batteries were handed to the other "
                        f"{others} controller{'s' if others != 1 else ''} in {when}.")
                 self._emit("worker_adopted", "good", msg, sim_ts=sim_ts, detail={
-                    "worker_id": h.worker_id, "batteries": int(len(cohort)), "adopters": [a.worker_id for a in adopters],
-                    "handover_ms": round(handover_ms, 3), "declared_at_tick_index": k,
-                    "reassigned_for_tick_index": (k + 1) if k is not None else None})
+                    "worker_id": h.worker_id, "controller": h.worker_id + 1, "batteries": int(len(cohort)),
+                    "adopted_by": [a.worker_id for a in adopters], "ms": round(handover_ms, 3),
+                    "declared_at_tick_index": k, "reassigned_for_tick_index": (k + 1) if k is not None else None})
         if run is not None and expired:
             entries = []
             for kk, infl in expired:
@@ -1310,10 +1377,8 @@ class Coordinator:
             "settings": self.public_settings(),
             "sim_time_utc": to_utc_iso(self._sim_ts()),
             "speed_tps": (run.settings["speed_tps"] if run else ctl.default_settings(self.cfg, self.raw, self.N)["speed_tps"]),
-            "totals": {"revenue_usd": round(run.revenue_usd, 6) if run else 0.0,
-                       "sold_kwh": round(run.sold_kwh, 6) if run else 0.0,
-                       "bought_kwh": round(run.bought_kwh, 6) if run else 0.0,
-                       "ticks": run.ticks_done if run else 0},
+            "totals": self._totals(),
+            "last_run": self.last_run,
             "workers": [h.public() for h in self.workers],
             "availability": self.availability.summary(),
             "strategy_effective": run.strategy_name if run else None,
@@ -1427,6 +1492,67 @@ def run_fleet_targets(
             co.cleanup_keys()
 
 
+def run_fleet_replay(
+    strategy: str,
+    *,
+    start_utc: str,
+    ticks: int = 288,
+    soc_init: float = 0.5,
+    fleet_size: int | None = None,
+    workers: int | None = None,
+    url: str | None = None,
+    prefix: str | None = None,
+    cfg: Config | None = None,
+    strict: bool = True,
+) -> dict:
+    """Replay `ticks` real ticks from start_utc through the real worker fleet, decided by `strategy`
+    exactly as live mode decides (for parity with src.backtest):
+
+    - fleet: generate_batteries + assign_locations (b00000.., contiguous blocks in config order);
+    - one make_strategy(cfg.strategy, tick_seconds, name) per location, no extra context;
+    - decision_tick(now, published) with published `decision_lag_ticks` back, history = the trailing
+      window of prices before it, warm-up starting window_days before start_utc (as the skeleton);
+    - grid-side kWh metered from the SoC change and recorded per tick, locations in config order.
+
+    Returns {"battery_ids", "soc" (final SoC from the battery hashes, global order), "summary"
+    (Ledger.summary()), "strategy_effective", "ticks", "locations": {loc: {"battery_ids", "soc_final",
+    "delivered_kwh", "feasible_kw", "target_kw"}}} (per-tick arrays are unrounded). With strict=True a
+    'forecast' run that had to fall back to bands raises RuntimeError instead of comparing apples to pears.
+    """
+    cfg = cfg or load_config()
+    prefix = prefix if prefix is not None else f"parity:{uuid.uuid4().hex[:8]}:"
+    orch = Orchestration.from_config(load_raw_config(), max_speed_deadline_ms=2000.0)
+    co = Coordinator(url=url, prefix=prefix, fleet_size=fleet_size, workers=workers, cfg=cfg, orchestration=orch)
+    try:
+        co.boot()
+        co.start({"start_utc": start_utc, "speed_tps": "max", "strategy": strategy, "start_charge_level": soc_init},
+                 max_ticks=ticks, internal=True)
+        if strict and co.run.strategy_name != strategy:
+            raise RuntimeError(f"{strategy!r} could not run ({co.run.strategy_warning}); it fell back to "
+                               f"{co.run.strategy_name!r}")
+        while co.run is not None and co.run.status == "running":
+            if co.step() is None:
+                break
+        log = co.tick_log
+        soc = co.read_hash_soc()
+        locations = {}
+        for li, loc in enumerate(co.layout.locations):
+            sl = co.layout.location_indices(li)
+            locations[loc] = {
+                "battery_ids": [co.layout.ids[g] for g in sl.tolist()],
+                "soc_final": soc[sl],
+                "delivered_kwh": np.array([r["kwh_exact"][loc] for r in log]),
+                "feasible_kw": np.array([r["feasible_exact"][loc] for r in log]),
+                "target_kw": np.array([r["raw_kw"][loc] for r in log]),
+            }
+        return {"battery_ids": list(co.layout.ids), "soc": soc, "summary": co.run.ledger.summary(),
+                "strategy_effective": co.run.strategy_name, "ticks": len(log), "locations": locations}
+    finally:
+        co.shutdown()
+        if co.keys.prefix:
+            co.cleanup_keys()
+
+
 # --- CLI -------------------------------------------------------------------------------------------
 
 
@@ -1525,6 +1651,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _term)
     co.boot(wait_healthy=False)
     threading.Thread(target=_preload_prices, args=(co,), name="price-preload", daemon=True).start()
+    threading.Thread(target=_keep_forecasts_warm, args=(co,), name="forecast-warm", daemon=True).start()
     co.serve_forever()
     return 0
 
@@ -1536,6 +1663,24 @@ def _preload_prices(co: Coordinator) -> None:
         price_feed(snapshot_years(start))
     except Exception as exc:
         _log(f"price preload skipped: {exc!r}")
+
+
+def _keep_forecasts_warm(co: Coordinator, every_s: float = 0.8 * STRATEGY_CACHE_S) -> None:
+    """Serve mode: (re)build the forecast strategies in the background, so a Start never waits for a
+    year of forecasts to load from the database, and forecasts a job writes later are picked up."""
+    while not co._stop:
+        t0 = time.monotonic()
+        try:
+            _, name, warning = build_strategies("forecast", co.cfg, co.layout.locations, refresh=True)
+            if warning:
+                _log(f"forecast strategy not ready: {warning}")
+            else:
+                _log(f"forecast strategies loaded in {time.monotonic() - t0:.1f}s")
+        except Exception as exc:
+            _log(f"forecast warm-up failed: {exc!r}")
+        deadline = time.monotonic() + every_s
+        while not co._stop and time.monotonic() < deadline:
+            time.sleep(1.0)
 
 
 if __name__ == "__main__":

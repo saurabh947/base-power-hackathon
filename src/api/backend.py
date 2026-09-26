@@ -193,10 +193,10 @@ def kill_worker(backend: Backend, worker_id: int | None, rng=None) -> dict:
             raise ctl.ControlError(409, "too_few_healthy", "Crashing another controller would leave fewer than 2 working.")
         worker_id = (rng or random).choice(healthy)
     if worker_id not in workers:
-        raise ctl.ControlError(404, "unknown_worker", f"There is no controller {worker_id}. "
-                               f"Controllers are numbered 0 to {max(workers)}.")
+        raise ctl.ControlError(404, "unknown_worker", f"There's no controller with worker_id {worker_id}; "
+                               f"ids run from 0 to {max(workers)}.")
     if workers[worker_id].get("status") == "dead":
-        raise ctl.ControlError(409, "already_dead", f"Controller {worker_id} has already crashed.")
+        raise ctl.ControlError(409, "already_dead", f"{ctl.controller(worker_id)} has already crashed.")
     if len([w for w in healthy if w != worker_id]) < 2:
         raise ctl.ControlError(409, "too_few_healthy", "Crashing this controller would leave fewer than 2 working.")
     entry = backend.registry().get(worker_id) or {}
@@ -206,13 +206,13 @@ def kill_worker(backend: Backend, worker_id: int | None, rng=None) -> dict:
         raise ctl.ControlError(409, "not_a_worker", "That process isn't a controller, so it was left alone.")
     cmd, zombie = _proc_info(int(pid))
     if cmd is None or zombie:
-        raise ctl.ControlError(409, "already_dead", f"Controller {worker_id} has already crashed.")
+        raise ctl.ControlError(409, "already_dead", f"{ctl.controller(worker_id)} has already crashed.")
     if "src.sim.worker" not in cmd:
         raise ctl.ControlError(409, "not_a_worker", "That process isn't a controller, so it was left alone.")
     try:
         os.kill(int(pid), signal.SIGKILL)
     except ProcessLookupError:
-        raise ctl.ControlError(409, "already_dead", f"Controller {worker_id} has already crashed.") from None
+        raise ctl.ControlError(409, "already_dead", f"{ctl.controller(worker_id)} has already crashed.") from None
     pipe = backend.r.pipeline(transaction=False)
     pipe.zadd(killed_key, {str(int(pid)): time.time()})
     pipe.zremrangebyscore(killed_key, "-inf", time.time() - 120)

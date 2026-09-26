@@ -111,10 +111,14 @@ def main() -> int:
     procs["coordinator"] = subprocess.Popen([sys.executable, "-m", "src.sim.coordinator", "serve",
                                              "--parent-pid", str(os.getpid())],
                                             cwd=str(REPO_ROOT), env=env, stdin=subprocess.DEVNULL)
+    # The API runs (and spawns full-year backtest jobs) a little below the fleet's priority, so a re-run
+    # of the year can never starve the coordinator and workers into missing their 250 ms deadlines.
+    api_nice = int(os.environ.get("FLEET_API_NICE", "5"))
     procs["api"] = subprocess.Popen([sys.executable, "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0",
                                      "--port", port, "--proxy-headers", "--forwarded-allow-ips", "*",
                                      "--no-access-log", "--timeout-graceful-shutdown", "5"],
-                                    cwd=str(REPO_ROOT), env=env, stdin=subprocess.DEVNULL)
+                                    cwd=str(REPO_ROOT), env=env, stdin=subprocess.DEVNULL,
+                                    preexec_fn=(lambda: os.nice(api_nice)) if api_nice > 0 else None)
     _log(f"coordinator pid {procs['coordinator'].pid}, api pid {procs['api'].pid} on :{port}")
 
     code = 0

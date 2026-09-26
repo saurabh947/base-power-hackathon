@@ -42,7 +42,7 @@ def test_parity_helper_matches_the_in_process_loop():
     result = run_fleet_targets(targets, soc_init=0.55, fleet_size=2000, workers=4, url=url,
                                prefix=f"test:parity:{uuid.uuid4().hex[:8]}:")
     assert result["ticks"] == len(shape)
-    assert result["battery_ids"][:2] == ["LZ_HOUSTON-000000", "LZ_HOUSTON-000001"]
+    assert result["battery_ids"][:2] == ["b00000", "b00001"]
     expected = in_process(layout, targets, 0.55, cfg.sim.dt_hours)
     assert np.array_equal(result["soc"], expected)
     assert np.array_equal(result["telemetry_soc"], expected)

@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
-import importlib.util
 import json
 import os
 import sys
@@ -32,7 +31,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.api import presenter
 from src.api.backend import Backend, kill_worker
 from src.api.limits import Limits, retry_after
-from src.api.live import LiveCursor, _plain, frame_message, snapshot_message
+from src.api.live import LiveCursor, _plain, frame_message, idle_message, snapshot_message
 from src.config import REPO_ROOT, load_config, load_raw_config
 from src.sim import control as ctl
 
@@ -88,6 +87,10 @@ def frame_interval_s() -> float:
     return _env_float("FLEET_FRAME_INTERVAL_S", float(API_CFG.get("frame_interval_s", 1.0)))
 
 
+def idle_interval_s() -> float:
+    return _env_float("FLEET_IDLE_INTERVAL_S", float(API_CFG.get("idle_interval_s", 5.0)))
+
+
 def control_timeout_s() -> float:
     return _env_float("FLEET_CONTROL_TIMEOUT_S", float(API_CFG.get("control_timeout_s", 4.0)))
 
@@ -109,8 +112,35 @@ async def _watch_parent() -> None:
             os._exit(0)
 
 
+def _backtest_listener(job_id: str, job: dict) -> None:
+    """src.backtest.service calls this from its job thread when a full-year run ends."""
+    if job.get("status") != "done":
+        return
+    try:
+        backend().emit("backtest_done", "good", "The full-year results are ready.",
+                       detail={"job_id": job_id, "run_ids": job.get("run_ids")}, once_key=f"backtest:{job_id}")
+    except Exception as exc:
+        print(f"[api] backtest_done event not published: {exc!r}", file=sys.stderr, flush=True)
+
+
+_listener_added = False
+
+
+def _register_backtest_listener() -> None:
+    global _listener_added
+    if _listener_added:
+        return
+    try:
+        from src.backtest import service
+    except ImportError:
+        return
+    service.add_listener(_backtest_listener)
+    _listener_added = True
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _register_backtest_listener()
     task = asyncio.create_task(_watch_parent()) if os.environ.get("FLEET_PARENT_PID") else None
     yield
     if task:
@@ -124,7 +154,8 @@ app.add_middleware(
     allow_origins=sorted(set(_origins + ["http://localhost:5173"])),
     allow_origin_regex=r"https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.vercel\.app",
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-Presenter-Passcode"],
+    expose_headers=["Retry-After"],
     max_age=600,
 )
 
@@ -213,13 +244,12 @@ def _running_fleet_size() -> int | None:
 
 @app.get("/settings")
 async def settings():
-    forecast_available = importlib.util.find_spec("src.strategy.forecast") is not None
     fleet_size = await run_in_threadpool(_running_fleet_size)
     return {
         "defaults": ctl.default_settings(CFG, RAW, fleet_size),
         "editable": list(ctl.EDITABLE),
         "presets": ctl.presets(RAW),
-        **ctl.choices(RAW, forecast_available),
+        **ctl.choices(RAW),
     }
 
 
@@ -327,45 +357,60 @@ def _bridge(module: str):
 async def backtest_start(request: Request):
     body = await _body(request)
     strategies = body.get("strategies", list(ctl.STRATEGIES))
-    if not isinstance(strategies, list) or not strategies or any(s not in ctl.STRATEGIES for s in strategies):
-        raise ctl.ControlError(400, "invalid_strategies", "strategies must be a list drawn from: bands, forecast, peak.")
     year = body.get("year", (RAW.get("backtest") or {}).get("year", 2025))
-    if isinstance(year, bool) or not isinstance(year, int):
-        raise ctl.ControlError(400, "invalid_year", "year must be a whole number such as 2025.")
     svc = _bridge("src.backtest.service")
-    job_id = await run_in_threadpool(svc.start_backtest, strategies, year)
+    _register_backtest_listener()
+    try:  # while a job runs, the service hands back that job's id
+        job_id = await run_in_threadpool(svc.start_backtest, strategies, year)
+    except ValueError as exc:  # the service's plain-language reason (unknown method, bad year)
+        raise ctl.ControlError(400, "invalid_backtest", str(exc)) from None
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
 @app.get("/backtest/{job_id}")
 async def backtest_job(job_id: str):
     svc = _bridge("src.backtest.service")
-    job = await run_in_threadpool(svc.get_job, job_id)
-    if not job:
-        raise ctl.ControlError(404, "unknown_job", "There's no full-year run with that ID.")
-    if job.get("status") == "done":
+    try:
+        job = await run_in_threadpool(svc.get_job, job_id)
+    except KeyError:
+        raise ctl.ControlError(404, "unknown_job", "There's no full-year run with that ID.") from None
+    if job.get("status") == "done":  # also covered by the service listener; deduped by once_key
         try:
             await run_in_threadpool(backend().emit, "backtest_done", "good", "The full-year results are ready.",
                                     detail={"job_id": job_id, "run_ids": job.get("run_ids")},
                                     once_key=f"backtest:{job_id}")
         except Exception:
             pass
-    return job
+    return {"status": job.get("status"), "run_ids": list(job.get("run_ids") or []),
+            "skipped": dict(job.get("skipped") or {}), "error": job.get("error")}
 
 
 @app.get("/results/pitch")
 async def results_pitch():
     svc = _bridge("src.backtest.service")
-    result = await run_in_threadpool(svc.pitch_results)
+    not_found = getattr(svc, "ResultsNotFound", LookupError)
+    try:
+        result = await run_in_threadpool(svc.pitch_results)
+    except not_found:
+        result = None
     if not result:
-        raise ctl.ControlError(404, "no_results", "No full-year results yet. Run the full year first.")
-    return result
+        raise ctl.ControlError(404, "no_results", "No full-year results yet.")
+    return _plain(result)
 
 
 @app.get("/forecast")
-async def forecast(location: str, at_utc: str | None = None):
-    if location not in CFG.fleet.locations:
-        raise ctl.ControlError(400, "invalid_location", f"Unknown area {location!r}. Use one of: {', '.join(CFG.fleet.locations)}.")
+async def forecast(location: str, at_utc: str | None = None, series: str = "rt_price"):
+    demand_location = str((RAW.get("forecast") or {}).get("demand_location", "ERCOT"))
+    if series == "rt_price":
+        if location not in CFG.fleet.locations:
+            raise ctl.ControlError(400, "invalid_location",
+                                   f"Unknown area {location!r}. Use one of: {', '.join(CFG.fleet.locations)}.")
+    elif series == "demand":
+        if location != demand_location:
+            raise ctl.ControlError(400, "invalid_location",
+                                   f"Demand forecasts are for the whole grid: use location={demand_location}.")
+    else:
+        raise ctl.ControlError(400, "invalid_series", "series must be rt_price or demand.")
     provider = _bridge("src.forecast.provider")
     if at_utc:
         try:
@@ -375,7 +420,7 @@ async def forecast(location: str, at_utc: str | None = None):
     else:
         snap = await _call(lambda: backend().snapshot())
         at = ctl.parse_utc(snap["sim_time_utc"]) if snap.get("sim_time_utc") else datetime.now(UTC)
-    result = await run_in_threadpool(provider.latest_forecast, location, at)
+    result = await run_in_threadpool(provider.latest_forecast, location, at, series)
     if not result:
         raise ctl.ControlError(404, "no_forecast", "There's no forecast for that area and time yet.")
     return _plain(result)
@@ -407,19 +452,24 @@ async def live(ws: WebSocket):
         except Exception:
             msg = _fallback_snapshot()
         await ws.send_text(_dumps(msg))
-        interval = frame_interval_s()
+        interval, idle_every = frame_interval_s(), idle_interval_s()
+        last_idle = asyncio.get_running_loop().time()  # the snapshot just went out
         while not closed.is_set():
             try:
                 await asyncio.wait_for(closed.wait(), timeout=interval)
                 break
             except asyncio.TimeoutError:
                 pass
+            was_running = cursor.run_id is not None
             try:
                 msg = await run_in_threadpool(frame_message, backend(), cursor)
             except Exception:
-                msg = {**_fallback_snapshot(), "type": "idle", "ticks": [], "sim_time_utc": None, "speed_tps": None}
-                for key in ("history", "settings", "forecast"):
-                    msg.pop(key, None)
+                msg = idle_message(None)
+            if msg["type"] == "idle":
+                now = asyncio.get_running_loop().time()
+                if not was_running and now - last_idle < idle_every - 0.05:
+                    continue  # frames every second while a run exists; idle only every 5 s
+                last_idle = now
             await ws.send_text(_dumps(msg))
     except Exception:
         pass
@@ -449,6 +499,7 @@ def _dumps(msg: dict) -> str:
 def _fallback_snapshot() -> dict:
     """What viewers get when Redis is unreachable: an idle fleet, so the page still renders."""
     idle = backend().idle_snapshot()
-    return {"type": "snapshot", "run_id": None, "status": "idle", "settings": idle["settings"], "history": [],
-            "totals": idle["totals"], "workers": [], "failed_commands": {"count": 0, "recent": []},
-            "availability": idle["availability"], "events": [], "forecast": {}}
+    return {"type": "snapshot", "run_id": None, "status": "idle", "sim_time_utc": None,
+            "speed_tps": idle["speed_tps"], "settings": idle["settings"], "history": [], "totals": idle["totals"],
+            "workers": [], "failed_commands": {"count": 0, "recent": []}, "availability": idle["availability"],
+            "events": [], "forecast": {}}

@@ -3,7 +3,7 @@ the worker processes, the Redis BatteryAdapter and the API.
 
 Keys (all under an optional prefix, "" in production; tests use a unique one):
 
-  battery:{battery_id}   hash, one per battery. The source of truth any worker can
+  battery:{battery_id}   hash, one per battery (b00000..b19999). The source of truth any worker can
                          adopt a battery from. Fields, dynamic ones first so HSET
                          finds them early in the listpack:
                            soc, last_command_id, last_tick, owner_epoch, available,
@@ -147,29 +147,35 @@ class Keys:
 
 
 def location_counts(size: int, shares: Mapping[str, float]) -> list[tuple[str, int]]:
-    """Split `size` batteries by location share, in config order; the last location takes the remainder."""
-    names = list(shares)
-    counts = []
-    for name in names[:-1]:
-        counts.append((name, int(round(size * shares[name]))))
-    counts.append((names[-1], size - sum(n for _, n in counts)))
-    if any(n < 0 for _, n in counts):
-        raise ValueError(f"cannot split {size} batteries by {dict(shares)}")
-    return counts
+    """Batteries per location in config order, exactly as src.sim.fleet.location_counts splits them."""
+    from src.sim.fleet import location_counts as split
+
+    return list(split(size, shares).items())
 
 
-def battery_id(location: str, k: int) -> str:
-    """Battery ids look like LZ_HOUSTON-000123 (docs/API.md); k is the index within the location."""
-    return f"{location}-{k:06d}"
+def fleet_battery_id(g: int) -> str:
+    """Fleet-wide battery id of global index g, as src.sim.fleet.generate_batteries names it (b00000)."""
+    return f"b{g:05d}"
+
+
+def parse_battery_id(bid: str, size: int) -> int:
+    """Global index of a fleet-wide battery id ('b00123' -> 123). KeyError if malformed or out of range."""
+    if not isinstance(bid, str) or len(bid) < 6 or bid[0] != "b" or not bid[1:].isdigit():
+        raise KeyError(bid)
+    g = int(bid[1:])
+    if not 0 <= g < size or fleet_battery_id(g) != bid:
+        raise KeyError(bid)
+    return g
 
 
 @dataclass(frozen=True, eq=False)
 class FleetLayout:
     """Static fleet: global battery order, location split and seeded specs.
 
-    Global index g in [0, size): locations are contiguous in config order, so
-    LZ_HOUSTON-000000.. come first, then LZ_NORTH-000000... Battery g gets row g
-    of src.sim.fleet.generate_batteries(size, ...), so specs are prefix-stable.
+    Global index g in [0, size) is battery b{g:05d} of src.sim.fleet.generate_batteries, and
+    src.sim.fleet.assign_locations gives each location a contiguous block in config order
+    (at 20,000 / 50-50: LZ_HOUSTON b00000-b09999, LZ_NORTH b10000-b19999): the same split the
+    backtest uses, so a fleet run and a backtest see the same batteries in the same places.
     """
 
     locations: tuple[str, ...]
@@ -186,28 +192,31 @@ class FleetLayout:
         if self.loc_of is None:
             object.__setattr__(self, "loc_of", np.repeat(np.arange(len(self.counts), dtype=np.int8), self.counts))
         if not self.ids:
-            ids = tuple(battery_id(loc, k) for loc, n in zip(self.locations, self.counts) for k in range(n))
-            object.__setattr__(self, "ids", ids)
+            object.__setattr__(self, "ids", tuple(fleet_battery_id(g) for g in range(int(sum(self.counts)))))
 
     @classmethod
     def build(cls, cfg, size: int | None = None, workers: int | None = None) -> "FleetLayout":
         """From the typed config (src.config.Config); size/workers override fleet.size/fleet.workers."""
-        from src.sim.fleet import generate_batteries
+        from src.sim.fleet import assign_locations, generate_batteries
 
         size = cfg.fleet.size if size is None else int(size)
         workers = cfg.fleet.workers if workers is None else int(workers)
         if size < 1 or workers < 1:
             raise ValueError("need fleet size >= 1 and workers >= 1")
-        split = location_counts(size, cfg.fleet.locations)
         states = generate_batteries(size, cfg.battery, cfg.seed)
+        blocks = assign_locations(states, cfg.fleet.locations)
+        ordered = [b for block in blocks.values() for b in block]
+        if [b.battery_id for b in ordered] != [b.battery_id for b in states]:
+            raise RuntimeError("assign_locations must hand out contiguous blocks in battery order")
         return cls(
-            locations=tuple(n for n, _ in split),
-            counts=tuple(c for _, c in split),
+            locations=tuple(blocks),
+            counts=tuple(len(block) for block in blocks.values()),
             capacity_kwh=np.array([s.capacity_kwh for s in states], dtype=np.float64),
             power_kw=np.array([s.power_kw for s in states], dtype=np.float64),
             efficiency=np.array([s.efficiency for s in states], dtype=np.float64),
             workers=workers,
             seed=cfg.seed,
+            ids=tuple(s.battery_id for s in states),
         )
 
     @property
@@ -223,16 +232,12 @@ class FleetLayout:
         start = self.offsets[li]
         return np.arange(start, start + self.counts[li], dtype=np.int32)
 
+    def location_of(self, g: int) -> str:
+        return self.locations[int(self.loc_of[g])]
+
     def index_of(self, bid: str) -> int:
-        """Global index of a battery id. Raises KeyError for an unknown id."""
-        loc, _, k = bid.rpartition("-")
-        if loc not in self.locations or not k.isdigit() or len(k) != 6:
-            raise KeyError(bid)
-        li = self.locations.index(loc)
-        k = int(k)
-        if not 0 <= k < self.counts[li]:
-            raise KeyError(bid)
-        return self.offsets[li] + k
+        """Global index of a battery id (b00123). Raises KeyError for an unknown id."""
+        return parse_battery_id(bid, self.size)
 
     def default_owners(self, workers: int | None = None) -> np.ndarray:
         """Initial cohorts: each location is split into `workers` contiguous chunks, so worker w
@@ -249,7 +254,7 @@ class FleetLayout:
         return float(self.power_kw.sum())
 
     def public(self) -> dict:
-        """JSON-able summary for the API (ids are derived from locations + counts)."""
+        """JSON-able summary for the API (ids are b{index:05d}; locations are contiguous blocks in order)."""
         return {
             "size": self.size,
             "workers": self.workers,
@@ -262,13 +267,12 @@ class FleetLayout:
 
 def layout_index(layout_json: Mapping, bid: str) -> tuple[int, str]:
     """(global index, location) of a battery id against a published layout. KeyError if unknown."""
-    loc, _, k = bid.rpartition("-")
+    size = int(sum(int(n) for _, n in layout_json["locations"]))
+    g = parse_battery_id(bid, size)
     offset = 0
     for name, n in layout_json["locations"]:
-        if name == loc:
-            if not (k.isdigit() and len(k) == 6 and 0 <= int(k) < int(n)):
-                raise KeyError(bid)
-            return offset + int(k), loc
+        if g < offset + int(n):
+            return g, name
         offset += int(n)
     raise KeyError(bid)
 
