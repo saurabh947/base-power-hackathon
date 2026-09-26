@@ -54,6 +54,7 @@ Change it only through the integrator.
 | `POST /availability` | anyone | see below | `{"applied_from_tick_utc": "…", "affected": 6000, "available": 14000, "total": 20000}` |
 | `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "city", "lonlat", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
 | `GET /fleet/layout` | anyone | – | Layout (below): where every battery sits, for the map. It is static per fleet, so cache it by `version`. |
+| `POST /workers/{worker_id}/restart` | anyone | – | Restarts a crashed controller: `200 {"worker_id": 7, "status": "starting"}`, `409 not_crashed` if it isn't down, `404 unknown_worker`. Rate-limited like kill. |
 | `POST /chaos/kill` | anyone | optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. Rate-limited: one kill per 2 s. |
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
 | `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed\|cancelled", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
@@ -153,17 +154,18 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 **Worker**
 ```json
 {"worker_id": 7, "status": "healthy", "pid": 1234, "batteries": 1000, "last_tick_utc": "…", "adopted_from": [3],
- "by_location": {"LZ_NORTH": 1000}, "charge_level": 0.62, "usable_charge": 0.525, "recovers_in_s": null}
+ "by_location": {"LZ_NORTH": 1000}, "charge_level": 0.62, "usable_charge": 0.525}
 ```
 `usable_charge` is the share of usable energy left above the 20% reserve (0–1): `(charge_level − 0.2) / 0.8`. The controller panel shows this; `null` when it owns none.
 
 **Failure model (the human's rules, 2026-09-26):**
 - **Crash.** A crash (public kill or any worker exit) empties that controller's batteries to the reserve (`usable_charge` 0).
   - The other controllers take them over within one tick, as before, so the fleet keeps running with those batteries empty.
-  - The crashed controller **restarts automatically** after `orchestration.auto_restart_s` (default 10 s; 0 = off). Meanwhile its status is `dead` with `recovers_in_s` counting down, then `starting`.
-  - On restart it takes its original batteries back and emits a `worker_recovered` event. Its gauge starts from their current, near-empty charge.
+  - **Nothing restarts on its own.** A crashed controller stays down until a user restarts it with `POST /workers/{worker_id}/restart`, or Reset brings everything back.
+  - A user restart emits `worker_recovered`, and its gauge starts from 0.
+  - *Open question for the human:* whether the emptied batteries are handed to the other controllers while it's down (today's behaviour) or stay idle until the restart.
 - **Controller offline.** Taking a controller offline (`/availability` scope `worker`) **halves** the usable charge of its batteries at that moment.
-  - While offline they don't move. Back online, they resume from the halved level.
+  - While offline they don't move. **Only a user brings them back online** (nothing automatic), and they resume from the halved level.
   - City and single-battery offline don't change charge.
 - **Mirroring.** The race shadow applies the same emptying and halving to the same batteries, so the race compares only decisions. The `potential` fleet never loses charge, so `shortfall_usd` includes the lost energy.
 
@@ -171,7 +173,7 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 
 `by_location` lists only the cities this controller currently holds. It is `{}` for a dead controller, and changes after hand-overs. `totals.by_location` always has every city.
 
-`status` is `starting`, `healthy`, `suspect` or `dead`. `recovers_in_s` is the seconds until an auto-restart, set only while `dead` and waiting to restart.
+`status` is `starting`, `healthy`, `suspect` or `dead`.
 
 **FailedCommands**
 ```json
