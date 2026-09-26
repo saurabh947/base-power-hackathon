@@ -18,8 +18,8 @@ offline losing half its usable charge.
 |---|---|
 | **Real** | 2025 electricity prices: ERCOT real-time settlement point prices for the four Texas Triangle load zones (LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN), 15-minute intervals, for every 2025 replay preset's local date and the day after (192 rows each), plus September 14–20, 2025 (672 rows), in `data/ercot_rt_lz_preset_days_2025.json`. |
 | **Stand-ins** | 2026's "real" prices: the mock has no 2026 data, so its 2026 replays use 2025's real prices from the same dates, a year on (January 1–2, and September 14–20 as 2026's last real week). |
-| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of `GET /results/ai-gains` (2025 only, the pitch year: the site shows no other year), and in `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. |
-| **Simulated** | The AI's 2026 prediction after the real prices end (2026-09-21T05:00Z, midnight on Sep 21 in Texas): for each 15 minutes, the median of the same time of day over the last 7 real days, pulled a little towards their mean and smoothed over an hour, for two days. Plausible practice data, not TimesFM. And everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
+| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of 2025's `GET /results/ai-gains` (the pitch year), and in 2025's `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. 2026's full-year results are made up (below). |
+| **Simulated** | The AI's 2026 prediction after the real prices end (2026-09-21T05:00Z, midnight on Sep 21 in Texas): for each 15 minutes, the median of the same time of day over the last 7 real days, pulled a little towards their mean and smoothed over an hour, for two days. Plausible practice data, not TimesFM. All of 2026's full-year results (`GET /results/pitch?year=2026` and `GET /results/ai-gains?year=2026`: a little above 2025's, split at Sep 20 into `real_per_battery_usd` and `projected_per_battery_usd`, `SPLIT_2026` in `gains.ts`). And everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
 
 The site shows a "Practice data" banner whenever it is connected to this mock (its `GET /health` version starts
 with `mock`), the mock's forecasts are labelled `mock (simulated, not TimesFM)`, and its full-year results list
@@ -126,7 +126,7 @@ Knobs (environment variables, for either mode):
 |---|---|
 | `MOCK_COLD_START_MS` | Hold every request (and refuse WebSockets) for this long after start, like a Cloud Run cold start. Try `8000` to see "Waking up the simulator…". |
 | `MOCK_WS=off` | Refuse WebSocket upgrades, so the site falls back to polling `GET /state`. |
-| `MOCK_NO_RESULTS=1` | `GET /results/pitch` and `GET /results/ai-gains` answer 404 `no_results` until a full-year re-run finishes. |
+| `MOCK_NO_RESULTS=1` | `GET /results/pitch` and `GET /results/ai-gains` answer 404 `no_results`, for every year, until a full-year re-run of that year finishes. `MOCK_NO_RESULTS=2026` (or `2025,2026`) does it for those years only. |
 | `MOCK_NO_AI_GAINS=1` | `GET /results/ai-gains` always answers 404 `no_results` (a backend without them yet): the Results page shows no "What the AI adds". |
 | `MOCK_BACKTEST_FAIL=1` | Full-year re-runs end with status `failed`. |
 
@@ -152,7 +152,10 @@ Knobs (environment variables, for either mode):
 - Cities that switch action at the same step share one event ("Batteries in all four cities started selling at
   about $1,757/MWh"), and so do price spikes.
 - `POST /backtest` while a job runs returns that job's id; job status includes `skipped` (always empty here). A
-  job takes 6 s.
+  job takes 6 s and re-runs the body's `year` (2025 or 2026, else 400 `invalid_year`; the pitch year without one).
+- `GET /results/pitch?year=` and `GET /results/ai-gains?year=` answer for 2025 (the default) and 2026; any other
+  year is 404 `no_results`. 2025 carries `real_until_utc: null` and `projected_per_battery_usd: 0`, 2026
+  `real_until_utc` 2026-09-21T05:00Z and both parts for every method and the ceiling.
 - `POST /backtest/{job_id}/cancel` stops a running job: `200 {"status": "cancelled"}`, then its status reads
   `cancelled`, nothing is stored and the previous results stay; a `backtest_done` event says it was stopped.
   `409 not_running` once it has finished or been stopped, `404 unknown_job` for an unknown id.

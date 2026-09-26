@@ -193,7 +193,8 @@ describe('the pitch year only (no year switch, no spike card)', () => {
     expect(g.year.year).toBe(2025);
     expect(Object.keys(g)).toEqual(['ai', 'baseline', 'year']);
     const view = gainsView(g, FLEET);
-    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus']);
+    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus', 'split']);
+    expect(view.split).toBeNull(); // 2025 is real prices all year
     // 2024's much bigger gain never shows, whatever order the server sends.
     const reversed = measured();
     reversed.years.reverse();
@@ -211,6 +212,52 @@ describe('the pitch year only (no year switch, no spike card)', () => {
     const raw = measured();
     for (const y of raw.years) y.is_pitch = false;
     expect(read(raw).year.year).toBe(2025);
+  });
+});
+
+describe('the year the Results page shows (GET /results/ai-gains?year=)', () => {
+  it('reads that year’s entry, flagged as the pitch or not', () => {
+    expect(readAiGains(measured(), 2024)?.year.year).toBe(2024);
+    expect(readAiGains(measured(), 2025)?.year.year).toBe(2025);
+    expect(gainsView(readAiGains(measured(), 2024) as NonNullable<ReturnType<typeof readAiGains>>, FLEET).headline?.amount).toBe('+$158');
+  });
+
+  it('never shows another year’s numbers as this one’s (a backend that ignores ?year=)', () => {
+    expect(readAiGains(measured(), 2026)).toBeNull();
+  });
+
+  it('splits a 2026 uplift into its real and projected parts, from the results', () => {
+    const g = read(measured());
+    const span = { lastRealDay: '2026-09-20', firstProjectedDay: '2026-09-21', realSpan: 'Jan 1 – Sep 20', projectedSpan: 'Sep 21 – Dec 31' };
+    const view = gainsView(g, FLEET, {
+      span,
+      ai: { real: 140, projected: 60, total: 200 },
+      base: { real: 95, projected: 35, total: 130 },
+    });
+    expect(view.split).toEqual({
+      real: 'Real Jan 1 – Sep 20: +$45 per battery',
+      projected: 'Projected Sep 21 – Dec 31: +$25',
+      estimate: '2025 estimate: +$70',
+      earnsReal: 'Real Jan 1 – Sep 20: $140 vs $95',
+      earnsProjected: 'Projected Sep 21 – Dec 31: $60 vs $35',
+    });
+  });
+
+  it('keeps every shown dollar adding up, however the parts round', () => {
+    const g = read(measured());
+    const span = { lastRealDay: '2026-09-20', firstProjectedDay: '2026-09-21', realSpan: 'Jan 1 – Sep 20', projectedSpan: 'Sep 21 – Dec 31' };
+    const split = gainsView(g, FLEET, {
+      span,
+      ai: { real: 151.6, projected: 53.8, total: 205.4 }, // $151 + $54 = $205, not $152 + $54
+      base: { real: 97.9, projected: 33.3, total: 131.2 }, // $98 + $33 = $131
+    }).split;
+    expect(split?.earnsReal).toBe('Real Jan 1 – Sep 20: $151 vs $98');
+    expect(split?.earnsProjected).toBe('Projected Sep 21 – Dec 31: $54 vs $33');
+    expect([split?.real, split?.projected, split?.estimate]).toEqual([
+      'Real Jan 1 – Sep 20: +$53 per battery',
+      'Projected Sep 21 – Dec 31: +$21',
+      '2025 estimate: +$74',
+    ]);
   });
 });
 

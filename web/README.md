@@ -211,15 +211,30 @@ The run settings card and "Change settings" have a Year setting, 2025 or 2026 (f
 one-line description under it, since its prices are real up to a date and the AI's prediction after it. The
 reading is in `src/api/settings.ts` (tested), which tolerates a backend without `years`.
 
+### Results: the year shown
+
+The Results page follows one year (the human's "option A", `src/state/resultsYear.ts`, tested): the year of the
+run that exists now (running, paused or finished), else the year last picked on Start (remembered in this
+browser), else 2025. The title and subtitle name it and say why ("2026 is the year of the replay running now").
+It calls `GET /results/pitch?year=` and `GET /results/ai-gains?year=`, and "Re-run the full year" posts that
+year. A year without results (404) says "No full-year results for 2026 yet." and offers the re-run.
+
+A year with an AI-predicted part (2026, `real_until_utc`) shows the split everywhere (`src/screens/results/model.ts`,
+tested): under the big number, "Real Jan 1 – Sep 20: $151 per battery · Projected Sep 21 – Dec 31: $54 · 2026
+estimate: $205" with a "2026 estimate" chip; each method's bar solid for the real part and hatched violet for the
+projected part; top days after the cut-off marked "projected"; the fine print says whose prices each part used.
+Whole dollars are rounded so the parts add up to the total shown.
+
 ### Results: "What the AI adds"
 
-Right under the headline row, from `GET /results/ai-gains`: what the AI forecast earns over the simple rule
+Right under the headline row, from `GET /results/ai-gains?year=`: what the AI forecast earns over the simple rule
 ("+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet",
 built from `uplift` and the fleet size), then three cards, each with a "What this means" line: earns more, gets
-closer to perfect (`share_of_best` as bars) and soaks up surplus power (`surplus_mwh`). It shows the pitch year
-only (the first entry of `years` with `is_pitch: true`, 2025) and ignores any other year: there is no year
-switch and no spike card. A 404 `no_results` hides the section. The model and every sentence
-are in `src/screens/results/aiGains.ts` (tested).
+closer to perfect (`share_of_best` as bars) and soaks up surplus power (`surplus_mwh`). It reads the entry for
+the year shown (the pitch year without one) and never shows another year's numbers as that year's; in 2026 the
+gain is split into its real and projected parts from the Results' `real_per_battery_usd` and
+`projected_per_battery_usd`, and the cards say "2026 estimate". A 404 `no_results` hides the section. The model
+and every sentence are in `src/screens/results/aiGains.ts` (tested).
 
 - **Charts**: no chart library. The corners' mini price and power lines and the timeline are small SVGs drawn
   from the tick history; the map is plain canvas.

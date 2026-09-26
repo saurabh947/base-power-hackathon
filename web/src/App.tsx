@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Header } from './components/Header.tsx';
 import { Link } from './components/Link.tsx';
 import { PracticeBanner } from './components/PracticeBanner.tsx';
@@ -27,7 +27,9 @@ export function App() {
     void checkBackend();
   }, []);
 
-  useEffect(() => {
+  // A layout effect, so it runs before the pages' own effects: a page can name itself more exactly
+  // ("Full-year results 2026 · Fleet Sim").
+  useLayoutEffect(() => {
     document.title = TITLES[route];
     // After in-app navigation, move focus to the new page so screen readers start there.
     if (firstRender.current) {

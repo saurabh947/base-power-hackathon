@@ -128,9 +128,12 @@ export const api = {
   /** Stops a running full-year job: 200 {"status": "cancelled"}, 409 not_running, 404 unknown. */
   cancelBacktest: (jobId: string) =>
     request<{ status: 'cancelled' }>('POST', `/backtest/${encodeURIComponent(jobId)}/cancel`),
-  results: (signal?: AbortSignal) => request<Results>('GET', '/results/pitch', { signal, timeoutMs: 30_000 }),
-  /** GET /results/ai-gains, read defensively by src/screens/results/aiGains.ts. */
-  aiGains: (signal?: AbortSignal) => request<unknown>('GET', '/results/ai-gains', { signal, timeoutMs: 30_000 }),
+  /** GET /results/pitch?year=: that year's full-year results (the pitch year, 2025, without a year). */
+  results: (year: number | null, signal?: AbortSignal) =>
+    request<Results>('GET', `/results/pitch${year === null ? '' : `?year=${encodeURIComponent(year)}`}`, { signal, timeoutMs: 30_000 }),
+  /** GET /results/ai-gains?year=, read defensively by src/screens/results/aiGains.ts. */
+  aiGains: (year: number | null, signal?: AbortSignal) =>
+    request<unknown>('GET', `/results/ai-gains${year === null ? '' : `?year=${encodeURIComponent(year)}`}`, { signal, timeoutMs: 30_000 }),
   forecast: (location: string, atUtc: string) =>
     request<Forecast>('GET', `/forecast?location=${encodeURIComponent(location)}&at_utc=${encodeURIComponent(atUtc)}`),
 };

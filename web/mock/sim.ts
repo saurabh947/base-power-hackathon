@@ -67,7 +67,7 @@ import type {
 import { batteryRanges, DEFAULT_SHARES } from '../src/lib/fleet.ts';
 import { CHARGING, DOWN, OFFLINE, packStatus, SELLING, WAITING } from '../src/map/status.ts';
 import priceFixture from './data/ercot_rt_lz_preset_days_2025.json' with { type: 'json' };
-import { MEASURED, mockAiGains } from './gains.ts';
+import { MEASURED, mockAiGains, SPLIT_2026 } from './gains.ts';
 import { buildMockLayout } from './layout.ts';
 
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
@@ -529,14 +529,23 @@ interface Job {
   fail: boolean;
   /** Stopped with POST /backtest/{job_id}/cancel. */
   cancelled: boolean;
+  /** The year it re-runs (POST /backtest {"year"}). */
+  year: number;
 }
+
+/** The years with full-year results (docs/API.md GET /results/pitch?year=): 2025 is the pitch year. */
+export const RESULT_YEARS = [2025, 2026];
+const PITCH_YEAR = 2025;
 
 export interface MockSimOptions {
   now?: () => number;
   random?: () => number;
   backtestMs?: number;
   backtestFails?: boolean;
+  /** false: every year answers 404 no_results until a full-year re-run of it finishes. */
   resultsBeforeBacktest?: boolean;
+  /** These years answer 404 no_results until a re-run of them finishes (MOCK_NO_RESULTS=2026). */
+  noResultsYears?: number[];
   /** GET /results/ai-gains always answers 404 no_results (a backend without them yet). */
   noAiGains?: boolean;
 }
@@ -716,7 +725,8 @@ export class MockSim {
   private readonly backtestMs: number;
   private readonly backtestFails: boolean;
   private readonly noAiGains: boolean;
-  private resultsReady: boolean;
+  /** Years that answer 404 no_results until a full-year re-run of them finishes. */
+  private readonly missing: Set<number>;
 
   private segment: Segment | null = null;
   private startedAtMs = 0;
@@ -766,7 +776,7 @@ export class MockSim {
     this.backtestMs = options.backtestMs ?? 6000;
     this.backtestFails = options.backtestFails ?? false;
     this.noAiGains = options.noAiGains ?? false;
-    this.resultsReady = options.resultsBeforeBacktest ?? true;
+    this.missing = new Set(options.resultsBeforeBacktest === false ? RESULT_YEARS : (options.noResultsYears ?? []));
     this.resetFleet();
   }
 
@@ -1742,14 +1752,16 @@ export class MockSim {
     return !job.cancelled && this.now() < job.doneAtMs;
   }
 
-  startBacktest(): { job_id: string } {
+  /** POST /backtest {"year"}: a full-year re-run of that year (the pitch year without one). */
+  startBacktest(year: number = PITCH_YEAR): { job_id: string } {
+    if (!RESULT_YEARS.includes(year)) throw new MockError(400, 'invalid_year', 'The year must be 2025 or 2026.');
     // While a job runs, POST /backtest returns that job's id (docs/API.md).
     if (this.runningJob) {
       const job = this.jobs.get(this.runningJob);
       if (job && this.isRunning(job)) return { job_id: job.id };
     }
     const id = crypto.randomUUID();
-    this.jobs.set(id, { id, doneAtMs: this.now() + this.backtestMs, fail: this.backtestFails, cancelled: false });
+    this.jobs.set(id, { id, doneAtMs: this.now() + this.backtestMs, fail: this.backtestFails, cancelled: false, year });
     this.runningJob = id;
     return { job_id: id };
   }
@@ -1779,20 +1791,38 @@ export class MockSim {
     if (job.fail) {
       return { status: 'failed', run_ids: [], skipped: {}, error: 'The practice server was told to fail this run (MOCK_BACKTEST_FAIL=1).' };
     }
-    this.resultsReady = true;
+    this.missing.delete(job.year);
     return { status: 'done', run_ids: ['mock-bands', 'mock-forecast', 'mock-peak'], skipped: {}, error: null };
   }
 
-  results(): Results {
-    if (!this.resultsReady) throw new MockError(404, 'no_results', 'No full-year results yet.');
+  /** 404 no_results for a year without results (or one this server does not have). */
+  private resultsYear(year: number | null): number {
+    const y = year ?? PITCH_YEAR;
+    if (!RESULT_YEARS.includes(y) || this.missing.has(y)) throw new MockError(404, 'no_results', 'No full-year results yet.');
+    return y;
+  }
+
+  /**
+   * GET /results/pitch?year=: 2025's per-battery figures are the measured ones (RUNLOG.md, 4-city full-year
+   * results; ./gains.ts); 2026's are SIMULATED, split at real_until_utc into their real and projected parts
+   * (docs/API.md). Cycles, top days and most city splits are made up for both.
+   */
+  results(year: number | null = null): Results {
+    const y = this.resultsYear(year);
     const powerMw = NAMEPLATE_KW / 1000;
     const energyMwh = CAPACITY.reduce((a, b) => a + b, 0) / 1000;
     const avgKw = NAMEPLATE_KW / FLEET;
     const avgKwh = (energyMwh * 1000) / FLEET;
     const factor: Record<Loc, number> = { LZ_HOUSTON: 0.94, LZ_NORTH: 0.98, LZ_CPS: 1.11, LZ_AEN: 1.12 };
-    // The per-battery figures are the measured 2025 ones (RUNLOG.md, 4-city full-year results; ./gains.ts).
-    const measured = MEASURED.find((y) => y.isPitch) ?? MEASURED[0];
+    const measured = MEASURED.find((m) => m.year === y) ?? MEASURED[0];
+    const split = y === 2026;
     const perBattery = (key: 'bands' | 'forecast' | 'peak') => measured.strategies[key].perBattery;
+    // docs/API.md: real + projected = per_battery_usd_year; a fully real year has projected 0.
+    const parts = (key: 'bands' | 'forecast' | 'peak' | 'best', whole: number) =>
+      split
+        ? { real_per_battery_usd: SPLIT_2026[key].real, projected_per_battery_usd: SPLIT_2026[key].projected }
+        : { real_per_battery_usd: whole, projected_per_battery_usd: 0 };
+    const dayScale = split ? 1.06 : 1;
     const strategy = (
       key: 'bands' | 'forecast' | 'peak',
       label: string,
@@ -1803,24 +1833,28 @@ export class MockSim {
     ) => ({
       strategy: key,
       label,
-      run_id: `mock-${key}`,
+      run_id: `mock-${key}-${y}`,
       is_headline: headline,
       per_battery_usd_year: perBattery(key),
+      ...parts(key, perBattery(key)),
       fleet_usd_year: Math.round(perBattery(key) * FLEET),
       usd_per_kwh_year: round(perBattery(key) / avgKwh),
       usd_per_kw_year: round(perBattery(key) / avgKw),
       cycles_per_year: cycles,
-      per_location_usd: perLoc((l) => Math.round((perCity ? perCity[l] : perBattery(key) * factor[l]) * COUNT[l])),
-      top_days: TOP_DAY_DATES.map((date_local, i) => ({ date_local, usd: days[i] })),
+      per_location_usd: perLoc((l) => Math.round((perCity && !split ? perCity[l] : perBattery(key) * factor[l]) * COUNT[l])),
+      top_days: (split ? TOP_DAY_DATES_2026 : TOP_DAY_DATES).map((date_local, i) => ({ date_local, usd: Math.round(days[i] * dayScale) })),
     });
     return {
-      year: measured.year,
+      year: y,
       generated_utc: new Date(this.now()).toISOString(),
       fleet_size: FLEET,
       fleet_power_mw: round(powerMw, 1),
       fleet_energy_mwh: round(energyMwh, 1),
+      real_until_utc: split ? REAL_UNTIL_2026 : null,
       assumptions: [
-        'SIMULATED practice data from the mock server: the per-battery figures and the AI forecast’s city figures are copied from the real 2025 backtest (RUNLOG.md); the cycles, top days and other city splits are made up.',
+        split
+          ? 'SIMULATED practice data from the mock server: every 2026 figure is made up (no 2026 backtest exists here), split at Sep 20 into a real part and a part projected on the AI’s predicted prices.'
+          : 'SIMULATED practice data from the mock server: the per-battery figures and the AI forecast’s city figures are copied from the real 2025 backtest (RUNLOG.md); the cycles, top days and other city splits are made up.',
         'Gross wholesale energy value at ERCOT real-time prices (15-minute settlement).',
       ],
       strategies: [
@@ -1837,15 +1871,17 @@ export class MockSim {
       ceiling: {
         label: 'Best possible (perfect hindsight)',
         per_battery_usd_year: measured.bestPerBattery,
+        ...parts('best', measured.bestPerBattery),
         fleet_usd_year: Math.round(measured.bestPerBattery * FLEET),
       },
     };
   }
 
-  /** GET /results/ai-gains: the measured numbers (./gains.ts); 404 no_results like GET /results/pitch. */
-  aiGains(): AiGains {
-    if (!this.resultsReady || this.noAiGains) throw new MockError(404, 'no_results', 'No full-year results yet.');
-    return mockAiGains(FLEET);
+  /** GET /results/ai-gains?year=: that year's numbers (./gains.ts); 404 no_results like GET /results/pitch. */
+  aiGains(year: number | null = null): AiGains {
+    const y = this.resultsYear(year);
+    if (this.noAiGains) throw new MockError(404, 'no_results', 'No full-year results yet.');
+    return mockAiGains(FLEET, year === null ? null : y);
   }
 }
 
@@ -1861,6 +1897,20 @@ const TOP_DAY_DATES = [
   '2025-07-29',
   '2025-09-03',
   '2025-05-13',
+];
+
+/** 2026's (all made up): some fall after Sep 20, on the AI's predicted prices. */
+const TOP_DAY_DATES_2026 = [
+  '2026-08-18',
+  '2026-05-12',
+  '2026-10-06',
+  '2026-07-24',
+  '2026-01-21',
+  '2026-11-17',
+  '2026-06-30',
+  '2026-09-02',
+  '2026-12-09',
+  '2026-04-15',
 ];
 
 /** GET /settings with the pinned item shapes (docs/API.md). */

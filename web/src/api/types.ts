@@ -351,7 +351,17 @@ export interface TopDay {
   usd: number;
 }
 
-export interface StrategyResult {
+/**
+ * A year with an AI-predicted part (2026, docs/API.md Results): the per-battery figure split at real_until_utc
+ * into what real prices earned and what the AI's predicted prices project. The two add up to
+ * per_battery_usd_year; for a fully real year projected is 0. Missing from an older backend.
+ */
+interface RealProjectedSplit {
+  real_per_battery_usd?: number;
+  projected_per_battery_usd?: number;
+}
+
+export interface StrategyResult extends RealProjectedSplit {
   strategy: string;
   label: string;
   run_id: string;
@@ -365,7 +375,7 @@ export interface StrategyResult {
   top_days: TopDay[];
 }
 
-export interface Ceiling {
+export interface Ceiling extends RealProjectedSplit {
   label: string;
   per_battery_usd_year: number;
   fleet_usd_year: number;
@@ -380,6 +390,8 @@ export interface Results {
   assumptions: string[];
   strategies: StrategyResult[];
   ceiling: Ceiling | null;
+  /** The end of the last real interval (2026); null or missing when the whole year is real prices. */
+  real_until_utc?: string | null;
 }
 
 /** One decision method's full year in GET /results/ai-gains. Energy in MWh, prices in $/MWh. */

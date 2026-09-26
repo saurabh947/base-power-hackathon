@@ -20,6 +20,8 @@ export interface MockApiOptions {
   websocket?: boolean;
   /** 404 from GET /results/pitch (and /results/ai-gains) until a full-year run finishes. */
   noResultsUntilBacktest?: boolean;
+  /** The same for these years only (MOCK_NO_RESULTS=2026). */
+  noResultsYears?: number[];
   /** 404 from GET /results/ai-gains, always. */
   noAiGains?: boolean;
   backtestFails?: boolean;
@@ -27,10 +29,13 @@ export interface MockApiOptions {
 }
 
 export function mockOptionsFromEnv(env: NodeJS.ProcessEnv): MockApiOptions {
+  // MOCK_NO_RESULTS=1: every year; MOCK_NO_RESULTS=2026 (or 2025,2026): just those years.
+  const noResults = (env.MOCK_NO_RESULTS ?? '').split(',').map(Number).filter((y) => y > 1);
   return {
     coldStartMs: Number(env.MOCK_COLD_START_MS ?? 0) || 0,
     websocket: env.MOCK_WS !== 'off',
     noResultsUntilBacktest: env.MOCK_NO_RESULTS === '1',
+    noResultsYears: noResults,
     noAiGains: env.MOCK_NO_AI_GAINS === '1',
     backtestFails: env.MOCK_BACKTEST_FAIL === '1',
   };
@@ -76,6 +81,15 @@ function sendError(res: ServerResponse, err: MockError): void {
   send(res, err.status, body, headers);
 }
 
+/** ?year= on the results endpoints: null when absent (the pitch year). */
+function yearParam(url: URL): number | null {
+  const raw = url.searchParams.get('year');
+  if (raw === null || raw === '') return null;
+  const year = Number(raw);
+  if (!Number.isInteger(year)) throw new MockError(400, 'invalid_year', 'The year must be 2025 or 2026.');
+  return year;
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -106,6 +120,7 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
   const sim = new MockSim({
     backtestFails: options.backtestFails,
     resultsBeforeBacktest: !options.noResultsUntilBacktest,
+    noResultsYears: options.noResultsYears,
     noAiGains: options.noAiGains,
   });
   const wss = new WebSocketServer({ noServer: true });
@@ -188,12 +203,14 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
         const raw = url.searchParams.get('worker_id');
         return send(res, 200, sim.kill(raw === null || raw === '' ? undefined : Number(raw)));
       }
-      case 'POST /backtest':
-        return send(res, 202, sim.startBacktest());
+      case 'POST /backtest': {
+        const body = (await readJson(req)) as { year?: unknown };
+        return send(res, 202, sim.startBacktest(body?.year === undefined || body.year === null ? undefined : Number(body.year)));
+      }
       case 'GET /results/pitch':
-        return send(res, 200, sim.results());
+        return send(res, 200, sim.results(yearParam(url)));
       case 'GET /results/ai-gains':
-        return send(res, 200, sim.aiGains());
+        return send(res, 200, sim.aiGains(yearParam(url)));
       case 'GET /forecast': {
         const f = sim.forecastAt(url.searchParams.get('location') ?? '', url.searchParams.get('at_utc'));
         if (!f) throw new MockError(404, 'no_forecast', 'No forecast has been issued for that area and time yet.');

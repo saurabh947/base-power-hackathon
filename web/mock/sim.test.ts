@@ -511,7 +511,8 @@ describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
     );
     expect(view.perfect?.bars.map((b) => b.text)).toEqual(['29%', '32%', '45%']);
     expect(view.surplus).toMatchObject({ aiText: '7,011 MWh', baseText: '1,239 MWh', times: '5.7×' });
-    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus']); // three cards, no spike card
+    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus', 'split']); // three cards, no spike card
+    expect(view.split).toBeNull(); // 2025: real prices all year
   });
 
   it('agrees with GET /results/pitch', () => {
@@ -525,5 +526,45 @@ describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
   it('answers 404 no_results before any full-year run, or when told to', () => {
     expect(caught(() => new MockSim({ resultsBeforeBacktest: false }).aiGains())).toMatchObject({ status: 404, code: 'no_results' });
     expect(caught(() => new MockSim({ noAiGains: true }).aiGains())).toMatchObject({ status: 404, code: 'no_results' });
+  });
+});
+
+describe('results by year (GET /results/pitch?year=, docs/API.md)', () => {
+  it('serves 2025 as real prices all year: real_until_utc null, nothing projected', () => {
+    const r = new MockSim().results(2025);
+    expect(r).toMatchObject({ year: 2025, real_until_utc: null });
+    for (const s of r.strategies) expect(s).toMatchObject({ real_per_battery_usd: s.per_battery_usd_year, projected_per_battery_usd: 0 });
+    expect(new MockSim().results()).toMatchObject({ year: 2025 }); // no year: the pitch year
+  });
+
+  it('serves 2026 split at Sep 20 into real and projected parts that add up, the ceiling too', () => {
+    const r = new MockSim().results(2026);
+    expect(r).toMatchObject({ year: 2026, real_until_utc: '2026-09-21T05:00:00Z' });
+    for (const s of [...r.strategies, r.ceiling]) {
+      expect((s?.real_per_battery_usd ?? 0) + (s?.projected_per_battery_usd ?? 0)).toBeCloseTo(s?.per_battery_usd_year ?? Number.NaN, 6);
+      expect(s?.projected_per_battery_usd).toBeGreaterThan(0);
+    }
+    expect(r.assumptions[0]).toMatch(/^SIMULATED .*2026 figure is made up/);
+    // Its top days include some on the AI's predicted prices.
+    expect(r.strategies[0].top_days.some((d) => d.date_local > '2026-09-20')).toBe(true);
+    // "What the AI adds" for 2026 agrees with it.
+    const gains = new MockSim().aiGains(2026);
+    expect(gains.years.map((y) => y.year)).toEqual([2026]);
+    const per = Object.fromEntries(r.strategies.map((s) => [s.strategy, s.per_battery_usd_year]));
+    for (const [id, s] of Object.entries(gains.years[0].strategies)) expect(s.per_battery_usd_year).toBe(per[id]);
+  });
+
+  it('answers 404 for a year without results until a re-run of that year finishes', () => {
+    let now = 0;
+    const sim = new MockSim({ now: () => now, noResultsYears: [2026], backtestMs: 1000 });
+    expect(sim.results(2025).year).toBe(2025);
+    expect(caught(() => sim.results(2026))).toMatchObject({ status: 404, code: 'no_results' });
+    expect(caught(() => sim.aiGains(2026))).toMatchObject({ status: 404, code: 'no_results' });
+    expect(caught(() => sim.results(2024))).toMatchObject({ status: 404 });
+    const job = sim.startBacktest(2026);
+    now += 1000;
+    expect(sim.backtestStatus(job.job_id).status).toBe('done');
+    expect(sim.results(2026).year).toBe(2026);
+    expect(caught(() => sim.startBacktest(2024))).toMatchObject({ status: 400, code: 'invalid_year' });
   });
 });

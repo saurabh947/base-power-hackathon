@@ -1566,6 +1566,49 @@ dialog.backdrop-light::backdrop {
   font-weight: 650;
 }
 
+/* "2026 estimate" next to the big number: part of it is projected on the AI's predicted prices. */
+.big-number-chip {
+  align-self: center;
+  letter-spacing: 0;
+  text-shadow: none;
+}
+
+/* "Real Jan 1 – Sep 20: $140 per battery · Projected Sep 21 – Dec 31: $60 · 2026 estimate: $200". */
+.year-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.year-split strong {
+  color: var(--text);
+  font-weight: 750;
+}
+
+/* The projected part, in the AI prediction's violet (as on the Live page's timeline and badge). */
+.year-split-projected {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--forecast);
+}
+
+.year-split-projected > svg {
+  flex: none;
+}
+
+.year-split .year-split-projected strong {
+  color: var(--forecast);
+}
+
+.results-why {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
 .result-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1713,11 +1756,32 @@ dialog.backdrop-light::backdrop {
 }
 
 .bar-track {
+  display: flex;
   grid-column: 1 / -1;
   height: 14px;
   border-radius: 999px;
   background: var(--bar-track);
   overflow: hidden;
+}
+
+/* A year with an AI-predicted part: the solid bar is real prices, this hatched violet part is projected. */
+.bar-fill.bar-projected,
+.bar-row.headline .bar-fill.bar-projected,
+.bar-row.ceiling .bar-fill.bar-projected {
+  border-radius: 0 999px 999px 0;
+  background: repeating-linear-gradient(-45deg, var(--forecast) 0 2px, var(--forecast-fill) 2px 6px);
+  box-shadow: none;
+}
+
+.bar-track > .bar-fill:not(:last-child) {
+  border-radius: 999px 0 0 999px;
+}
+
+.bar-split {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .bar-fill {
@@ -1798,6 +1862,20 @@ dialog.backdrop-light::backdrop {
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
+}
+
+/* A day on the AI's predicted prices (2026 after its real prices end): "projected" under its date. */
+.day-projected {
+  display: block;
+  color: var(--forecast);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.day-row.is-projected .day-bar {
+  background: repeating-linear-gradient(-45deg, var(--forecast) 0 2px, var(--forecast-fill) 2px 6px);
+  box-shadow: none;
 }
 
 .assumptions {
