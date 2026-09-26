@@ -163,7 +163,8 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
   - The other controllers take them over within one tick, as before, so the fleet keeps running with those batteries empty.
   - **Nothing restarts on its own.** A crashed controller stays down until a user restarts it with `POST /workers/{worker_id}/restart`, or Reset brings everything back.
   - A user restart emits `worker_recovered`, and its gauge starts from 0.
-  - *Open question for the human:* whether the emptied batteries are handed to the other controllers while it's down (today's behaviour) or stay idle until the restart.
+  - **Hand-over (the human's choice).** While the controller is down, its emptied batteries are run by the other controllers, which recharge them when it's cheap.
+  - On a user restart the controller takes its original batteries back, with whatever charge they have by then (owner-epoch fenced).
 - **Controller offline.** Taking a controller offline (`/availability` scope `worker`) **halves** the usable charge of its batteries at that moment.
   - While offline they don't move. **Only a user brings them back online** (nothing automatic), and they resume from the halved level.
   - City and single-battery offline don't change charge.
