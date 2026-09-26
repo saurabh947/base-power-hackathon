@@ -55,7 +55,8 @@ Change it only through the integrator.
 | `POST /presenter/check` | anyone | header `X-Presenter-Passcode` | `200 {"ok": true}` or `403` |
 | `POST /chaos/kill` | **presenter only** | header `X-Presenter-Passcode`; optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. |
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
-| `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
+| `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed\|cancelled", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
+| `POST /backtest/{job_id}/cancel` | anyone | – | Stops a running full-year job: `200 {"status": "cancelled"}`. Nothing is stored, and the previous results stay. `409 not_running` if the job has already finished; `404` if the id is unknown. A cancelled job emits a `backtest_done` event whose message says it was stopped. |
 | `GET /results/pitch` | anyone | – | Results (below). Before any full-year run: `404 {"error": "no_results", "message": "No full-year results yet."}` |
 | `GET /results/ai-gains` | anyone | – | AiGains (below): what the AI forecast adds over the simple rule, per year (the pitch year first, then other complete years). `404 no_results` if none. |
 | `GET /forecast` | anyone | `?location=LZ_HOUSTON&at_utc=…` (`location=ERCOT&series=demand` for demand) | Forecast (below): the latest forecast issued at or before `at_utc`, or 404 `no_forecast` |
