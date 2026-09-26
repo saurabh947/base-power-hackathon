@@ -2,7 +2,7 @@
 # `make setup` syncs exactly the main deps and so removes torch/timesfm; `make forecast-setup` adds them back.
 
 .PHONY: forecast-setup forecast-weights forecast-test forecast-bench forecast-sample forecast-windows \
-        forecast-accuracy forecast-eval forecast-dry-run forecast-year
+        forecast-accuracy forecast-eval forecast-dry-run forecast-year forecast-predict
 
 FORECAST_WINDOWS ?= 2025-01-06:30 2025-04-01:61 2025-07-01:31 2025-10-15:30
 
@@ -51,3 +51,7 @@ forecast-dry-run:
 # The full year, as the Cloud Run job runs it. ~8 min of all-core CPU even on an M3 Pro: run it in the cloud.
 forecast-year:
 	$(UV) run --extra forecast python -m src.forecast.job --year 2025
+
+# The AI's prediction for the rest of 2026 from where real prices end (~10 s on an M3 Pro; parquet unless a DB is set).
+forecast-predict:
+	$(UV) run --extra forecast python -m src.forecast.predict --year 2026

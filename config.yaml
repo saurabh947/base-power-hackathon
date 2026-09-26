@@ -57,39 +57,79 @@ orchestration:
     ticks: 2100
     control: 500
 
-# Replay presets for the website's Start screen (docs/UX.md). start_utc = replay start.
+# The replay years visitors pick (docs/API.md Settings.year; GET /settings `years`). src/data/years.py says where
+# each one's real prices end (real_until_utc): 2025 is real all year; 2026 is published year-to-date, and after its
+# last real interval the replay uses the AI's prediction (src/forecast/predict.py).
+years:
+  default: 2025
+  items: [2025, 2026]
+
+# Replay presets for the website's Start screen (docs/UX.md). start_utc = replay start. Each preset belongs to one
+# year. `start: evening_before_real_until` is computed: 6 pm Central on the evening before the year's
+# real_until_utc (src/data/years.py evening_before), so it follows each new ERCOT publication.
 presets:
   default: ai_best_evening   # the 2025 evening where the AI pulled furthest ahead of the simple rule (race table)
+  default_by_year:           # what a Start with only a year replays
+    2025: ai_best_evening
+    2026: real_prices_end_2026
   items:
     - id: spike_evening
+      year: 2025
       label: "Price-spike evening"
       date_local: "2025-05-16"
       start_utc: "2025-05-16T21:00:00Z"   # 4:00 pm CDT; Houston peaks $2,250/MWh at 7:45 pm
       description: "All four cities jump above $2,000/MWh around 7:45 pm; San Antonio tops $3,000."
     - id: morning_spike
+      year: 2025
       label: "Biggest spike of 2025"
       date_local: "2025-04-07"
       start_utc: "2025-04-07T08:00:00Z"   # 3:00 am CDT; Houston peaks $3,860/MWh around 6:45 am
       description: "The year's highest prices: all four cities pass $3,500/MWh just before 7 am."
     - id: summer_spike
+      year: 2025
       label: "Summer night spike"
       date_local: "2025-07-11"
       start_utc: "2025-07-11T23:00:00Z"   # 6:00 pm CDT; both areas ~$1,755/MWh in the 9:00 pm interval
       description: "All four cities jump to about $1,750/MWh at 9 pm."
     - id: ai_best_evening
+      year: 2025
       label: "The AI's best evening"
       date_local: "2025-05-30"
       start_utc: "2025-05-30T23:00:00Z"   # 6:00 pm CDT; race from 90%: AI $38,936 vs simple rule $17,536 by midnight
       description: "The 2025 evening where the AI forecast pulled furthest ahead of the simple rule."
     - id: ordinary_day
+      year: 2025
       label: "An ordinary day"
       date_local: "2025-06-28"            # daily spread $64/$68 (Houston/North) ~ the 2025 medians $63/$68
       start_utc: "2025-06-28T05:00:00Z"
       description: "A typical day in all four cities, with small ups and downs."
+    - id: jan1_2025
+      year: 2025
+      label: "From January 1"
+      date_local: "2025-01-01"
+      start_utc: "2025-01-01T06:00:00Z"   # midnight CST; the bands window warms up on Dec 25-31, 2024
+      description: "The whole of 2025 from New Year's Day, real ERCOT prices all year."
+    - id: real_prices_end_2026
+      year: 2026
+      label: "Where real prices end"
+      start: evening_before_real_until    # 6 pm Central the evening before real_until_utc (2026-09-19 with the Sep 20 files)
+      description: "The last real evening of 2026. A few hours in, the replay switches to the AI's prediction."
+    - id: spike_2026
+      year: 2026
+      label: "Biggest evening spike of 2026"
+      date_local: "2026-04-24"
+      start_utc: "2026-04-24T21:00:00Z"   # 4:00 pm CDT; 7:45 pm: Houston $1,051.54, DFW $1,231.82, SA $1,096.97, Austin $1,105.20
+      description: "All four cities jump above $1,000/MWh at 7:45 pm; Dallas–Fort Worth tops $1,200."
+    - id: jan1_2026
+      year: 2026
+      label: "From January 1"
+      date_local: "2026-01-01"
+      start_utc: "2026-01-01T06:00:00Z"   # midnight CST; the bands window warms up on Dec 25-31, 2025 (real)
+      description: "2026 from New Year's Day: real prices until they end, then the AI's prediction."
 
 # Area sections, one owner each; read via src.config.load_raw_config().
 data:       # owner: ingest (M1). python -m src.ingest.ercot; notes in docs/notes/data.md
-  years: [2024, 2025]       # ERCOT (America/Chicago) calendar years to ingest and check
+  years: [2024, 2025, 2026] # ERCOT (America/Chicago) calendar years to ingest and check (2026: year to date)
   max_missing_pct: 0.1      # M1 self-check: missing intervals per series and year must stay below this %
 
 api:        # owner: fleet + API
@@ -105,7 +145,7 @@ api:        # owner: fleet + API
     run_start_s: 5            # one /run/start per 5 s (global)
     run_reset_s: 5            # one /run/reset per 5 s (global)
     availability_per_s: 10
-    wrong_passcode_per_min: 5 # per IP
+    chaos_kill_s: 2           # one /chaos/kill per 2 s (global; crashing controllers is open to everyone)
 
 backtest:   # owner: backtest (M4). Read by src/backtest/runner.py:backtest_settings()
   year: 2025                            # the pitch year shown on the Results screen
@@ -153,6 +193,10 @@ forecast:   # owner: forecasting (src/forecast, docs/notes/forecast.md)
     context_steps: 336      # 14 days of hourly history (512 was 1% better)
     every_minutes: 60
     min_context_steps: 72   # load history starts 2025-01-01, so the first 3 days are skipped
+  predict:                  # the AI's prediction for the rest of a year (src/forecast/predict.py, price_predictions)
+    context_steps: 4096     # 42.7 days of 15-min real prices before real_until_utc (TimesFM-3 takes up to 15,360)
+    chunk_days: 7           # chained: each 7-day chunk's p50 becomes context for the next
+    cache_dir: data/cache/predictions   # parquet output of `--out parquet` (gitignored)
   strategy:                 # the forecast rule (src/strategy/forecast.py)
     horizon_hours: 12       # rank the decision price within the next 12 h of forecasts
                             # (4 h earns more but cycles 2x/day; 12 h cycles like the peak rule)

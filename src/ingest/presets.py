@@ -92,8 +92,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--year", type=int, default=2025)
     ap.add_argument("--no-notes", action="store_true")
     args = ap.parse_args(argv)
+    from src.sim import control
+
     locations = list(load_config().fleet.locations)
-    presets = list(load_raw_config().get("presets", {}).get("items", []))
+    presets = control.presets(load_raw_config())  # computed starts included (e.g. "Where real prices end")
 
     _, table = check_presets(presets, locations)
     stats = daily_stats(locations, args.year)

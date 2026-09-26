@@ -71,6 +71,22 @@ def test_prices_identical_for_every_snapshot_location(market, year):
         pd.testing.assert_series_equal(pg_fn(loc, a, b), snap_fn(loc, a, b), check_exact=True)
 
 
+@pytest.mark.parametrize("market", ["rt", "da"])
+def test_2026_year_to_date_identical_when_both_hold_the_same_publication(market):
+    """The committed 2026 snapshot (files published 2026-09-20) against Postgres, when it holds that publication."""
+    a, b = year_window(2026)
+    snap_fn, pg_fn = (series.rt_prices, series_pg.rt_prices) if market == "rt" else (series.da_prices, series_pg.da_prices)
+    locations = snapshot_locations(market, 2026)
+    pg_last = pg_fn("LZ_HOUSTON", a, b)
+    snap_last = snap_fn("LZ_HOUSTON", a, b)
+    if pg_last.empty:
+        pytest.skip("2026 not ingested: python -m src.ingest.ercot --years 2026")
+    if pg_last.index[-1] != snap_last.index[-1]:
+        pytest.skip(f"Postgres holds another 2026 publication (last {pg_last.index[-1]})")
+    for loc in locations:
+        pd.testing.assert_series_equal(pg_fn(loc, a, b), snap_fn(loc, a, b), check_exact=True)
+
+
 @pytest.mark.parametrize("start, end", [
     ("2024-03-10T06:00Z", "2024-03-11T05:00Z"),  # spring-forward local day (23 h)
     ("2024-11-03T05:00Z", "2024-11-04T06:00Z"),  # fall-back local day (25 h)

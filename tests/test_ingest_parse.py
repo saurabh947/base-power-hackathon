@@ -158,6 +158,120 @@ def test_bad_market_is_rejected():
         parse.parse_spp({"Jun": synthetic_rt(PLAIN)}, "RTM")
 
 
+# --- current-year (year-to-date) workbooks ---------------------------------------------
+
+
+def _col(i: int) -> str:
+    s, i = "", i + 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def tiny_xlsx(sheets: dict[str, list[list]]) -> bytes:
+    """A minimal real .xlsx (zip of SpreadsheetML), so the test reads it through calamine like the ingest does.
+    Strings are inline strings; numbers are plain <v> cells."""
+    import io
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    names = list(sheets)
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", (
+            '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+            'content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
+            'relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/'
+            'workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            + "".join(f'<Override PartName="/xl/worksheets/sheet{i + 1}.xml" ContentType="application/vnd.'
+                      'openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(len(names)))
+            + "</Types>"))
+        z.writestr("_rels/.rels", (
+            '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+            f'2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>"))
+        z.writestr("xl/workbook.xml", (
+            f'<?xml version="1.0" encoding="UTF-8"?><workbook {ns} xmlns:r="{rel}"><sheets>'
+            + "".join(f'<sheet name="{escape(n)}" sheetId="{i + 1}" r:id="rId{i + 1}"/>' for i, n in enumerate(names))
+            + "</sheets></workbook>"))
+        z.writestr("xl/_rels/workbook.xml.rels", (
+            '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+            '2006/relationships">'
+            + "".join(f'<Relationship Id="rId{i + 1}" Type="{rel}/worksheet" Target="worksheets/sheet{i + 1}.xml"/>'
+                      for i in range(len(names)))
+            + "</Relationships>"))
+        for i, name in enumerate(names):
+            rows = []
+            for r, row in enumerate(sheets[name], start=1):
+                cells = "".join(
+                    f'<c r="{_col(c)}{r}" t="inlineStr"><is><t>{escape(v)}</t></is></c>' if isinstance(v, str)
+                    else f'<c r="{_col(c)}{r}"><v>{v!r}</v></c>' for c, v in enumerate(row))
+                rows.append(f'<row r="{r}">{cells}</row>')
+            z.writestr(f"xl/worksheets/sheet{i + 1}.xml",
+                       f'<?xml version="1.0" encoding="UTF-8"?><worksheet {ns}><sheetData>{"".join(rows)}'
+                       "</sheetData></worksheet>")
+    return buf.getvalue()
+
+
+RT_HEADER = ["Delivery Date", "Delivery Hour", "Delivery Interval", "Repeated Hour Flag", "Settlement Point Name",
+             "Settlement Point Type", "Settlement Point Price"]
+
+
+def rt_2026_ytd_workbook(last_day: date = date(2026, 9, 19)) -> bytes:
+    """SYNTHETIC prices in the layout of ERCOT's 2026 RT annual file (13061) as published on 2026-09-20: a sheet per
+    month, the current month filled up to the last published day, the months to come header-only."""
+    filled = [RT_HEADER]
+    for d in (last_day - timedelta(days=1), last_day):
+        for row in synthetic_rt(d, points=(("LZ_HOUSTON", "LZ"), ("LZ_HOUSTON", "LZEW"), ("HB_NORTH", "SH"))).itertuples(index=False):
+            filled.append([str(row[0]), int(row[1]), int(row[2]), str(row[3]), str(row[4]), str(row[5]), float(row[6])])
+    return tiny_xlsx({"Sep": filled, "Oct": [RT_HEADER], "Nov": [RT_HEADER], "Dec": [RT_HEADER]})
+
+
+def test_rt_year_to_date_workbook_skips_the_empty_months_to_come():
+    """The 2026 cloud ingest failed with "unexpected Hour Ending value 1": the header-only Oct-Dec sheets read as
+    object columns, so the concatenated Delivery Hour column was object dtype holding Python ints."""
+    sheets = parse.read_workbook(rt_2026_ytd_workbook())
+    assert [len(d) for d in sheets.values()] == [2 * 96 * 3, 0, 0, 0]
+    assert pd.concat(list(sheets.values()))["Delivery Hour"].dtype == object  # the trap the fixture reproduces
+    out = parse.parse_spp(sheets, "RT")
+    assert set(out.location) == {"LZ_HOUSTON", "HB_NORTH"} and (out.groupby("location").size() == 192).all()
+    h = out[out.location == "LZ_HOUSTON"]
+    assert h.ts.iloc[0] == utc(2026, 9, 18, 5) and h.ts.iloc[-1] == utc(2026, 9, 20, 4, 45)  # CDT day ends 05:00Z
+    assert (np.diff(h.ts.to_numpy()) == np.timedelta64(15, "m")).all()
+    assert h.price_usd_mwh.iloc[-1] == 10.0 * 24 + 4  # HE24, interval 4, from the LZ row (not LZEW)
+
+
+@pytest.mark.parametrize("hours", [
+    lambda s: s.astype(object),                          # Python ints in an object column
+    lambda s: s.astype(str),                             # "1".."24"
+    lambda s: s.map(lambda h: f"{h:02d}"),               # "01".."24"
+    lambda s: s.astype(float),                           # 1.0..24.0
+])
+def test_rt_hour_ending_whole_numbers_in_any_dtype(hours):
+    d = synthetic_rt(PLAIN)
+    ref = parse.parse_spp({"Jun": d}, "RT")
+    alt = parse.parse_spp({"Jun": d.assign(**{"Delivery Hour": hours(d["Delivery Hour"]),
+                                               "Delivery Interval": d["Delivery Interval"].astype(object)})}, "RT")
+    pd.testing.assert_frame_equal(ref, alt)
+
+
+def test_rt_fractional_hour_ending_is_rejected():
+    d = synthetic_rt(PLAIN).astype({"Delivery Hour": float})
+    d.loc[0, "Delivery Hour"] = 1.5
+    with pytest.raises(ParseError, match="Hour Ending"):
+        parse.parse_spp({"Jun": d}, "RT")
+
+
+def test_spp_workbook_without_rows_raises():
+    """An all-empty file must never reach the store, which would delete that year's rows as stale."""
+    empty = parse.read_workbook(tiny_xlsx({"Jan": [RT_HEADER], "Feb": [RT_HEADER]}))
+    with pytest.raises(ParseError, match="no price rows"):
+        parse.parse_spp(empty, "RT")
+
+
 # --- native load -------------------------------------------------------------------------
 
 
@@ -339,3 +453,18 @@ def test_real_native_load_2025_matches_the_snapshot_including_its_corrected_fall
     a, b = utc(2025, 11, 2, 6), utc(2025, 11, 2, 7)
     assert mine[a] != mine[b]  # the two passes of the repeated hour really differ, so their order is tested
     assert np.allclose(mine.to_numpy(), ref.to_numpy(), rtol=1e-15, atol=0)
+
+
+@pytest.mark.parametrize("market", ["RT", "DA"])
+def test_real_2026_year_to_date_files_parse_whole_days_on_the_same_grid(market):
+    """The current year's annual files (republished weekly) hold Jan 1 up to the last published day, and empty
+    sheets for the months to come. Same layout as 2025, still 15-minute RT intervals after RTC+B (Dec 5, 2025)."""
+    prefix = "RTMLZHBSPP" if market == "RT" else "DAMLZHBSPP"
+    _, data = parse.read_zip_member(_raw(f"*{prefix}_2026.zip"))
+    out = parse.parse_spp(parse.read_workbook(data), market)
+    step = np.timedelta64(15 if market == "RT" else 60, "m")
+    assert out.location.nunique() == 15 and out.groupby("location").size().nunique() == 1
+    for _, g in out.groupby("location"):
+        assert g.ts.iloc[0] == utc(2026, 1, 1, 6) and (np.diff(g.ts.to_numpy()) == step).all()
+        end_local = (g.ts.iloc[-1] + pd.Timedelta(step)).tz_convert(parse.TZ)
+        assert (end_local.hour, end_local.minute) == (0, 0)  # the last published day is complete

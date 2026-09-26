@@ -125,11 +125,21 @@ def _dates(values: pd.Series) -> pd.Series:
     return out
 
 
+def _whole_numbers(values: pd.Series) -> np.ndarray | None:
+    """int64 values when every cell is a whole number (an int, an integral float or a digit string, whatever
+    the column's dtype), else None. A year-to-date workbook's empty future sheets turn a concatenated int
+    column into object dtype, so the dtype alone can't tell."""
+    num = pd.to_numeric(values, errors="coerce")
+    arr = num.to_numpy(dtype="float64", na_value=np.nan)
+    if len(arr) and np.isfinite(arr).all() and (arr == np.round(arr)).all():
+        return arr.astype(np.int64)
+    return None
+
+
 def _hour_ending(values: pd.Series) -> np.ndarray:
-    """Hour ending 1-24, from ints (RT "Delivery Hour") or "HH:00" strings (DA "Hour Ending")."""
-    if pd.api.types.is_numeric_dtype(values):
-        he = values.to_numpy()
-    else:
+    """Hour ending 1-24, from whole numbers (RT "Delivery Hour") or "HH:00" strings (DA "Hour Ending")."""
+    he = _whole_numbers(values)
+    if he is None:
         parts = values.astype(str).str.strip().str.extract(r"^(\d{1,2}):(\d{2})$")
         if parts.isna().any().any() or (parts[1] != "00").any():
             bad = values[parts.isna().any(axis=1) | (parts[1] != "00")].iloc[0]
@@ -155,7 +165,18 @@ def parse_spp(sheets: Mapping[str, pd.DataFrame] | pd.DataFrame, market: str) ->
     market = market.upper()
     if market not in ("RT", "DA"):
         raise ValueError(f"market must be RT or DA, got {market!r}")
-    raw = pd.concat(list(sheets.values()), ignore_index=True) if isinstance(sheets, Mapping) else sheets.copy()
+    if isinstance(sheets, Mapping):
+        # A current-year (year-to-date) workbook still has a sheet for every month, and the months to come
+        # are header-only. Concatenating those empty object-dtype sheets would turn every column into object
+        # dtype, so they are left out (the 2026 file: Jan-Sep filled, Oct-Dec empty).
+        frames = [d for d in sheets.values() if len(d)]
+        if not frames:
+            raise ParseError(f"{market} workbook has no price rows (sheets: {list(sheets)})")
+        raw = pd.concat(frames, ignore_index=True)
+    else:
+        raw = sheets.copy()
+    if raw.empty:
+        raise ParseError(f"{market} workbook has no price rows")
     raw = raw.rename(columns=lambda c: _SPP_COLUMNS.get(str(c).strip(), str(c).strip()))
     missing = {"date", "hour_ending", "repeated_flag", "location", "price_usd_mwh"} - set(raw.columns)
     if missing:
@@ -166,8 +187,8 @@ def parse_spp(sheets: Mapping[str, pd.DataFrame] | pd.DataFrame, market: str) ->
 
     he = _hour_ending(raw["hour_ending"])
     if "interval" in raw.columns:
-        interval = raw["interval"].to_numpy().astype(np.int64)
-        if ((interval < 1) | (interval > 4)).any():
+        interval = _whole_numbers(raw["interval"])
+        if interval is None or ((interval < 1) | (interval > 4)).any():
             raise ParseError("Delivery Interval outside 1-4")
         minutes = (he - 1) * 60 + (interval - 1) * 15
     else:

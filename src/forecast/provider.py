@@ -11,6 +11,14 @@ Source: Postgres when a database is configured (DATABASE_URL or DB_HOST),
 otherwise the parquet cache (forecast.cache_dir). FORECAST_SOURCE=db|parquet
 overrides. The model defaults to forecast.model in config.yaml. Nothing here
 imports torch, so the API image does not need the forecast extra.
+
+After a year's real_until_utc (src/data/years.py) there are no real prices to
+forecast from, so rt_price forecasts there are VIRTUAL: one per hour, each the
+next 24 h of the AI's stored prediction for the rest of the year
+(src/forecast/predictions.py). ForecastBook.load drops any real forecast issued
+after the cutoff (its context would be stale) and appends the virtual ones, and
+latest_forecast answers from them. The strategy then sees its own long-range
+prediction, which is also the price path it trades on after the cutoff.
 """
 from __future__ import annotations
 
@@ -100,13 +108,94 @@ class ForecastBook:
         end: datetime | None = None,
         source: str | None = None,
         cache_dir: Path | None = None,
+        virtual: bool = False,
     ) -> ForecastBook:
+        """Every stored forecast of (model, series, location) issued in [start, end). virtual=True (the forecast
+        strategy asks for it; rt_price only): after each year's real_until_utc, the virtual forecasts sliced from the
+        AI's prediction replace any real ones issued there."""
         model, source, cache_dir = _resolve(model, source, cache_dir)
         if source == "db":
             df = store.read_db(model, series, location, start, end)
         else:
             df = store.read_parquet(cache_dir, model, series, location, start, end)
+        if virtual and series == "rt_price":
+            df = with_virtual(df, location, model, source, start, end)
         return cls.from_frame(df, location, series, model)
+
+
+def predicted_periods(raw=None) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """[(real_until_utc, year end)] of the configured years whose real prices end before the year does."""
+    from src.data import years
+
+    out = []
+    for year in years.configured_years(raw):
+        y = years.info(year)
+        if y.available and y.real_until_utc is not None:
+            out.append((pd.Timestamp(y.real_until_utc), pd.Timestamp(y.end_utc)))
+    return out
+
+
+def with_virtual(df: pd.DataFrame, location: str, model: str, source: str, start=None, end=None) -> pd.DataFrame:
+    """Store rows with the virtual forecasts of every predicted period put in (see the module docstring)."""
+    from src.forecast import predictions
+    from src.forecast.settings import load_settings
+
+    periods = predicted_periods()
+    if not periods:
+        return df
+    cfg = load_settings().rt_price
+    real, virtual = df, []
+    for cutoff, year_end in periods:
+        path = predictions.load(location, max_cutoff=cutoff.to_pydatetime(), model=model, source=source)
+        if path is None:
+            continue
+        if not real.empty:  # a real forecast issued after the cutoff would have seen stale context
+            issued = pd.to_datetime(real["issued_at"], utc=True)
+            real = real[~((issued >= cutoff) & (issued < year_end))]
+        lo = cutoff if start is None else max(cutoff, pd.Timestamp(start).tz_convert("UTC"))
+        hi = year_end if end is None else min(year_end, pd.Timestamp(end).tz_convert("UTC"))
+        if lo >= hi:
+            continue
+        v = predictions.virtual_forecasts(path, start=lo, end=hi, horizon_steps=cfg.horizon_steps,
+                                          every_minutes=cfg.every_minutes)
+        if not v.empty:
+            virtual.append(v)
+    parts = ([real] if not real.empty else []) + virtual
+    if not parts:
+        return real
+    out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+    return out.sort_values("issued_at").reset_index(drop=True)
+
+
+def virtual_cutoff(at: datetime | pd.Timestamp) -> pd.Timestamp | None:
+    """The real_until_utc after which `at` lies inside a predicted period (None: real prices at `at`)."""
+    t = pd.Timestamp(at).tz_convert("UTC")
+    for cutoff, year_end in predicted_periods():
+        if cutoff <= t < year_end:
+            return cutoff
+    return None
+
+
+def _virtual_latest(location: str, at: pd.Timestamp, model: str, source: str) -> dict | None:
+    """The virtual forecast in force at `at` (issued at the last whole hour, not before the cutoff), or None."""
+    from src.forecast import predictions
+    from src.forecast.settings import load_settings
+
+    cutoff = virtual_cutoff(at)
+    if cutoff is None:
+        return None
+    issue = at.tz_convert("UTC").floor("60min")
+    if issue < cutoff:
+        return None  # before the first whole hour after the cutoff: the last real forecast is still the latest
+    path = predictions.load(location, max_cutoff=cutoff.to_pydatetime(), model=model, source=source)
+    if path is None:
+        return None
+    cfg = load_settings().rt_price
+    v = predictions.virtual_forecasts(path, start=issue, end=issue + pd.Timedelta(minutes=cfg.every_minutes),
+                                      horizon_steps=cfg.horizon_steps, every_minutes=cfg.every_minutes)
+    if v.empty:
+        return None
+    return ForecastBook.from_frame(v, location, "rt_price", model).to_api(0)
 
 
 def latest_forecast(
@@ -118,11 +207,16 @@ def latest_forecast(
     source: str | None = None,
     cache_dir: Path | None = None,
 ) -> dict | None:
-    """The latest forecast with issued_at <= at_utc as a docs/API.md Forecast dict, or None."""
+    """The latest forecast with issued_at <= at_utc as a docs/API.md Forecast dict, or None. After a year's
+    real_until_utc: the virtual forecast issued at the last whole hour (a slice of the AI's prediction)."""
     at = pd.Timestamp(at_utc)
     if at.tzinfo is None:
         raise ValueError("at_utc must be timezone-aware (e.g. '2025-05-16T21:00:00Z')")
     model, source, cache_dir = _resolve(model, source, cache_dir)
+    if series == "rt_price":
+        virtual = _virtual_latest(location, at, model, source)
+        if virtual is not None:
+            return virtual
     if source == "db":
         row = store.latest_row_db(model, series, location, at.to_pydatetime())
         if row is None:

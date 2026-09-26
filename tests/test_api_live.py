@@ -1,5 +1,6 @@
 """The API against a real coordinator + worker processes (small fleet): WebSocket message shapes
-exactly as docs/API.md, availability scopes, battery lookup, presenter-only chaos kill, run control."""
+exactly as docs/API.md, availability scopes, battery lookup, the public chaos kill and its guards, run control,
+and battery_status within one frame of a change, while paused too."""
 import base64
 import math
 import threading
@@ -19,7 +20,6 @@ from src.sim.coordinator import Coordinator
 from src.sim.redis_layout import reachable, redis_url
 
 pytestmark = pytest.mark.redis
-PASS = "presenter-test-passcode"
 LOCS = list(load_config().fleet.locations)
 
 SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "settings", "history", "totals", "workers",
@@ -27,18 +27,19 @@ SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "setti
 IDLE_KEYS = {"type", "status", "run_id", "last_run"}
 FRAME_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "ticks", "totals", "workers", "failed_commands",
               "availability", "events", "battery_status", "race"}
-RACE_KEYS = {"strategy", "label", "revenue_usd", "by_location", "charge_level", "live_minus_race_usd"}
+RACE_KEYS = {"strategy", "label", "revenue_usd", "by_location", "charge_level", "live_minus_race_usd", "potential",
+             "shows_potential"}
+POTENTIAL_KEYS = {"label", "revenue_usd", "by_location", "shortfall_usd"}
 TOTALS_KEYS = {"revenue_usd", "sold_kwh", "bought_kwh", "ticks", "by_location"}
 TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_kw", "actual_kw", "error_pct",
-             "revenue_usd", "charge_level", "healthy_workers"}
-SETTINGS_KEYS = {"preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
+             "revenue_usd", "charge_level", "healthy_workers", "predicted"}
+SETTINGS_KEYS = {"year", "preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
                  "capacity_kwh_range", "locations"}
 WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location"}
 EVENT_KEYS = {"id", "wall_utc", "sim_utc", "kind", "severity", "message", "detail"}
 
 
-@pytest.fixture
-def live(monkeypatch):
+def _stack(monkeypatch, orchestration=None):
     url = redis_url()
     if not reachable(url):
         pytest.skip(f"Redis not reachable at {url}")
@@ -46,20 +47,34 @@ def live(monkeypatch):
     monkeypatch.setenv("FLEET_FRAME_INTERVAL_S", "0.25")
     monkeypatch.setenv("FLEET_IDLE_INTERVAL_S", "1.0")
     monkeypatch.setenv("FLEET_CONTROL_TIMEOUT_S", "4")
-    monkeypatch.setenv("PRESENTER_PASSCODE", PASS)
-    monkeypatch.setenv("PRESENTER_PASSCODE_FILE", "/nonexistent/passcode")
-    co = Coordinator(url=url, prefix=prefix, fleet_size=300, workers=3)
+    co = Coordinator(url=url, prefix=prefix, fleet_size=300, workers=3, orchestration=orchestration)
     co.boot()
     thread = threading.Thread(target=co.serve_forever, daemon=True)
     thread.start()
     main.configure(url=url, prefix=prefix)
     main.state.limits.reset()
-    with TestClient(main.app) as client:
-        yield client, co
-    co.request_stop()
-    thread.join(timeout=15)
-    co.cleanup_keys()
-    main.state.backend = None
+    try:
+        with TestClient(main.app) as client:
+            yield client, co
+    finally:
+        co.request_stop()
+        thread.join(timeout=15)
+        co.cleanup_keys()
+        main.state.backend = None
+
+
+@pytest.fixture
+def live(monkeypatch):
+    yield from _stack(monkeypatch)
+
+
+@pytest.fixture
+def live_fast_heartbeat(monkeypatch):
+    """Heartbeats every 0.5 s with a 2 s TTL (production: 2 s / 6 s): a controller that dies while paused is declared
+    dead and handed over within ~2 s."""
+    from src.sim.coordinator import Orchestration
+
+    yield from _stack(monkeypatch, Orchestration(hb_interval_s=0.5, hb_ttl_s=2.0))
 
 
 def _recv_until(ws, pred, limit=80):
@@ -110,6 +125,10 @@ def _assert_common(msg):
         assert all(set(v) == {"revenue_usd", "charge_level", "action"} for v in race["by_location"].values())
         assert race["live_minus_race_usd"] == pytest.approx(msg["totals"]["revenue_usd"] - race["revenue_usd"],
                                                             abs=1e-5)
+        pot = race["potential"]  # the live strategy with every battery online (docs/API.md race.potential)
+        assert set(pot) == POTENTIAL_KEYS and list(pot["by_location"]) == LOCS and isinstance(race["shows_potential"], bool)
+        assert all(set(v) == {"revenue_usd"} for v in pot["by_location"].values())
+        assert pot["shortfall_usd"] == pytest.approx(pot["revenue_usd"] - msg["totals"]["revenue_usd"], abs=1e-5)
 
 
 def _assert_tick(t):
@@ -121,6 +140,7 @@ def _assert_tick(t):
         assert set(t[key]) == set(LOCS) | {"fleet"}
     assert set(t["action"].values()) <= {"charge", "sell", "hold"}
     assert isinstance(t["error_pct"], float) and isinstance(t["healthy_workers"], int)
+    assert t["predicted"] is False  # 2025 replays are real prices all the way
 
 
 def test_websocket_messages_match_the_contract(live):
@@ -301,24 +321,29 @@ def test_battery_lookup(live):
     assert client.get("/settings").json()["defaults"]["fleet_size"] == 300  # the fleet that is actually running
 
 
-def test_presenter_kill_flow(live):
+def test_public_kill_flow(live):
     client, co = live
     client.post("/run/start", json={"speed_tps": 10, "strategy": "peak", "start_charge_level": 0.9})
     assert _wait(lambda: co.run is not None and co.status == "running")
-    assert client.post("/chaos/kill?worker_id=1").status_code == 403
-    hdr = {"X-Presenter-Passcode": PASS}
-    r = client.post("/chaos/kill?worker_id=1", headers=hdr)
+
+    def kill(query=""):
+        main.state.limits.chaos_kill.reset()  # one kill per 2 s: the guards are what's under test here
+        return client.post(f"/chaos/kill{query}")
+
+    r = client.post("/chaos/kill?worker_id=1")  # anyone may crash a controller: no passcode
     assert r.status_code == 200 and set(r.json()) == {"worker_id", "pid", "killed_at_utc"}
     assert r.json()["worker_id"] == 1 and r.json()["pid"] == co.workers[1].pid
+    r = client.post("/chaos/kill?worker_id=2")  # a second crash within 2 s is refused, whoever asks
+    assert r.status_code == 429 and r.json()["error"] == "rate_limited" and r.headers["Retry-After"] in ("1", "2")
     # before the coordinator even notices, the kill already counts: no double kill, no dropping below 2
-    assert client.post("/chaos/kill?worker_id=1", headers=hdr).json()["error"] == "already_dead"
-    assert client.post("/chaos/kill?worker_id=2", headers=hdr).json()["error"] == "too_few_healthy"
+    assert kill("?worker_id=1").json()["error"] == "already_dead"
+    assert kill("?worker_id=2").json()["error"] == "too_few_healthy"
     assert _wait(lambda: co.workers[1].status == "dead", timeout=10)
-    r = client.post("/chaos/kill?worker_id=1", headers=hdr)
+    r = kill("?worker_id=1")
     assert r.status_code == 409 and r.json()["error"] == "already_dead"
-    r = client.post("/chaos/kill", headers=hdr)  # random healthy one: would leave 1 healthy
+    r = kill()  # random healthy one: would leave 1 healthy
     assert r.status_code == 409 and r.json()["error"] == "too_few_healthy"
-    r = client.post("/chaos/kill?worker_id=42", headers=hdr)
+    r = kill("?worker_id=42")
     assert r.status_code == 404
     snap = client.get("/state").json()
     assert [w["status"] for w in snap["workers"]] == ["healthy", "dead", "healthy"]
@@ -412,3 +437,84 @@ def test_a_start_right_after_a_reset_waits_for_the_controllers(live, monkeypatch
     assert _wait(lambda: co.run is not None and co.run.run_id == r.json()["run_id"] and co.status == "running")
     assert all(h.status == "healthy" for h in co.workers)
     print(f"\nreset -> start accepted in {waited:.2f}s")
+
+
+# --- battery_status within one frame of a change, paused included (docs/API.md) ------------------------------------
+
+
+def _paused_while_selling(client, co):
+    r = client.post("/run/start", json={"preset": "spike_evening", "speed_tps": 10, "strategy": "peak",
+                                        "start_charge_level": 0.9})
+    assert r.status_code == 202
+    assert _wait(lambda: co.run is not None and co.run.k >= 30, timeout=20)  # after 6 pm: the evening peak sells
+    assert client.post("/run/pause").json() == {"status": "paused"}
+    assert _wait(lambda: co.run.status == "paused")
+
+
+def test_a_controller_taken_offline_while_paused_shows_in_the_next_frame(live):
+    """The human saw a controller taken offline and the map didn't change. Nothing ticks while paused, so the
+    coordinator publishes the codes at once: the very next frame has code 0 on exactly that controller's batteries,
+    and every other battery keeps its look."""
+    from src.api.live import LiveCursor, frame_message, snapshot_message
+
+    client, co = live
+    _paused_while_selling(client, co)
+    backend = main.backend()
+    cursor = LiveCursor()
+    snapshot_message(backend, cursor)
+    before = _codes(frame_message(backend, cursor))
+    assert (before == bstatus.SELLING).sum() > 150 and not (before == bstatus.OFFLINE).any()
+    mine = np.flatnonzero(co.owner == 1)
+    others = np.setdiff1d(np.arange(300), mine)
+    with client.websocket_connect("/live") as ws:
+        ws.receive_json()  # the snapshot
+        r = client.post("/availability", json={"scope": "worker", "worker_id": 1, "available": False})
+        assert r.status_code == 200 and r.json()["affected"] == len(mine) == 100
+        frame = frame_message(backend, cursor)  # the next frame this viewer gets
+        codes = _codes(frame)
+        assert frame["status"] == "paused" and frame["availability"]["offline_workers"] == [1]
+        assert (codes[mine] == bstatus.OFFLINE).all() and np.array_equal(codes[others], before[others])
+        assert frame["race"]["shows_potential"] is True  # the third bar appears: batteries went offline
+        # over the WebSocket too: the next frame sent after the change (one may already have been on its way)
+        _recv_until(ws, lambda m: m["type"] == "frame" and (_codes(m)[mine] == bstatus.OFFLINE).all(), limit=2)
+    # back online while still paused: waiting until the next tick commands them again
+    client.post("/availability", json={"scope": "worker", "worker_id": 1, "available": True})
+    codes = _codes(frame_message(backend, cursor))
+    assert (codes[mine] == bstatus.WAITING).all() and np.array_equal(codes[others], before[others])
+    # and resumed: they trade again, and nothing is left offline
+    client.post("/run/resume")
+    k = co.run.k
+    assert _wait(lambda: co.run.k >= k + 2)
+    codes = _codes(frame_message(backend, cursor))
+    assert not (codes == bstatus.OFFLINE).any() and (codes[mine] == bstatus.SELLING).mean() > 0.9
+
+
+def test_a_crash_while_paused_shows_code_4_then_the_hand_over(live_fast_heartbeat):
+    """Paused, a controller is crashed: within one frame its batteries are "controller down" (4), exactly those;
+    once its heartbeat expires they are handed over and look normal again (waiting until the next tick)."""
+    from src.api.live import LiveCursor, frame_message, snapshot_message
+
+    client, co = live_fast_heartbeat
+    _paused_while_selling(client, co)
+    backend = main.backend()
+    cursor = LiveCursor()
+    snapshot_message(backend, cursor)
+    before = _codes(frame_message(backend, cursor))
+    mine = np.flatnonzero(co.owner == 1)
+    others = np.setdiff1d(np.arange(300), mine)
+    t0 = time.monotonic()
+    r = client.post("/chaos/kill?worker_id=1")
+    assert r.status_code == 200 and r.json()["worker_id"] == 1
+    assert _wait(lambda: (_codes(frame_message(backend, cursor))[mine] == bstatus.CONTROLLER_DOWN).all(), timeout=1.0)
+    shown_after = time.monotonic() - t0
+    codes = _codes(frame_message(backend, cursor))
+    if co.workers[1].status != "dead":  # still within the heartbeat's TTL: exactly its batteries are down
+        assert np.array_equal(codes[others], before[others])
+    assert _wait(lambda: co.workers[1].status == "dead", timeout=5)
+    frame = frame_message(backend, cursor)
+    codes = _codes(frame)
+    assert not (codes == bstatus.CONTROLLER_DOWN).any() and (codes[mine] == bstatus.WAITING).all()
+    assert np.array_equal(codes[others], before[others]) and frame["status"] == "paused"
+    assert frame["race"]["shows_potential"] is True
+    assert sum(w["batteries"] for w in frame["workers"] if w["worker_id"] != 1) == 300
+    print(f"\ncrash while paused: code 4 in a frame {shown_after:.2f}s after the kill")

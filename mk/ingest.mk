@@ -3,13 +3,13 @@
 # Needs Postgres: DATABASE_URL, or the project-local services
 # (PGPORT=5433 scripts/dev/services.sh up). Without DATABASE_URL these targets use
 # postgresql://postgres@localhost:$PGPORT/fleetsim, where PGPORT defaults to 5433 like services.sh.
-#   make ingest                                   # ERCOT 2024-2025 -> Postgres, gap report, M1 self-check
+#   make ingest                                   # ERCOT 2024-2026 -> Postgres, gap report, M1 self-check
 #   make ingest INGEST_ARGS="--cache-dir data/raw"  # dev: keep and reuse the downloads (data/raw is gitignored)
 #   make gap-report                               # report + self-check on what is stored; no download
 #   make preset-check                             # check config.yaml presets against real prices
 #   make ingest-test                              # the data-layer tests, with the database
 
-INGEST_YEARS ?= 2024 2025
+INGEST_YEARS ?= 2024 2025 2026
 INGEST_ARGS ?=
 INGEST_DB = $${DATABASE_URL:-postgresql://postgres@localhost:$${PGPORT:-5433}/fleetsim}
 

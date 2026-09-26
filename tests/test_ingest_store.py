@@ -160,9 +160,11 @@ def test_record_file_keeps_the_latest_provenance(db):
 # --- gap report on a complete SYNTHETIC year -------------------------------------------------
 
 
-def synthetic_year(conn, year: int = 2025) -> None:
-    """A complete SYNTHETIC ERCOT year: 1 location RT + DA, ERCOT load, 3-fuel mix. Smooth in UTC time."""
+def synthetic_year(conn, year: int = 2025, until: datetime | None = None) -> None:
+    """A complete SYNTHETIC ERCOT year: 1 location RT + DA, ERCOT load, 3-fuel mix. Smooth in UTC time.
+    until: stop there instead (a year to date, as the current year's files are)."""
     a, b = store.year_window(year)
+    b = min(b, until) if until is not None else b
     q15 = pd.date_range(a, b, freq="15min", tz="UTC", inclusive="left").as_unit("ns")
     hours = pd.date_range(a, b, freq="h", tz="UTC", inclusive="left", name="ts").as_unit("ns")
     store.upsert_native_load(conn, pd.DataFrame({"ERCOT": 60000.0 - 5.0 * np.arange(len(hours))}, index=hours), year)
@@ -233,6 +235,59 @@ def test_report_catches_a_swapped_fall_back_hour(db):
     rep = report.build(db, [2025], datasets=["native_load", "fuel_mix"], snapshot=False)
     bad = [c for c in rep.checks if not c.ok]
     assert [c.name for c in bad] == ["fall-back repeated hour placed consistently in load and fuel mix"]
+
+
+YTD_END = datetime(2026, 9, 20, 5, tzinfo=UTC)  # the 2026 files published 2026-09-20 end with Sep 19 (CDT)
+NOW = datetime(2026, 9, 26, 12, tzinfo=UTC)
+
+
+def test_report_checks_a_year_to_date_up_to_its_last_published_interval(db):
+    synthetic_year(db, 2026, until=YTD_END)
+    rep = report.build(db, [2026], snapshot=False, now=NOW)
+    assert rep.ok, rep.markdown()
+    md = rep.markdown()
+    assert rep.ytd[2026] == {"RT": YTD_END, "DA": YTD_END, "native_load": YTD_END, "fuel_mix": YTD_END}
+    assert "| 2026 | RT | 2026-09-20 05:00Z | 2026-09-20 00:00 CDT |" in md
+    n = int((YTD_END - store.year_window(2026)[0]).total_seconds() // 900)
+    assert f"| LZ_TEST | RT | 2026 | {n:,} | {n:,} | 0 | 0.000% | 0 | 0 |" in md
+    assert "| RT prices (each of 1 locations) | 92 (want 92) | not yet published |" in md  # 2026-03-08, 2026-11-01
+    assert "| 2026-11-01 | n/a | n/a | n/a | n/a | not yet published |" in md
+    fall = next(c for c in rep.checks if c.name.startswith("fall-back"))
+    assert fall.ok and "1 not yet published" in fall.detail
+
+
+def test_report_year_to_date_still_fails_on_gaps_in_the_published_part(db):
+    synthetic_year(db, 2026, until=YTD_END)
+    db.execute("DELETE FROM prices WHERE market = 'RT' AND ts >= '2026-07-01 00:00+00' AND ts < '2026-07-02 00:00+00'")
+    db.execute("DELETE FROM prices WHERE market = 'RT' AND ts >= '2026-03-08 08:00+00' AND ts < '2026-03-08 09:00+00'")
+    rep = report.build(db, [2026], snapshot=False, now=NOW)
+    failed = {c.name for c in rep.checks if not c.ok}
+    assert any(n.startswith("prices: missing") for n in failed)  # 100 of 25,148 = 0.4%
+    assert "DST days have the right interval counts" in failed  # the spring day is published: 88, want 92
+
+
+def test_report_year_to_date_counts_a_location_that_stops_early_as_missing(db):
+    synthetic_year(db, 2026, until=YTD_END)
+    db.execute("""INSERT INTO prices (ts, location, market, price_usd_mwh)
+                  SELECT ts, 'LZ_LATE', market, price_usd_mwh FROM prices
+                   WHERE market = 'RT' AND ts < '2026-09-18 05:00+00'""")  # two days short of the others
+    rep = report.build(db, [2026], datasets=["rt_spp"], snapshot=False, now=NOW)
+    miss = next(c for c in rep.checks if c.name.startswith("prices: missing"))
+    assert not miss.ok and "LZ_LATE RT 2026" in miss.detail
+
+
+def test_report_a_finished_year_must_be_whole(db):
+    synthetic_year(db, 2026, until=YTD_END)
+    rep = report.build(db, [2026], snapshot=False, now=datetime(2027, 1, 2, tzinfo=UTC))
+    assert not rep.ytd and not rep.ok
+    assert {c.name for c in rep.checks if not c.ok} >= {
+        "prices: missing < 0.1% for every (location, market, year)", "DST days have the right interval counts",
+        "fall-back repeated hour placed consistently in load and fuel mix"}
+
+
+def test_report_year_to_date_with_nothing_stored_fails(db):
+    rep = report.build(db, [2026], datasets=["rt_spp"], snapshot=False, now=NOW)
+    assert rep.ytd[2026]["RT"] is None and not rep.ok
 
 
 def test_notes_section_is_replaced_between_markers(tmp_path):

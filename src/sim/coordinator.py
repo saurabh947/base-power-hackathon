@@ -153,6 +153,31 @@ def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...], location
     return _FEEDS[key]
 
 
+def run_feed(real, locations: Sequence[str], start: datetime):
+    """(feed, cutoff, paths) for a run starting at `start`. cutoff: the real_until_utc it runs into
+    (src.data.years.real_until_ahead; None when prices are real all the way). From the cutoff on, the feed's
+    prices are the AI's prediction p50 (src/feeds/predicted.py) where one is stored (paths: {location:
+    PredictionPath}); with none, the replay ends at the cutoff."""
+    from src.data import years
+
+    try:
+        cutoff = years.real_until_ahead(start)
+    except Exception as exc:  # the price data can't say where it ends: replay it as it is
+        _log(f"could not tell where real prices end: {exc!r}")
+        cutoff = None
+    if cutoff is None:
+        return real, None, {}
+    from src.feeds.predicted import PredictedFeed
+    from src.forecast import predictions
+
+    try:
+        paths = predictions.load_all(locations, cutoff)
+    except Exception as exc:  # no predictions table yet, or the cache can't be read
+        _log(f"predictions not loaded: {exc!r}")
+        paths = {}
+    return PredictedFeed(real, cutoff, paths), cutoff, paths
+
+
 def snapshot_years(start: datetime) -> tuple[int, ...]:
     from src.feeds.parquet import SNAPSHOT_DIR
 
@@ -432,6 +457,12 @@ class RunState:
     fixed_targets: Mapping | None = None
     race: race_mod.Race | None = None  # the shadow fleet on the comparison strategy (docs/API.md Race)
     race_decide: Callable | None = None
+    potential: race_mod.Race | None = None  # the live strategy with every battery online, no crashes (Race.potential)
+    shows_potential: bool = False  # docs/API.md race.shows_potential: an outage happened during this run
+    cutoff: int | None = None  # real_until_utc (epoch s) this run crosses: ticks from here on are predicted
+    predicted_locations: tuple = ()  # the cities with a stored prediction after the cutoff
+    prediction_model: str | None = None
+    prediction_announced: bool = False  # prediction_started goes out once, at the first predicted tick
 
 
 class Coordinator:
@@ -469,6 +500,7 @@ class Coordinator:
         self.loc_slice = {loc: slice(off, off + n) for loc, off, n in zip(self.layout.locations, self.layout.offsets,
                                                                          self.layout.counts)}  # contiguous blocks
         self._race_fleets: dict | None = None  # built once: the race's per-city battery arrays
+        self._all_online = {loc: np.zeros(sl.stop - sl.start, dtype=bool) for loc, sl in self.loc_slice.items()}
         self._bkey = [self.keys.battery(bid).encode() for bid in self.layout.ids]
         self.nameplate_kw = self.layout.nameplate_kw()
         self.soc = np.full(self.N, self.cfg.battery.soc_init)
@@ -487,7 +519,11 @@ class Coordinator:
         self.tick_hooks: list[Callable[[dict], None]] = []
         self.events: list[dict] = []
         self.tick_log: list[dict] = []
-        self.status_codes = bstatus.idle_codes(self.availability.offline)  # battery_status at the latest tick
+        self.status_codes = bstatus.idle_codes(self.availability.offline)  # battery_status as last published
+        # what each battery did at the latest tick (1 waiting, 2 selling, 3 charging) before the offline / controller
+        # down overlays: the look a battery returns to between ticks once it is back online or handed over
+        self.status_base = np.full(self.N, bstatus.WAITING, dtype=np.uint8)
+        self._in_tick = False  # step() publishes its own codes; the overlay waits for the tick to finish
         self.restarting = False  # boot or a reset is (re)spawning workers: POST /run/start waits for readiness
         self._stop = False
         self._tele_last = "0-0"
@@ -651,12 +687,19 @@ class Coordinator:
         if self.parent_pid is not None and os.getppid() != self.parent_pid:
             _log(f"parent {self.parent_pid} is gone; shutting down")
             self._stop = True
+        exited = False
         for h in self.workers:  # reap exited children (SIGKILLed workers stay zombies otherwise)
             if h.proc is not None and h.exit_code is None:
                 rc = h.proc.poll()
                 if rc is not None:
                     h.exit_code = rc
                     _log(f"worker {h.worker_id} (pid {h.pid}) exited with {rc}")
+                    exited = exited or h.status != DEAD
+        if exited and self.run is not None:
+            # a crash shows on the map at once, paused included: its batteries are "controller down" (4) until they
+            # are handed over (at heartbeat expiry while paused, after 2 missed ticks while running)
+            self.run.shows_potential = True
+            self._publish_overlay()
         if not self.workers:
             return
         beats = self.r.mget([self.keys.hb(h.worker_id) for h in self.workers])
@@ -789,13 +832,11 @@ class Coordinator:
             pipe.execute()
         summary = self.availability.summary()
         next_ts = self._next_tick_ts()
-        if self.run is None:  # no run: the map shows waiting/offline at once
-            self._publish_status(bstatus.idle_codes(self.availability.offline))
-        elif self.run.status != "running":  # paused or finished: no tick is coming soon, so overlay the change
-            codes = self.status_codes.copy()
-            codes[(codes == bstatus.OFFLINE) & ~self.availability.offline] = bstatus.WAITING
-            codes[self.availability.offline] = bstatus.OFFLINE
-            self._publish_status(codes)
+        # the map shows it at once, in every state (idle, starting, running, paused, finished): the very next frame
+        # carries it, even at 1 tick/s or while paused (docs/API.md battery_status)
+        self._publish_overlay()
+        if self.run is not None and self.availability.offline.any():
+            self.run.shows_potential = True  # a battery went offline during this run (docs/API.md Race)
         self._emit("availability_changed", "info", ctl.availability_message(detail, summary),
                    detail={k: v for k, v in detail.items()} | {"available": summary["available"]})
         self._snapshot_dirty = True
@@ -806,8 +847,8 @@ class Coordinator:
 
     def public_settings(self) -> dict:
         s = dict(self.run.settings) if self.run else ctl.default_settings(self.cfg, self.raw, self.N)
-        return {k: s[k] for k in ("preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size",
-                                  "power_kw_range", "capacity_kwh_range", "locations")}
+        return {k: s[k] for k in ("year", "preset", "start_utc", "speed_tps", "strategy", "start_charge_level",
+                                  "fleet_size", "power_kw_range", "capacity_kwh_range", "locations")}
 
     def prepare_run(self, args: Mapping, *, fixed_targets: Mapping | None = None, max_ticks: int | None = None,
                     internal: bool = False) -> str:
@@ -834,9 +875,14 @@ class Coordinator:
         s = run.settings
         start = datetime.fromtimestamp(run.start_ts, UTC)
         try:
-            prices = PriceWindow(price_feed(snapshot_years(start), self.layout.locations), self.layout.locations,
-                                 run.start_ts, lag=self.lag, window=self.window, warmup_s=self.warmup_s,
-                                 tick_s=self.tick_s)
+            feed = price_feed(snapshot_years(start), self.layout.locations)
+            if not run.fixed:  # real prices, then the AI's prediction after the year's real_until_utc
+                feed, cutoff, paths = run_feed(feed, self.layout.locations, start)
+                run.cutoff = None if cutoff is None else int(cutoff.timestamp())
+                run.predicted_locations = tuple(loc for loc in self.layout.locations if loc in paths)
+                run.prediction_model = next((p.model for p in paths.values()), None)
+            prices = PriceWindow(feed, self.layout.locations, run.start_ts, lag=self.lag, window=self.window,
+                                 warmup_s=self.warmup_s, tick_s=self.tick_s)
         except Exception as exc:
             if not run.fixed:
                 _log(f"could not load prices: {exc!r}")
@@ -862,6 +908,7 @@ class Coordinator:
         run.initialized = np.zeros(self.N, dtype=bool)
         soc0 = float(s["start_charge_level"])
         self.soc[:] = soc0
+        run.shows_potential = bool(self.availability.offline.any())  # batteries already offline at the start
         if not run.fixed:
             self._start_race(run, soc0)
         self.soc_k[:] = -1
@@ -869,6 +916,7 @@ class Coordinator:
         self.tick_log = []
         self.journal = {}
         self.status_codes = bstatus.idle_codes(self.availability.offline)  # no tick yet: waiting or offline
+        self.status_base = np.full(self.N, bstatus.WAITING, dtype=np.uint8)
         pipe = self.r.pipeline(transaction=False)
         pipe.delete(self.keys.ticks, self.keys.dead_letter, self.keys.dead_letter_count)
         pipe.set(self.keys.kw, np.zeros(self.N, dtype=np.float32).tobytes())
@@ -900,6 +948,7 @@ class Coordinator:
             if h.status != DEAD and h.ready_run != run.run_id:
                 h.misses += 1
                 h.status = SUSPECT
+                run.shows_potential = True
                 self._emit("worker_suspect", "warn", f"Controller {h.worker_id + 1} is slow to get ready, so its "
                            f"batteries{self._in_cities(h.owned)} wait while the others start.",
                            detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "phase": "load"})
@@ -940,7 +989,7 @@ class Coordinator:
         """The shadow fleet for this run: the comparison strategy, one instance per city (make_strategy, as the
         live fleet builds them), from the same batteries at the same starting charge. None when the comparison
         strategy can't run anywhere (the AI forecast with no forecasts for any city: there is nothing to race)."""
-        run.race, run.race_decide = None, None
+        run.race, run.race_decide, run.potential = None, None, None
         if os.environ.get("FLEET_RACE", "1") == "0":  # off switch (ops, and the A/B overhead measurement)
             return
         name = race_mod.comparison_strategy(run.strategy_name)
@@ -956,6 +1005,14 @@ class Coordinator:
         except Exception as exc:  # the race is a side show: it must never stop the live fleet
             _log(f"race could not start: {exc!r}")
             run.race, run.race_decide = None, None
+            return
+        try:  # the potential: the live strategy itself (its instances are pure), every battery online, no crashes
+            run.potential = race_mod.Race.start(
+                run.strategy_name, race_mod.potential_label(self.strategy_label(run.strategy_name)), self.race_fleets(),
+                soc0, dt_h=self.dt_h, soc_min=self.soc_min, soc_max=self.soc_max)
+        except Exception as exc:
+            _log(f"potential fleet could not start: {exc!r}")
+            run.potential = None
 
     def _race_step(self, run: RunState, k: int, ts: int, decisions: dict) -> dict | None:
         """Step the shadow fleet for tick k (while the workers apply the live tick). If a price spike starts at
@@ -979,11 +1036,29 @@ class Coordinator:
 
             offline = self.availability.offline
             race.step(decide, {loc: offline[self.loc_slice[loc]] for loc in race.cities})
-            return started
         except Exception as exc:
             _log(f"race stopped at tick {k}: {exc!r}")
-            run.race, run.race_decide = None, None
+            run.race, run.race_decide, run.potential = None, None, None
             return None
+        self._potential_step(run, k, ts)
+        return started
+
+    def _potential_step(self, run: RunState, k: int, ts: int) -> None:
+        """Step the potential fleet (docs/API.md race.potential): the live run's own decide (the same Strategy
+        instances, prices, lag and history), with its own charge levels and every battery online."""
+        potential = run.potential
+        if potential is None:
+            return
+
+        def decide(loc: str, fsoc: float, headroom: float):
+            dec = run.decide(k, ts, loc, fsoc, headroom)
+            return dec.raw_kw, dec.now
+
+        try:
+            potential.step(decide, self._all_online)
+        except Exception as exc:
+            _log(f"potential fleet stopped at tick {k}: {exc!r}")
+            run.potential = None
 
     def _race_events(self, run: RunState, k: int, ts: int, decisions: dict, started: dict | None) -> None:
         """race_update at the start of each price spike (charge levels) and after it ends (the lead so far)."""
@@ -1024,15 +1099,22 @@ class Coordinator:
         speed = ctl.speed_phrase(run.settings["speed_tps"])
         label = self.strategy_label(run.strategy_name)  # config backtest.labels, as the race, results and settings
         fallback = [loc for loc in self.layout.locations if loc in run.strategy_fallback]
+        ends = ""  # a year whose real prices end: say where, and what comes after
+        cutoff = run.cutoff
+        cutoff_year = None if cutoff is None else datetime.fromtimestamp(cutoff, UTC).astimezone(ctl.CHICAGO).year
+        if cutoff is not None and cutoff_year == int(run.settings.get("year") or 0):
+            after = ("the AI's prediction takes over from there" if run.predicted_locations
+                     else "the AI's prediction for the rest of the year isn't ready yet")
+            ends = f"; real prices end at {ctl.local_clock(cutoff)}, and {after}"
         if not fallback:
-            return f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)}.", "info"
+            return f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)}{ends}.", "info"
         if len(fallback) == len(self.layout.locations):
             return (f"Replaying real prices from {where} with the simple rule, because the AI forecast "
-                    "isn't available yet.", "warn")
+                    f"isn't available yet{ends}.", "warn")
         keep = [loc for loc in self.layout.locations if loc not in fallback]
         return (f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)} in "
                 f"{geo.cities_phrase(keep)} and the simple rule in {geo.cities_phrase(fallback)}, whose AI forecasts "
-                "aren't ready yet.", "warn")
+                f"aren't ready yet{ends}.", "warn")
 
     def start(self, settings: Mapping | None = None, **kwargs) -> str:
         """prepare_run + init_run in one call (tests, bench, parity helper)."""
@@ -1079,6 +1161,7 @@ class Coordinator:
         self._tele_last = "0-0"
         self._spawn_all()
         self._write_all_hashes(self.cfg.battery.soc_init)
+        self.status_base[:] = bstatus.WAITING
         self._publish_status(bstatus.idle_codes(self.availability.offline))
         self._emit("run_reset", "good", f"Simulation reset: all {self.n_workers} controllers were restarted and every "
                    "battery is back online.", detail={"workers": self.n_workers})
@@ -1132,6 +1215,13 @@ class Coordinator:
 
     def step(self) -> dict | None:
         """One tick: decide, allocate, dispatch, barrier, account, detect failures, recover."""
+        self._in_tick = True
+        try:
+            return self._step()
+        finally:
+            self._in_tick = False
+
+    def _step(self) -> dict | None:
         run = self.run
         if run is None or run.status not in ("running", "paused"):
             return None
@@ -1140,8 +1230,11 @@ class Coordinator:
         if (run.max_ticks is not None and k >= run.max_ticks) or (not run.fixed and run.prices.ended(ts)):
             run.status = self.status = "finished"
             end = "the end of the requested replay" if run.max_ticks is not None else "the end of the loaded price data"
+            tail = ""
+            if run.max_ticks is None and run.cutoff is not None and ts >= run.cutoff and not run.predicted_locations:
+                end, tail = "the end of the real prices", "; the AI's prediction for the rest of the year isn't ready yet"
             self._emit("run_finished", "info", f"The replay reached {end} ({ctl.local_clock(self._sim_ts())}, "
-                       f"{ctl.TIME_ZONE_PHRASE}) after {ctl.fmt_int(run.ticks_done)} five-minute steps.",
+                       f"{ctl.TIME_ZONE_PHRASE}) after {ctl.fmt_int(run.ticks_done)} five-minute steps{tail}.",
                        detail={"run_id": run.run_id, "ticks": run.ticks_done, "revenue_usd": round(run.revenue_usd, 2)})
             self._publish_snapshot(force=True)
             return None
@@ -1183,6 +1276,9 @@ class Coordinator:
                     down[infl.idx] = True
         self.status_codes = bstatus.tick_codes(setpoints, self.availability.offline, down)
         status_packed = bstatus.pack(self.status_codes)
+        base = self.status_codes.copy()  # offline batteries got 0 anyway; a down one didn't do what it was sent
+        base[(base == bstatus.OFFLINE) | (base == bstatus.CONTROLLER_DOWN)] = bstatus.WAITING
+        self.status_base = base
         status_ms = (time.perf_counter() - t_status) * 1000.0
 
         # Grid-side energy is metered from each battery's SoC change (grid_kwh_from_soc_change, as the
@@ -1224,6 +1320,7 @@ class Coordinator:
                     h.status = HEALTHY
             elif h.status != DEAD:
                 h.misses += 1
+                run.shows_potential = True  # its batteries missed this tick: an outage (docs/API.md Race)
                 if h.misses >= self.orch.miss_threshold:
                     newly_dead.append(h)
                 elif h.status != SUSPECT:
@@ -1251,10 +1348,12 @@ class Coordinator:
         pipe.set(self.keys.kw, delivered.astype(np.float32).tobytes())
         pipe.set(self.keys.battery_status, status_packed)  # rides the tick's pipeline: no extra round trip
         pipe.execute()
+        self._prediction_event(run, ts)
         self._tick_events(run, k, ts, decisions, feasible)
         self._race_events(run, k, ts, decisions, race_spike)
         self.tick_log.append({**record, "k": k, "barrier_ms": round(barrier_ms, 2), "status_ms": round(status_ms, 4),
                               "race_ms": round(run.race.last_ms, 4) if run.race is not None else None,
+                              "potential_ms": round(run.potential.last_ms, 4) if run.potential is not None else None,
                               "reported": len(reports), "sent": len(sent),
                               "raw_kw": {loc: dec.raw_kw for loc, dec in decisions.items()},  # unrounded, for parity
                               "feasible_exact": dict(feasible), "kwh_exact": kwh_by_loc})
@@ -1473,6 +1572,9 @@ class Coordinator:
             for kk, infl in expired:
                 entries += self._dead_letters_for(run, h.worker_id, infl.idx, infl.sp, infl.ts, "expired_owner_dead")
             write_dead_letters(self.r, self.keys, entries, self.orch.maxlen["dead_letter"])
+        if run is not None:
+            run.shows_potential = True  # a controller crashed during this run (docs/API.md Race)
+            self._publish_overlay()  # between ticks (heartbeat expiry, e.g. while paused): handed over at once
         self._snapshot_dirty = True
         self._publish_snapshot(force=True)
 
@@ -1574,7 +1676,21 @@ class Coordinator:
             "revenue_usd": {**{loc: round(revenue[loc], 6) for loc in locs}, "fleet": round(sum(revenue.values()), 6)},
             "charge_level": charge,
             "healthy_workers": healthy,
+            "predicted": self._predicted(run, ts),  # docs/API.md: prices from the AI's prediction, not ERCOT
         }
+
+    @staticmethod
+    def _predicted(run: RunState, ts: int) -> bool:
+        return run.cutoff is not None and ts >= run.cutoff
+
+    def _prediction_event(self, run: RunState, ts: int) -> None:
+        """prediction_started, once per run, at its first predicted tick (docs/API.md)."""
+        if run.prediction_announced or run.fixed or not self._predicted(run, ts):
+            return
+        run.prediction_announced = True
+        self._emit("prediction_started", "info", ctl.PREDICTION_STARTED_MESSAGE, sim_ts=ts, detail={
+            "real_until_utc": to_utc_iso(run.cutoff), "model": run.prediction_model,
+            "locations": list(run.predicted_locations)})
 
     def _tick_events(self, run: RunState, k: int, ts: int, decisions: dict, feasible: dict) -> None:
         if run.fixed:
@@ -1635,7 +1751,8 @@ class Coordinator:
             "workers": [h.public(self.layout) for h in self.workers],
             "availability": self.availability.summary(),
             "strategy_effective": run.strategy_name if run else None,
-            "race": run.race.public(run.revenue_usd) if run is not None and run.race is not None else None,
+            "race": (run.race.public(run.revenue_usd, run.potential, run.shows_potential)
+                     if run is not None and run.race is not None else None),
             "tick_index": run.k if run else None,
             "next_tick_utc": to_utc_iso(self._next_tick_ts()),
             "coordinator_pid": os.getpid(),
@@ -1645,8 +1762,35 @@ class Coordinator:
             "updated_utc": now_utc_iso(),
         }
 
+    def _down_mask(self) -> np.ndarray:
+        """Batteries whose controller is down right now: owned by a worker that isn't healthy (suspect, dead, or
+        none: an orphan), or whose process has exited though its heartbeat hasn't expired yet."""
+        down = ~self._healthy_owner_mask()
+        for h in self.workers:
+            if h.exit_code is not None and h.status != DEAD:
+                down |= self.owner == h.worker_id
+        return down
+
+    def _publish_overlay(self) -> None:
+        """battery_status between ticks: the latest tick's look with the current availability overrides and
+        controller state on top, published at once, so an availability change or a crash shows within one frame
+        in every state, paused and finished included (docs/API.md). With no run: 1 or 0 only (the contract's idle
+        form). Inside a tick nothing is published here: step() writes that tick's codes."""
+        if self._in_tick:
+            return
+        if self.run is None:
+            codes = bstatus.idle_codes(self.availability.offline)
+        else:
+            down, offline = self._down_mask(), self.availability.offline
+            # a battery that stopped (offline, or its controller down) waits until the next tick commands it again
+            self.status_base[down | offline] = bstatus.WAITING
+            codes = self.status_base.copy()
+            codes[down] = bstatus.CONTROLLER_DOWN
+            codes[offline] = bstatus.OFFLINE
+        self._publish_status(codes)
+
     def _publish_status(self, codes: np.ndarray) -> None:
-        """Overwrite the battery_status key (outside ticks: boot, reset, availability while idle)."""
+        """Overwrite the battery_status key (outside ticks: boot, reset, run start, availability, crashes)."""
         self.status_codes = codes
         try:
             self.r.set(self.keys.battery_status, bstatus.pack(codes))
@@ -1858,6 +2002,7 @@ def _bench(args) -> int:
         errs = [r["error_pct"] for r in log]
         status = [r["status_ms"] for r in log]
         race_ms = [r["race_ms"] for r in log if r.get("race_ms") is not None]
+        potential_ms = [r["potential_ms"] for r in log if r.get("potential_ms") is not None]
         packed = bstatus.pack(co.status_codes)
         out = {
             "fleet_size": co.N, "workers": co.n_workers, "ticks": len(log), "speed": speed,
@@ -1872,11 +2017,14 @@ def _bench(args) -> int:
             "battery_status_ms_max": round(max(status), 4) if status else None,
             "battery_status_bytes": len(packed),
             "battery_status_base64_chars": len(base64.b64encode(packed)),
-            "race": (co.run.race.public(co.run.revenue_usd) if co.run is not None and co.run.race is not None
-                     else None),
+            "race": (co.run.race.public(co.run.revenue_usd, co.run.potential, co.run.shows_potential)
+                     if co.run is not None and co.run.race is not None else None),
             "race_ms_p50": round(float(np.percentile(race_ms, 50)), 4) if race_ms else None,
             "race_ms_p99": round(float(np.percentile(race_ms, 99)), 4) if race_ms else None,
             "race_ms_max": round(max(race_ms), 4) if race_ms else None,
+            "potential_ms_p50": round(float(np.percentile(potential_ms, 50)), 4) if potential_ms else None,
+            "potential_ms_p99": round(float(np.percentile(potential_ms, 99)), 4) if potential_ms else None,
+            "potential_ms_max": round(max(potential_ms), 4) if potential_ms else None,
             "race_events": [e["message"] for e in co.events if e["kind"] == "race_update"],
             "killed": {k: v for k, v in killed.items() if k != "cohort"} or None,
         }

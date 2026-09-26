@@ -11,6 +11,12 @@ gap-report markers, and exits 1 unless every check passes:
 - the fall-back repeated hour is placed consistently in load and fuel mix;
 - where data/snapshot overlaps, Postgres returns the snapshot's numbers
   (the known differences are listed, see docs/notes/data.md).
+
+The current year is year-to-date: ERCOT republishes its annual files weekly, so
+a year that hasn't ended is checked only up to the end of the last interval
+stored for each series (RT, DA, load, fuel mix). Its missing % counts only up
+to there, its DST days count only once they are published, and the rest of the
+year being absent is not a failure. A gap inside the published part still is.
 """
 from __future__ import annotations
 
@@ -46,6 +52,21 @@ class Report:
     sections: list[str] = field(default_factory=list)
     checks: list[Check] = field(default_factory=list)
     max_missing_pct: float = MAX_MISSING_PCT
+    # year -> {series: end of its last stored interval (None: nothing stored)}, for years that haven't ended
+    ytd: dict[int, dict[str, datetime | None]] = field(default_factory=dict)
+
+    def window(self, year: int, series: str) -> tuple[datetime, datetime]:
+        """The UTC [start, end) checked for `series` ("RT", "DA", "native_load", "fuel_mix") in `year`: the
+        ERCOT year, or for a year to date up to the end of its last stored interval (start, start if none)."""
+        a, b = year_window(year)
+        if year in self.ytd:
+            end = self.ytd[year].get(series)
+            return a, (min(b, end) if end is not None else a)
+        return a, b
+
+    def published(self, year: int, series: str, end: datetime) -> bool:
+        """Whether data up to `end` has been published for `series` (always, for a finished year)."""
+        return end <= self.window(year, series)[1] if year in self.ytd else True
 
     @property
     def ok(self) -> bool:
@@ -68,6 +89,51 @@ def dst_days(year: int) -> tuple[date, date]:
     if len(spring) != 1 or len(fall) != 1:
         raise ValueError(f"expected one 23-hour and one 25-hour day in {year}")
     return spring[0].date(), fall[0].date()
+
+
+def partial_years(years, now: datetime | None = None) -> list[int]:
+    """The years that haven't ended yet (ERCOT calendar): their files are year-to-date."""
+    now = now or datetime.now(timezone.utc)
+    return [y for y in years if year_window(y)[1] > now]
+
+
+YTD_SERIES = {  # series -> (SQL for its last stored interval START in [a, b), interval seconds)
+    "RT": ("SELECT max(ts) FROM prices WHERE market = 'RT' AND ts >= %(a)s AND ts < %(b)s", 900),
+    "DA": ("SELECT max(ts) FROM prices WHERE market = 'DA' AND ts >= %(a)s AND ts < %(b)s", 3600),
+    "native_load": ("SELECT max(ts) FROM native_load WHERE zone = 'ERCOT' AND ts >= %(a)s AND ts < %(b)s", 3600),
+    "fuel_mix": ("SELECT max(ts) FROM generation_by_fuel WHERE ts >= %(a)s AND ts < %(b)s", 900),
+}
+
+
+def ytd_ends(conn, year: int) -> dict[str, datetime | None]:
+    """End of the last stored interval of each series in `year` (None when nothing is stored)."""
+    a, b = year_window(year)
+    out = {}
+    for series, (sql, step_s) in YTD_SERIES.items():
+        last = _q(conn, sql, {"a": a, "b": b})[0][0]
+        out[series] = None if last is None else last.astimezone(timezone.utc) + timedelta(seconds=step_s)
+    return out
+
+
+def _local(ts: datetime) -> str:
+    t = pd.Timestamp(ts).tz_convert(TZ)
+    return f"{t:%Y-%m-%d %H:%M} {t.tzname()}"
+
+
+def _ytd_section(rep: Report) -> None:
+    if not rep.ytd:
+        return
+    lines = ["| year | series | checked up to (end of the last stored interval, UTC) | local |", "|---|---|---|---|"]
+    for year, ends in sorted(rep.ytd.items()):
+        for series, end in ends.items():
+            got = "nothing stored" if end is None else f"{end:%Y-%m-%d %H:%MZ}"
+            lines.append(f"| {year} | {series} | {got} | {'' if end is None else _local(end)} |")
+    rep.sections += [
+        "### Year to date", "",
+        f"{', '.join(map(str, sorted(rep.ytd)))}: not over yet, and ERCOT republishes the current year's files weekly. "
+        "Each series is checked from Jan 1 up to the end of its last stored interval; the rest of the year is not "
+        "counted as missing, and a DST day counts once it is published.", "",
+        *lines, ""]
 
 
 def local_day_bounds(day: date) -> tuple[datetime, datetime]:
@@ -98,9 +164,12 @@ def _q(conn, sql: str, params=None) -> list[tuple]:
 def _prices_section(conn, years: list[int], markets: list[str], rep: Report) -> None:
     rows_out, worst_missing, dups, off_grid, missing_groups = [], 0.0, 0, 0, []
     for year in years:
-        a, b = year_window(year)
         for market in markets:
+            a, b = rep.window(year, market)
             step = STEP_S[market]
+            if b <= a:
+                missing_groups.append(f"{market} {year}: no rows")
+                continue
             stats = _q(conn, """
                 SELECT location, count(*), count(DISTINCT ts),
                        count(*) FILTER (WHERE mod(extract(epoch FROM ts)::bigint, %(step)s) <> 0),
@@ -123,8 +192,9 @@ def _prices_section(conn, years: list[int], markets: list[str], rep: Report) -> 
                                 f"| {n - n_distinct} | {n_off} | {_fmt(pmin)} | {_fmt(pmax)} | {_fmt(pmean)} |")
     rep.sections += [
         "### Prices: rows, gaps and duplicates per (location, market, year)", "",
-        "Expected = intervals in the ERCOT (America/Chicago) calendar year: 15-min for RT, hourly for DA. "
-        "Duplicates = rows sharing (ts, location, market). Prices in $/MWh.", "",
+        "Expected = intervals in the ERCOT (America/Chicago) calendar year (a year to date: up to its last stored "
+        "interval): 15-min for RT, hourly for DA. Duplicates = rows sharing (ts, location, market). Prices in $/MWh.",
+        "",
         "| location | market | year | rows | expected | missing | missing % | duplicates | off-grid | min | max | mean |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         *rows_out, "",
@@ -142,9 +212,13 @@ def _dst_section(conn, years: list[int], markets: list[str], datasets: list[str]
     lines = [header, "|---|" + "---:|" * len(days)]
     bad = []
 
-    def row(label: str, counts_by_day: list[tuple[set[int], int]]) -> None:
+    def row(label: str, counts_by_day: list[tuple[set[int], int] | None]) -> None:
         cells = []
-        for d, (counts, expected) in zip(days, counts_by_day):
+        for d, cell in zip(days, counts_by_day):
+            if cell is None:  # a year to date: this DST day isn't published yet
+                cells.append("not yet published")
+                continue
+            counts, expected = cell
             got = ", ".join(str(c) for c in sorted(counts)) or "0"
             ok = counts == {expected}
             cells.append(f"{got} (want {expected}){'' if ok else ' FAIL'}")
@@ -160,6 +234,9 @@ def _dst_section(conn, years: list[int], markets: list[str], datasets: list[str]
         counts = []
         for d in days:
             a, b = local_day_bounds(d)
+            if not rep.published(d.year, market, b):
+                counts.append(None)
+                continue
             got = dict(_q(conn, "SELECT location, count(*) FROM prices WHERE market = %(m)s AND ts >= %(a)s "
                                 "AND ts < %(b)s GROUP BY location", {"m": market, "a": a, "b": b}))
             per_location = {got.get(loc, 0) for loc in locations}  # a location with no rows that day counts as 0
@@ -169,6 +246,9 @@ def _dst_section(conn, years: list[int], markets: list[str], datasets: list[str]
         counts = []
         for d in days:
             a, b = local_day_bounds(d)
+            if not rep.published(d.year, "native_load", b):
+                counts.append(None)
+                continue
             n = _q(conn, "SELECT count(*) FROM native_load WHERE zone = 'ERCOT' AND ts >= %(a)s AND ts < %(b)s",
                    {"a": a, "b": b})[0][0]
             counts.append(({n}, expected_intervals(a, b, 3600)))
@@ -177,6 +257,9 @@ def _dst_section(conn, years: list[int], markets: list[str], datasets: list[str]
         counts = []
         for d in days:
             a, b = local_day_bounds(d)
+            if not rep.published(d.year, "fuel_mix", b):
+                counts.append(None)
+                continue
             n = _q(conn, "SELECT count(DISTINCT ts) FROM generation_by_fuel WHERE ts >= %(a)s AND ts < %(b)s",
                    {"a": a, "b": b})[0][0]
             counts.append(({n}, expected_intervals(a, b, 900)))
@@ -192,7 +275,10 @@ def _load_section(conn, years: list[int], rep: Report) -> None:
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     bad, dup_total = [], 0
     for year in years:
-        a, b = year_window(year)
+        a, b = rep.window(year, "native_load")
+        if b <= a:
+            bad.append(f"{year}: no rows")
+            continue
         n, n_distinct, n_off, lo, hi, mean = _q(conn, """
             SELECT count(*), count(DISTINCT ts), count(*) FILTER (WHERE mod(extract(epoch FROM ts)::bigint, 3600) <> 0),
                    min(load_mw), max(load_mw), avg(load_mw)
@@ -217,7 +303,10 @@ def _fuel_section(conn, years: list[int], rep: Report) -> None:
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     bad, dup_total = [], 0
     for year in years:
-        a, b = year_window(year)
+        a, b = rep.window(year, "fuel_mix")
+        if b <= a:
+            bad.append(f"{year}: no rows")
+            continue
         n_ts, n_off, fuels = _q(conn, """
             SELECT count(DISTINCT ts), count(DISTINCT ts) FILTER (WHERE mod(extract(epoch FROM ts)::bigint, 900) <> 0),
                    count(DISTINCT fuel)
@@ -244,7 +333,7 @@ def _fuel_section(conn, years: list[int], rep: Report) -> None:
 def _context_section(conn, years: list[int], rep: Report) -> None:
     lines = ["| year | RT rows | with demand_mw | with fuel_mix |", "|---|---:|---:|---:|"]
     for year in years:
-        a, b = year_window(year)
+        a, b = rep.window(year, "RT")
         n, nd, nf = _q(conn, "SELECT count(*), count(demand_mw), count(fuel_mix) FROM prices "
                              "WHERE market = 'RT' AND ts >= %(a)s AND ts < %(b)s", {"a": a, "b": b})[0]
         lines.append(f"| {year} | {n:,} | {nd:,} | {nf:,} |")
@@ -295,9 +384,14 @@ def fallback_hour_evidence(conn, day: date) -> dict | None:
 def _fallback_section(conn, years: list[int], rep: Report) -> None:
     lines = ["| fall-back day | load/gen ratio misfit: stored | swapped | wind jumps MW: stored | swapped | verdict |",
              "|---|---:|---:|---:|---:|---|"]
-    bad, seen = [], 0
+    bad, seen, pending = [], 0, 0
     for year in years:
         day = dst_days(year)[1]
+        day_end = local_day_bounds(day)[1]
+        if not (rep.published(year, "native_load", day_end) and rep.published(year, "fuel_mix", day_end)):
+            pending += 1  # a year to date whose fall-back day hasn't been published yet
+            lines.append(f"| {day} | n/a | n/a | n/a | n/a | not yet published |")
+            continue
         ev = fallback_hour_evidence(conn, day)
         if ev is None:
             lines.append(f"| {day} | n/a | n/a | n/a | n/a | load or fuel mix missing |")
@@ -315,7 +409,9 @@ def _fallback_section(conn, years: list[int], rep: Report) -> None:
         "passes swapped on both tests.", "",
         *lines, ""]
     rep.checks.append(Check("fall-back repeated hour placed consistently in load and fuel mix",
-                            not bad and seen > 0, "; ".join(bad) or f"{seen} fall-back day(s) checked"))
+                            not bad and (seen > 0 or pending == len(years)),
+                            "; ".join(bad) or f"{seen} fall-back day(s) checked"
+                            + (f", {pending} not yet published" if pending else "")))
 
 
 def _snapshot_section(conn, years: list[int], datasets: list[str], rep: Report) -> None:
@@ -415,11 +511,12 @@ def _sources_section(conn, years: list[int], rep: Report) -> None:
 
 
 def build(conn, years: list[int], datasets: list[str] | None = None, snapshot: bool = True,
-          max_missing_pct: float | None = None) -> Report:
+          max_missing_pct: float | None = None, now: datetime | None = None) -> Report:
     """The gap report and self-check for `years` over the stored data.
 
     snapshot=False skips the comparison with data/snapshot (for synthetic test data).
     max_missing_pct defaults to config.yaml data.max_missing_pct (0.1).
+    now (default: the wall clock) decides which years haven't ended; those are checked year to date.
     """
     if max_missing_pct is None:
         from src.config import load_raw_config
@@ -428,6 +525,8 @@ def build(conn, years: list[int], datasets: list[str] | None = None, snapshot: b
     datasets = list(datasets or DATASETS)
     markets = [m for m, ds in (("RT", "rt_spp"), ("DA", "da_spp")) if ds in datasets]
     rep = Report(max_missing_pct=max_missing_pct)
+    rep.ytd = {year: ytd_ends(conn, year) for year in partial_years(years, now)}
+    _ytd_section(rep)
     if markets:
         _prices_section(conn, years, markets, rep)
     _dst_section(conn, years, markets, datasets, rep)

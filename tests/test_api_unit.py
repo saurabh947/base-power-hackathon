@@ -1,4 +1,4 @@
-"""API behaviour that needs no services: settings, errors, presenter auth, rate limits, CORS,
+"""API behaviour that needs no services: settings, errors, rate limits (crashing a controller included), CORS,
 and the 501 bridges to modules built in parallel. Redis is pointed at a closed port."""
 import sys
 import types
@@ -9,15 +9,18 @@ from fastapi.testclient import TestClient
 from src.api import main
 from src.api.limits import SlidingWindow
 
-PASS = "correct horse battery staple"
-
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
-    monkeypatch.setenv("PRESENTER_PASSCODE_FILE", str(tmp_path / "missing"))
-    monkeypatch.delenv("PRESENTER_PASSCODE", raising=False)
-    monkeypatch.delenv("DEMO_PRESENTER_PASSCODE", raising=False)
+    from src.data import years
+    from src.forecast import predictions
+
     monkeypatch.setenv("FLEET_CONTROL_TIMEOUT_S", "0.2")
+    monkeypatch.setenv("FORECAST_SOURCE", "parquet")  # predictions from an empty folder: none made yet
+    monkeypatch.delenv("PRICE_SOURCE", raising=False)  # real prices: the committed snapshot
+    monkeypatch.setattr(predictions, "default_cache_dir", lambda: tmp_path / "predictions")
+    years.clear_cache()
+    predictions.clear_cache()
     main.configure(url="redis://127.0.0.1:1/0", prefix="test:unit:")  # nothing listens on port 1
     main.state.limits.reset()
     with TestClient(main.app) as c:
@@ -29,14 +32,32 @@ def test_health_and_settings(client):
     r = client.get("/health")
     assert r.status_code == 200 and r.json()["ok"] is True and r.json()["status"] == "idle"
     s = client.get("/settings").json()
-    assert set(s) == {"defaults", "editable", "presets", "strategies", "speeds"}
-    assert s["editable"] == ["preset", "speed_tps", "strategy", "start_charge_level"]
+    assert set(s) == {"defaults", "editable", "presets", "strategies", "speeds", "years"}
+    assert s["editable"] == ["year", "preset", "speed_tps", "strategy", "start_charge_level"]
     assert s["defaults"]["fleet_size"] == 20000 and s["defaults"]["speed_tps"] == 2
+    assert (s["defaults"]["year"], s["defaults"]["preset"]) == (2025, "ai_best_evening")
     # docs/API.md item shapes
-    assert all(set(p) == {"id", "label", "date_local", "start_utc", "start_local", "description"} for p in s["presets"])
+    assert all(set(p) == {"id", "year", "label", "date_local", "start_utc", "start_local", "description"}
+               for p in s["presets"])
     first = s["presets"][0]
-    assert (first["id"], first["start_utc"], first["start_local"]) == (
-        "spike_evening", "2025-05-16T21:00:00Z", "2025-05-16T16:00:00-05:00")
+    assert (first["id"], first["year"], first["start_utc"], first["start_local"]) == (
+        "spike_evening", 2025, "2025-05-16T21:00:00Z", "2025-05-16T16:00:00-05:00")
+    # years: 2025 and 2026, no 2024; 2026's real prices end where the committed 2026 snapshot does (files of Sep 20)
+    assert s["years"] == [
+        {"year": 2025, "label": "2025", "description": "Real ERCOT prices for the whole year.", "real_until_utc": None},
+        {"year": 2026, "label": "2026", "real_until_utc": "2026-09-20T05:00:00Z",
+         "description": "Real prices through Sep 19. The AI's prediction for the rest of the year isn't ready yet."}]
+    by_year = {y: [p for p in s["presets"] if p["year"] == y] for y in (2025, 2026)}
+    assert sum(len(v) for v in by_year.values()) == len(s["presets"])
+    for year, items in by_year.items():  # each year has a "From January 1" preset, from local midnight
+        jan1 = [p for p in items if p["label"] == "From January 1"]
+        assert len(jan1) == 1 and jan1[0]["start_utc"] == f"{year}-01-01T06:00:00Z"
+        assert jan1[0]["start_local"] == f"{year}-01-01T00:00:00-06:00" and jan1[0]["date_local"] == f"{year}-01-01"
+    end = next(p for p in by_year[2026] if p["id"] == "real_prices_end_2026")  # the evening before real prices end
+    assert (end["label"], end["start_utc"], end["start_local"], end["date_local"]) == (
+        "Where real prices end", "2026-09-19T23:00:00Z", "2026-09-19T18:00:00-05:00", "2026-09-19")
+    spike = next(p for p in by_year[2026] if p["id"] == "spike_2026")
+    assert (spike["start_utc"], spike["date_local"]) == ("2026-04-24T21:00:00Z", "2026-04-24")
     assert s["strategies"] == [
         {"id": "bands", "label": "Simple rule", "description": s["strategies"][0]["description"]},
         {"id": "forecast", "label": "AI forecast (TimesFM-3)", "description": s["strategies"][1]["description"]},
@@ -53,47 +74,42 @@ def test_errors_are_plain_json(client):
     assert r.status_code == 400 and r.json()["error"] == "invalid_json"
     r = client.post("/run/start", json={"preset": "no-such-day"})
     assert r.status_code == 400 and r.json()["error"] == "invalid_preset"
+    r = client.post("/run/start", json={"year": 2024})
+    assert r.status_code == 400 and r.json()["error"] == "invalid_year" and "2025 or 2026" in r.json()["message"]
+    r = client.post("/run/start", json={"year": 2026, "preset": "summer_spike"})
+    assert r.status_code == 400 and r.json()["error"] == "invalid_preset" and "2025, not 2026" in r.json()["message"]
     r = client.post("/run/speed", json={"speed_tps": 7})
     assert r.status_code == 400 and r.json()["error"] == "invalid_speed"
     r = client.post("/availability", json={"scope": "planet"})
     assert r.status_code == 400 and r.json()["error"] == "invalid_scope"
-    r = client.post("/chaos/kill")
-    assert r.status_code == 503  # no passcode configured (checked before anything else)
+    r = client.post("/chaos/kill?worker_id=seven")
+    assert r.status_code == 400 and r.json()["error"] == "invalid_worker"
 
 
 def test_simulator_unreachable_is_a_503(client):
     r = client.post("/run/pause")
     assert r.status_code == 503 and r.json()["error"] == "simulator_unavailable"
+    r = client.post("/chaos/kill")  # open to everyone: no passcode, it goes straight to the simulator
+    assert r.status_code == 503 and r.json()["error"] == "simulator_unavailable"
 
 
-def test_presenter_passcode_not_set(client):
-    for path in ("/presenter/check", "/chaos/kill"):
-        r = client.post(path, headers={"X-Presenter-Passcode": "anything"})
-        assert r.status_code == 503 and r.json()["error"] == "presenter_passcode_not_set"
+def test_presenter_mode_is_gone(client):
+    assert client.post("/presenter/check").status_code == 404
+    assert not hasattr(main.state.limits, "wrong_passcode")
+    import importlib.util
+
+    assert importlib.util.find_spec("src.api.presenter") is None
 
 
-def test_presenter_passcode_from_env_and_file(client, monkeypatch, tmp_path):
-    monkeypatch.setenv("PRESENTER_PASSCODE", PASS)
-    assert client.post("/presenter/check", headers={"X-Presenter-Passcode": PASS}).json() == {"ok": True}
-    r = client.post("/presenter/check", headers={"X-Presenter-Passcode": PASS + "x"})
-    assert r.status_code == 403 and r.json()["error"] == "forbidden"
-    assert client.post("/presenter/check").status_code == 403
-    secret = tmp_path / "passcode"
-    secret.write_text("from-the-secret-file\n")
-    monkeypatch.setenv("PRESENTER_PASSCODE_FILE", str(secret))  # read at request time; the file wins
-    assert client.post("/presenter/check", headers={"X-Presenter-Passcode": "from-the-secret-file"}).status_code == 200
-    assert client.post("/presenter/check", headers={"X-Presenter-Passcode": PASS}).status_code == 403
-
-
-def test_wrong_passcodes_are_limited_per_ip(client, monkeypatch):
-    monkeypatch.setenv("PRESENTER_PASSCODE", PASS)
-    for _ in range(5):
-        assert client.post("/chaos/kill", headers={"X-Presenter-Passcode": "guess"}).status_code == 403
-    r = client.post("/presenter/check", headers={"X-Presenter-Passcode": PASS})
-    assert r.status_code == 429 and r.json()["error"] == "rate_limited"
-    assert 1 <= r.json()["retry_after_s"] <= 60 and r.headers["Retry-After"] == str(r.json()["retry_after_s"])
-    main.state.limits.wrong_passcode.reset()
-    assert client.post("/presenter/check", headers={"X-Presenter-Passcode": PASS}).status_code == 200
+def test_chaos_kill_is_limited_to_one_per_2s(client):
+    first = client.post("/chaos/kill", headers={"X-Presenter-Passcode": "ignored"})  # no header is needed or read
+    assert first.status_code == 503  # counted, then the (absent) simulator didn't answer
+    second = client.post("/chaos/kill?worker_id=3")
+    assert second.status_code == 429 and second.json()["error"] == "rate_limited"
+    assert second.json()["retry_after_s"] in (1, 2) and second.headers["Retry-After"] == str(second.json()["retry_after_s"])
+    assert client.post("/chaos/kill?worker_id=x").status_code == 400  # malformed ids don't wait or spend the budget
+    main.state.limits.chaos_kill.reset()
+    assert client.post("/chaos/kill?worker_id=3").status_code == 503
 
 
 def test_run_start_and_reset_are_limited_to_one_per_5s(client):
@@ -125,15 +141,17 @@ def test_sliding_window_frees_up():
 def test_cors(client):
     for origin in ("https://fleet-sim.vercel.app", "https://fleet-sim-git-main-me.vercel.app", "http://localhost:5173"):
         r = client.options("/run/start", headers={"Origin": origin, "Access-Control-Request-Method": "POST",
-                                                   "Access-Control-Request-Headers": "x-presenter-passcode,content-type"})
+                                                   "Access-Control-Request-Headers": "content-type"})
         assert r.status_code == 200 and r.headers["access-control-allow-origin"] == origin
         allowed = {h.strip().lower() for h in r.headers["access-control-allow-headers"].split(",")}
-        assert {"content-type", "x-presenter-passcode"} <= allowed
+        assert "content-type" in allowed and "x-presenter-passcode" not in allowed
     r = client.get("/health", headers={"Origin": "http://localhost:5173"})
     assert r.headers["access-control-expose-headers"].lower() == "retry-after"
-    r = client.options("/run/start", headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST",
-                                               "Access-Control-Request-Headers": "x-evil-header"})
-    assert r.status_code == 400  # only the two pinned request headers are allowed
+    for header in ("x-evil-header", "x-presenter-passcode", "x-presenter-passcode,content-type"):
+        r = client.options("/chaos/kill", headers={"Origin": "http://localhost:5173",
+                                                    "Access-Control-Request-Method": "POST",
+                                                    "Access-Control-Request-Headers": header})
+        assert r.status_code == 400, header  # only Content-Type is allowed
     r = client.options("/run/start", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
     assert "access-control-allow-origin" not in r.headers
     r = client.get("/health", headers={"Origin": "https://vercel.app.evil.example"})

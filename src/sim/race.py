@@ -16,6 +16,13 @@ comparison strategy side by side with the live one, inside the coordinator's pro
 - It mirrors the live availability overrides (an offline battery has no headroom and holds its charge) but
   not controller crashes: it has no controllers.
 
+The potential (docs/API.md race.potential) is a second shadow fleet of the same class: the LIVE strategy (the
+live run's own Strategy instances, which are pure) with every battery online and no controller crashes. It
+books its revenue in the live ledger's order (per tick, city by city in config order: `running_usd`), so with no
+outage it earns exactly the live fleet's totals.revenue_usd, to the bit (tests/test_race_fleet.py, and the
+20,000-battery bench). shortfall_usd = potential - live: what the outages cost (negative if an outage happened to
+save charge for a later, higher price).
+
 Plain-language events (docs/UX.md tone), at most one start and one end per price spike: a spike begins when any
 city's 5-minute price reaches the spike threshold ($1,000/MWh) and ends once every city is back below half of
 it (the same hysteresis as the `price_spike` event).
@@ -45,6 +52,11 @@ AI = "forecast"
 def comparison_strategy(live_strategy: str) -> str:
     """docs/API.md: the race runs the simple rule, or the AI forecast when the live run itself uses the simple rule."""
     return "forecast" if live_strategy == "bands" else "bands"
+
+
+def potential_label(live_label: str) -> str:
+    """'AI forecast (TimesFM-3)' -> 'AI forecast, all batteries online' (docs/API.md race.potential.label)."""
+    return f"{live_label.split(' (')[0]}, all batteries online"
 
 
 def action(feasible_kw: float) -> str:
@@ -80,6 +92,7 @@ class Race:
     ticks: int = 0
     last_ms: float = 0.0
     spike: dict | None = field(default=None)  # the open spike episode: {"k", "ts", "live_usd", "race_usd"}
+    running_usd: float = 0.0  # revenue summed per tick, city by city in config order: the live ledger's order
 
     @classmethod
     def start(cls, strategy: str, label: str, fleets: Mapping[str, Fleet], soc0: float, *, dt_h: float,
@@ -101,7 +114,9 @@ class Race:
             delivered = float(kwh.sum()) if kwh is not None else 0.0
             c.soc, c.feasible_kw, c.delivered_kwh = new_soc, feasible, delivered
             if now is not None:  # booked as BacktestLedger.record books it
-                c.revenue_usd = c.revenue_usd + delivered * float(now.price_usd_mwh) / 1000.0
+                usd = delivered * float(now.price_usd_mwh) / 1000.0
+                c.revenue_usd = c.revenue_usd + usd
+                self.running_usd += usd
                 if delivered > 0:
                     c.sold_kwh += delivered
                 elif delivered < 0:
@@ -116,8 +131,8 @@ class Race:
         cap = sum(float(c.fleet.capacity_kwh.sum()) for c in self.cities.values())
         return sum(float((c.soc * c.fleet.capacity_kwh).sum()) for c in self.cities.values()) / cap
 
-    def public(self, live_revenue_usd: float) -> dict:
-        """docs/API.md Race."""
+    def public(self, live_revenue_usd: float, potential: "Race | None" = None, shows_potential: bool = False) -> dict:
+        """docs/API.md Race, with `potential` (null if the potential fleet couldn't run) and `shows_potential`."""
         total = self.revenue_usd()
         return {
             "strategy": self.strategy,
@@ -127,6 +142,17 @@ class Race:
                                   "action": action(c.feasible_kw)} for loc, c in self.cities.items()},
             "charge_level": round(self.charge_level(), 5),
             "live_minus_race_usd": round(float(live_revenue_usd) - total, 6),
+            "potential": None if potential is None else potential.potential_public(live_revenue_usd),
+            "shows_potential": bool(shows_potential),
+        }
+
+    def potential_public(self, live_revenue_usd: float) -> dict:
+        """docs/API.md race.potential: this fleet as the live strategy with every battery online."""
+        return {
+            "label": self.label,
+            "revenue_usd": round(self.running_usd, 6),
+            "by_location": {loc: {"revenue_usd": round(c.revenue_usd, 6)} for loc, c in self.cities.items()},
+            "shortfall_usd": round(self.running_usd - float(live_revenue_usd), 6),
         }
 
 
