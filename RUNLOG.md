@@ -245,3 +245,44 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
   - The Start card sits above the button.
   - The Live screen shows the price chart with charge/sell shading and the forecast band, plus 20 controller tiles (numbered 1–20) and a plain-language feed.
 - **Details:** docs/notes/web.md.
+
+## M2 + M3: orchestrated fleet, API, launcher (done 2026-09-25)
+
+- **Topology.** 1 coordinator plus 20 worker OS processes (subprocess.Popen), each with 1,000 batteries: 20,000 in total, split by `src.sim.fleet.assign_locations`.
+  - Redis streams `commands:{worker}`, `telemetry` and `dead_letter`, plus `hb:{worker}` keys (2 s SET / 6 s TTL) and one hash per battery.
+  - Each tick waits on a deadline barrier. A worker that misses it is SUSPECT, and its batteries get 0 on the next tick.
+  - A worker is DEAD after 2 missed deadlines or when its heartbeat expires. Its batteries are then re-homed round-robin, and an owner epoch fences out zombie writes.
+- **Parity.** One sim day through the worker fleet equals `src.backtest` bit for bit at 20,000 batteries and 20 workers: per-battery SoC, kWh per tick and the ledger. `tests/test_fleet_backtest_parity.py` pins it.
+- **API.** `src/api/main.py` follows docs/API.md: REST plus WS `/live`.
+  - Crashing a controller needs the presenter passcode, read from the Secret Manager mount `/secrets/presenter/passcode`.
+  - Starting, resetting and changing availability are open to anyone, and rate-limited.
+- **Launcher.** `python -m src.launcher` starts Redis, the coordinator and the API, and supervises them. The container runs it under tini.
+- **Measured:**
+
+  | | Laptop (M3 Pro) | Cloud Run (4 vCPU, 4 GiB) |
+  |---|---|---|
+  | M2: 20,000 batteries, 1 sim day at max speed | 37.8 ticks/s, 0.0% error | 20.5 ticks/s, 0.0% error |
+  | M3: SIGKILL a worker at max speed and at 2 ticks/s | 5.02% on the kill tick, then 0.000% | the same: 5.02%, then 0.000% from the next tick |
+  | Handover of 1,000 batteries | 2–4 ms | 6 ms |
+  | 10 ticks/s target | 9.6 achieved | 9.0 achieved |
+
+  On Cloud Run each kill logs "Controller 8 stopped responding after missing 2 check-ins in a row." and produces 2,000 `expired_owner_dead` dead-letter entries.
+- **Details:** docs/notes/fleet.md.
+
+## Deployment (live 2026-09-25)
+
+- **Website:** https://fleet-sim.vercel.app. Vercel project `fleet-sim` (scope sab-32e3), deployed from `web/` with `vercel deploy --prod`. Production env `VITE_API_BASE_URL` = the Cloud Run URL.
+- **Backend:** https://fleet-sim-806389099.us-east1.run.app. Cloud Run service `fleet-sim`, GCP project `appintellect`, region us-east1.
+  - gen2, 4 vCPU / 4 GiB, min 0 / max 1 instance, CPU always allocated, concurrency 250, timeout 3600 s.
+  - Env `PRICE_SOURCE=postgres`.
+  - Deploy with `make cloud-deploy`.
+- **Database:** Cloud SQL `fleet-sim-db` (Postgres 16, db-f1-micro, database `fleetsim`, user `fleetsim`). It has no authorized networks; the Cloud SQL connector is the only way in.
+  - Data: ERCOT 2024–2025 RT/DA for all 15 settlement points, load and fuel mix. The cloud self-check passed.
+- **Secrets (Secret Manager):** `fleet-sim-db-password` (generated, never printed) and `fleet-sim-presenter-passcode`.
+  - The passcode is a random placeholder until the human sets their own:
+    `read -rs "PASS?Presenter passcode: " && printf '%s' "$PASS" | gcloud secrets versions add fleet-sim-presenter-passcode --project=appintellect --data-file=- && unset PASS`
+- **Jobs:** `fleet-sim-ingest`, `fleet-sim-forecast` (TimesFM-3, ~25 min for 2025), `fleet-sim-backtest` (pitch), `fleet-sim-migrate` and `fleet-sim-bench`.
+- **Service account:** `fleet-sim-run`. It has `cloudsql.client` scoped to `fleet-sim-db` only, and secretAccessor on the 2 secrets.
+- **Cost:**
+  - Cloud Run bills only while an instance is up, about $0.29/h at 4 vCPU / 4 GiB. It scales to zero when idle, but an open browser tab keeps it up.
+  - Cloud SQL f1-micro runs about $10/month.
