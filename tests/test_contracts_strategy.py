@@ -40,7 +40,27 @@ def _peak():
     return PeakStrategy()
 
 
-FACTORIES = [pytest.param(_bands, id="bands"), pytest.param(_peak, id="peak")]
+def _forecast():
+    from src.strategy.forecast import make_forecast_strategy  # real cached TimesFM forecasts
+
+    return make_forecast_strategy()
+
+
+def _forecasts_cached() -> bool:
+    try:
+        from src.forecast.provider import ForecastBook
+
+        return len(ForecastBook.load("LZ_HOUSTON")) > 0
+    except Exception:  # no forecast extra needed; a missing cache or database means skip
+        return False
+
+
+FACTORIES = [
+    pytest.param(_bands, id="bands"),
+    pytest.param(_peak, id="peak"),
+    pytest.param(_forecast, id="forecast", marks=pytest.mark.skipif(
+        not _forecasts_cached(), reason="no cached forecasts: run `python -m src.forecast.job` (docs/notes/forecast.md)")),
+]
 HISTORY_FACTORIES = [pytest.param(_bands, id="bands")]
 
 
