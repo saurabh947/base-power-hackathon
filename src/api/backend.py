@@ -2,6 +2,7 @@
 FastAPI runs these calls in its threadpool)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import signal
@@ -12,10 +13,24 @@ from typing import Mapping
 
 import numpy as np
 
+from src.api.layout import battery_lonlat, layout_message
+from src.sim import battery_status as bstatus
 from src.sim import control as ctl
+from src.sim import geo
 from src.sim.redis_layout import Keys, connect, layout_index, location_counts, now_utc_iso, redis_prefix, redis_url
 
 EMPTY_TOTALS = {"revenue_usd": 0.0, "sold_kwh": 0.0, "bought_kwh": 0.0, "ticks": 0}
+
+
+def idle_battery_status(fleet_size: int) -> str:
+    """battery_status with no run and nothing offline: every battery waiting (1), base64."""
+    return base64.b64encode(bstatus.pack(bstatus.idle_codes(np.zeros(int(fleet_size), dtype=bool)))).decode("ascii")
+
+
+def empty_totals(locations) -> dict:
+    """docs/API.md Totals before any run: zeros, and zeros per city."""
+    return {**EMPTY_TOTALS, "by_location": {loc: {"revenue_usd": 0.0, "sold_kwh": 0.0, "bought_kwh": 0.0}
+                                            for loc in locations}}
 
 
 class Backend:
@@ -34,19 +49,42 @@ class Backend:
         split = location_counts(self.cfg.fleet.size, self.cfg.fleet.locations)
         return {
             "run_id": None, "status": "idle", "settings": settings, "sim_time_utc": None,
-            "speed_tps": settings["speed_tps"], "totals": dict(EMPTY_TOTALS), "workers": [],
+            "speed_tps": settings["speed_tps"], "totals": empty_totals(self.cfg.fleet.locations), "workers": [],
             "availability": {"available": self.cfg.fleet.size, "total": self.cfg.fleet.size,
                              "by_location": {loc: {"available": n, "total": n} for loc, n in split},
                              "offline_workers": []},
         }
 
     def snapshot(self) -> dict:
+        snap = self.coordinator_snapshot()
+        return snap if snap is not None else self.idle_snapshot()
+
+    def coordinator_snapshot(self) -> dict | None:
+        """The coordinator's own snapshot, or None before it has published one (cold start)."""
         raw = self.r.get(self.keys.snapshot)
-        return json.loads(raw) if raw else self.idle_snapshot()
+        return json.loads(raw) if raw else None
 
     def layout(self) -> dict | None:
         raw = self.r.get(self.keys.layout)
         return json.loads(raw) if raw else None
+
+    def fleet_layout(self) -> dict:
+        """GET /fleet/layout: the running fleet's size and seed (config.yaml's until the simulator is up)."""
+        try:
+            running = self.layout()
+        except Exception:  # Redis not reachable yet: the configured fleet is the one that will run
+            running = None
+        size = int(running["size"]) if running else int(self.cfg.fleet.size)
+        seed = int(running.get("seed", self.cfg.seed)) if running else int(self.cfg.seed)
+        return layout_message(size, self.cfg.fleet.locations, seed)
+
+    def battery_status(self, fleet_size: int | None = None) -> str:
+        """docs/API.md battery_status: base64 of the packed 4-bit codes the coordinator wrote at the latest tick.
+        Before the coordinator wrote any: every battery waiting (1)."""
+        raw = self.r.get(self.keys.battery_status)
+        if not raw:
+            return idle_battery_status(int(fleet_size or self.cfg.fleet.size))
+        return base64.b64encode(raw).decode("ascii")
 
     def status(self) -> str:
         try:
@@ -143,7 +181,9 @@ class Backend:
         kw_now = float(np.frombuffer(kw_raw, dtype=np.float32)[0]) if kw_raw and len(kw_raw) == 4 else 0.0
         owner_i = int(owner) if owner is not None else None
         return {
-            "battery_id": bid, "location": loc, "worker_id": owner_i if owner_i is None or owner_i >= 0 else None,
+            "battery_id": bid, "location": loc, "city": geo.city_name(loc),
+            "lonlat": battery_lonlat(g, loc, int(layout.get("seed", self.cfg.seed))),
+            "worker_id": owner_i if owner_i is None or owner_i >= 0 else None,
             "capacity_kwh": float(cap), "power_kw": float(power), "charge_level": round(float(soc), 6),
             "power_kw_now": round(kw_now, 4), "available": available in (b"1", b"True", b"true"),
         }

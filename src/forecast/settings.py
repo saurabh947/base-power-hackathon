@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-from src.config import REPO_ROOT, ConfigError, load_raw_config
+from src.config import REPO_ROOT, ConfigError, load_config, load_raw_config
 
 SERIES = ("rt_price", "demand")
 COVARIATES = ("none", "da")
@@ -101,7 +101,7 @@ def load_settings(raw: Mapping[str, Any] | None = None, *, env: Mapping[str, str
         da_publish = time.fromisoformat(str(raw.get("da_publish_local", "13:30")))
     except ValueError as exc:
         raise ConfigError(f"forecast.da_publish_local: {exc}") from exc
-    locations = raw.get("locations", ["LZ_HOUSTON", "LZ_NORTH"])
+    locations = raw.get("locations") or list(load_config().fleet.locations)  # default: the fleet's cities
     if not isinstance(locations, (list, tuple)) or not locations:
         raise ConfigError("forecast.locations must be a non-empty list")
 

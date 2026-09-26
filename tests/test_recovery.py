@@ -4,7 +4,10 @@
 - Fleet output is back within 5% of the feasible target within 3 ticks of the kill.
 - Failures are visible in dead_letter; nothing is lost or applied twice (a replay of every
   reported delivery through src.sim.battery equals the battery hashes exactly).
-Both at max speed and at the demo's 2 ticks/s, during max discharge (RUNLOG decision 8).
+- The live map sees it: battery_status shows the cohort as "controller down" (4) from the kill until
+  the hand-over, and workers[].by_location moves its batteries to the adopters.
+Both at max speed and at the demo's 2 ticks/s, during max discharge (RUNLOG decision 8). Worker 17 is the
+controller whose batteries sit in two cities (600 San Antonio + 400 Austin).
 """
 import os
 import signal
@@ -15,6 +18,8 @@ import numpy as np
 import pytest
 
 from src.config import load_raw_config
+from src.sim import battery_status as bstatus
+from src.sim import geo
 from src.sim.coordinator import Coordinator, Orchestration
 from src.sim.redis_layout import F_OWNER, F_TICK, reachable, redis_url
 
@@ -53,19 +58,26 @@ def _event(co, kind, worker_id):
 
 
 def _kill_after(co, tick: int, worker_id: int, sig=signal.SIGKILL) -> dict:
-    fired = {}
+    fired = {"codes": {}, "down_elsewhere": {}}
 
     def hook(rec):
-        if rec["k"] == tick and not fired:
+        if "cohort" in fired:  # battery_status after each tick: the victim's batteries, and everyone else's 4s
+            fired["codes"][rec["k"]] = co.status_codes[fired["cohort"]].copy()
+            others = np.ones(co.N, dtype=bool)
+            others[fired["cohort"]] = False
+            fired["down_elsewhere"][rec["k"]] = int((co.status_codes[others] == bstatus.CONTROLLER_DOWN).sum())
+        if rec["k"] == tick and "pid" not in fired:
             victim = co.workers[worker_id]
+            fired.update(pid=victim.pid, cohort=victim.owned.copy(),
+                         by_location_before={h.worker_id: h.public(co.layout)["by_location"] for h in co.workers})
             os.kill(victim.pid, sig)
-            fired.update(pid=victim.pid, cohort=victim.owned.copy())
 
     co.tick_hooks.append(hook)
     return fired
 
 
-def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, soc0: float) -> None:
+def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, soc0: float,
+                      fired: dict | None = None) -> None:
     log = {r["k"]: r for r in co.tick_log}
     dead = _event(co, "worker_dead", victim)
     adopted = _event(co, "worker_adopted", victim)
@@ -81,6 +93,25 @@ def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, so
         assert e["detail"]["worker_id"] == victim and e["detail"]["controller"] == victim + 1
         assert e["message"].startswith(f"Controller {victim + 1}")
     assert adopted["detail"]["ms"] < 50
+    cities = co.layout.counts_by_location(cohort)  # its message names the cities it served
+    assert adopted["detail"]["by_location"] == cities
+    assert f" batteries in {geo.join_names([geo.city_name(loc) for loc in cities])} were handed" in adopted["message"]
+    if fired is not None:
+        # battery_status: "controller down" (4) for exactly its batteries from the kill until the hand-over ...
+        for k in range(killed_after + 1, declared + 1):
+            assert (fired["codes"][k] == bstatus.CONTROLLER_DOWN).all(), k
+            assert fired["down_elsewhere"][k] == 0, k
+        # ... then back to what they do: at max discharge, selling (a few may have hit the 20% floor)
+        after = fired["codes"][declared + 1]
+        assert not (after == bstatus.CONTROLLER_DOWN).any() and (after == bstatus.SELLING).mean() > 0.9
+        assert all(n == 0 for k, n in fired["down_elsewhere"].items() if k > declared)
+        # workers[].by_location: the cohort's cities moved to the adopters; the dead worker has none
+        before = fired["by_location_before"]
+        now = {h.worker_id: h.public(co.layout)["by_location"] for h in co.workers}
+        assert now[victim] == {} and before[victim] == cities
+        for loc, n in cities.items():
+            gained = sum(now[w].get(loc, 0) - before[w].get(loc, 0) for w in now if w != victim)
+            assert gained == n, loc
     # the very next tick after the declaration commands the whole cohort through its adopters
     nxt = log[declared + 1]
     assert nxt["reported"] == nxt["sent"] == 19
@@ -112,22 +143,24 @@ def test_kill_a_worker_at_max_speed(coordinator):
     co = coordinator(orchestration=_wide_max_speed_barrier())
     co.start({"start_utc": EVENING, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
              max_ticks=16, internal=True)
-    fired = _kill_after(co, 5, 7)
+    fired = _kill_after(co, 5, 17)  # the controller of 600 San Antonio + 400 Austin batteries
     assert co.serve_until(lambda: co.run.status == "finished", timeout_s=120)
-    assert fired
-    _assert_recovered(co, 5, 7, fired["cohort"], 0.9)
-    assert co.workers[7].status == "dead" and co.workers[7].exit_code == -signal.SIGKILL
+    assert "pid" in fired
+    assert co.layout.counts_by_location(fired["cohort"]) == {"LZ_CPS": 600, "LZ_AEN": 400}
+    _assert_recovered(co, 5, 17, fired["cohort"], 0.9, fired)
+    assert co.workers[17].status == "dead" and co.workers[17].exit_code == -signal.SIGKILL
 
 
 def test_kill_a_worker_at_two_ticks_per_second(coordinator):
     co = coordinator()
     co.start({"start_utc": EVENING, "speed_tps": 2, "strategy": "peak", "start_charge_level": 0.9},
              max_ticks=12, internal=True)
-    fired = _kill_after(co, 4, 13)
+    fired = _kill_after(co, 4, 13)  # a Dallas-Fort Worth controller
     t0 = time.monotonic()
     assert co.serve_until(lambda: co.run.status == "finished", timeout_s=60)
     assert time.monotonic() - t0 >= 11 * 0.5 - 0.1  # it really ran at 2 ticks/s
-    _assert_recovered(co, 4, 13, fired["cohort"], 0.9)
+    assert co.layout.counts_by_location(fired["cohort"]) == {"LZ_NORTH": 1000}
+    _assert_recovered(co, 4, 13, fired["cohort"], 0.9, fired)
 
 
 def test_a_frozen_worker_is_fenced_out_when_it_wakes(coordinator):

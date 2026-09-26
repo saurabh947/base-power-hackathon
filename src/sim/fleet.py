@@ -53,8 +53,9 @@ def assign_locations(batteries: list[BatteryState], shares: Mapping[str, float])
     """THE fleet split, shared by the live fleet and the backtest (parity depends on it).
 
     Locations take consecutive blocks of the battery list in config order: with
-    20,000 batteries at 50/50, LZ_HOUSTON gets b00000-b09999 and LZ_NORTH gets
-    b10000-b19999.
+    20,000 batteries and the Texas Triangle shares (0.35 / 0.40 / 0.13 / 0.12),
+    LZ_HOUSTON gets b00000-b06999, LZ_NORTH b07000-b14999, LZ_CPS b15000-b17599
+    and LZ_AEN b17600-b19999.
     """
     out, first = {}, 0
     for loc, count in location_counts(len(batteries), shares).items():

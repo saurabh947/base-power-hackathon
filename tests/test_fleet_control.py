@@ -1,9 +1,13 @@
 """Control plane: settings validation, availability overrides and event wording. No services needed."""
+import json
+import re
+
 import numpy as np
 import pytest
 
-from src.config import load_config, load_raw_config
+from src.config import REPO_ROOT, load_config, load_raw_config
 from src.sim import control as ctl
+from src.sim import geo
 from src.sim.redis_layout import FleetLayout
 
 
@@ -17,13 +21,16 @@ def raw():
     return load_raw_config()
 
 
+def docs_api_settings() -> dict:
+    """The Settings example in docs/API.md (the contract the website builds against)."""
+    text = (REPO_ROOT / "docs" / "API.md").read_text()
+    return json.loads(re.search(r"## Settings\s*```json\s*(\{.*?\})\s*```", text, re.S).group(1))
+
+
 def test_default_settings_follow_docs_api(cfg, raw):
     s = ctl.default_settings(cfg, raw)
-    assert s == {
-        "preset": "summer_spike", "start_utc": "2025-07-11T23:00:00Z", "speed_tps": 2, "strategy": "forecast",
-        "start_charge_level": 0.9, "fleet_size": 20000, "power_kw_range": [5.0, 11.5],
-        "capacity_kwh_range": [10.0, 20.0], "locations": {"LZ_HOUSTON": 0.5, "LZ_NORTH": 0.5},
-    }
+    assert s == docs_api_settings()
+    assert list(s["locations"]) == list(cfg.fleet.locations) and s["fleet_size"] == cfg.fleet.size
 
 
 def test_resolve_settings_takes_only_editable_keys(cfg, raw):
@@ -61,20 +68,25 @@ def layout(cfg):
     return FleetLayout.build(cfg, size=2000, workers=4)
 
 
-def test_location_fraction_is_seeded_and_monotone(cfg, layout):
+@pytest.mark.parametrize("loc_i", [0, 1, 2, 3])
+def test_location_fraction_is_seeded_and_monotone(cfg, layout, loc_i):
+    loc = list(cfg.fleet.locations)[loc_i]
+    n = len(layout.location_indices(loc))
     a = ctl.AvailabilityState(layout, cfg.seed)
     owners = layout.default_owners()
-    d = a.apply({"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0.3}, owners, 4)
+    d = a.apply({"scope": "location", "location": loc, "offline_fraction": 0.3}, owners, 4)
     first = a.offline.copy()
-    assert d["affected"] == 300 and a.summary()["by_location"]["LZ_HOUSTON"] == {"available": 700, "total": 1000}
-    assert not a.offline[layout.location_indices("LZ_NORTH")].any()
+    assert d["affected"] == round(0.3 * n) and a.summary()["by_location"][loc] == {"available": n - round(0.3 * n),
+                                                                                  "total": n}
+    assert not a.offline[np.setdiff1d(np.arange(layout.size), layout.location_indices(loc))].any()  # only that city
     b = ctl.AvailabilityState(layout, cfg.seed)
-    b.apply({"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0.3}, owners, 4)
+    b.apply({"scope": "location", "location": loc, "offline_fraction": 0.3}, owners, 4)
     assert np.array_equal(first, b.offline)  # the same fraction always picks the same batteries
-    b.apply({"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0.5}, owners, 4)
-    assert (b.offline >= first).all() and b.offline.sum() == 500  # bigger fraction = superset
-    d0 = b.apply({"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0}, owners, 4)
-    assert d0["affected"] == 500 and not b.offline.any()
+    b.apply({"scope": "location", "location": loc, "offline_fraction": 0.5}, owners, 4)
+    assert (b.offline >= first).all() and b.offline.sum() == round(0.5 * n)  # bigger fraction = superset
+    d0 = b.apply({"scope": "location", "location": loc, "offline_fraction": 0}, owners, 4)
+    assert d0["affected"] == round(0.5 * n) and not b.offline.any()
+    assert f"of the {geo.city_name(loc)} batteries" in ctl.availability_message(d, a.summary())
 
 
 def test_worker_battery_and_all_scopes(cfg, layout):
@@ -85,7 +97,8 @@ def test_worker_battery_and_all_scopes(cfg, layout):
     bid = layout.ids[int(np.flatnonzero(owners == 2)[0])]
     a.apply({"scope": "battery", "battery_id": bid, "available": True}, owners, 4)
     assert a.summary()["offline_workers"] == []  # not all of worker 2's batteries are offline any more
-    a.apply({"scope": "battery", "battery_id": "b01003", "available": False}, owners, 4)
+    other = layout.ids[int(np.flatnonzero(owners != 2)[3])]  # a battery of another controller
+    a.apply({"scope": "battery", "battery_id": other, "available": False}, owners, 4)
     d = a.apply({"scope": "all", "available": True}, owners, 4)
     assert d["affected"] == 500 and a.summary()["available"] == 2000
 
@@ -113,10 +126,14 @@ def test_plain_language_wording():
     assert ctl.price_phrase(2250.15) == "$2,250/MWh ($2.25 per kWh)"
     assert ctl.price_phrase(120) == "$120/MWh (12¢ per kWh)"
     assert ctl.local_clock(1747446300) == "May 16, 2025, 8:45 pm"
-    assert ctl.action_message({"LZ_HOUSTON": "sell", "LZ_NORTH": "sell"}) == \
-        "Batteries in both areas are now selling while prices are high."
-    msg = ctl.action_message({"LZ_HOUSTON": "charge", "LZ_NORTH": "hold"})
-    assert "Houston area" in msg and "Dallas–Fort Worth area" in msg
+    everyone = {loc: "sell" for loc in load_config().fleet.locations}
+    assert ctl.action_message(everyone) == "Batteries in all four cities are now selling while prices are high."
+    msg = ctl.action_message({"LZ_HOUSTON": "charge", "LZ_NORTH": "hold", "LZ_CPS": "charge", "LZ_AEN": "sell"})
+    assert msg == ("Houston and San Antonio batteries are now charging while power is cheap; Dallas–Fort Worth "
+                   "batteries are now waiting; Austin batteries are now selling while prices are high.")
+    assert ctl.area("LZ_NORTH") == "Dallas–Fort Worth" and ctl.area("LZ_WEST") == "LZ_WEST"
+    assert ctl.mid_sentence("Simple rule") == "simple rule"
+    assert ctl.mid_sentence("AI forecast (TimesFM-3)") == "AI forecast (TimesFM-3)"
     e = ctl.make_event("worker_dead", "warn", "Controller 7 stopped responding.", sim_ts=1747429500)
     assert e["sim_utc"] == "2025-05-16T21:05:00Z" and e["wall_utc"].endswith("Z")
     with pytest.raises(ValueError):
@@ -126,17 +143,17 @@ def test_plain_language_wording():
 
 
 START = 1747429200  # 2025-05-16T21:00:00Z, the demo preset
-LOCS = ["LZ_HOUSTON", "LZ_NORTH"]
+LOCS = list(load_config().fleet.locations)
 
 
-def _synthetic_books(first_issue_s: int, hours: int) -> dict:
+def _synthetic_books(first_issue_s: int, hours: int, locations=LOCS) -> dict:
     """Synthetic forecast books (test doubles, not real forecasts): hourly issues, 24 h of 15-min points."""
     from src.forecast.provider import ForecastBook
 
     issued = (first_issue_s + np.arange(hours, dtype=np.int64) * 3600) * 10**9
     shape = np.tile(np.linspace(20.0, 80.0, 96, dtype=np.float32), (hours, 1))
     return {loc: ForecastBook(loc, "rt_price", "synthetic", 15, issued, issued.copy(), shape - 5, shape, shape + 5)
-            for loc in LOCS}
+            for loc in locations}
 
 
 @pytest.fixture
@@ -197,6 +214,28 @@ def test_forecast_strategy_needs_forecasts_covering_the_replay(cfg, strategy_fac
     strategy_factory["forecast"] = lambda: stale
     _, name, warning = build_strategies("forecast", cfg, LOCS, start_ts=START)
     assert name == "bands" and "cover 0%" in warning
+
+
+def test_forecast_fallback_is_per_city(cfg, strategy_factory):
+    """Cities without forecasts yet (San Antonio and Austin while the cloud job runs) use the simple rule;
+    the others keep the AI forecast, and the run says which is which."""
+    from src.sim import coordinator
+    from src.sim.coordinator import build_strategy_set
+    from src.strategy.bands import BandsStrategy
+    from src.strategy.forecast import ForecastStrategy
+
+    have = ["LZ_HOUSTON", "LZ_NORTH"]
+    partial = ForecastStrategy(_synthetic_books(START - 1800, 30, have), duration_h=2.0)
+    strategy_factory["forecast"] = lambda: partial
+    chosen = build_strategy_set("forecast", cfg, LOCS, start_ts=START)
+    assert chosen.name == "forecast"
+    assert [loc for loc in LOCS if chosen.strategies[loc] is partial] == have
+    missing = [loc for loc in LOCS if loc not in have]
+    assert list(chosen.fallback) == missing
+    assert all(isinstance(chosen.strategies[loc], BandsStrategy) for loc in missing)
+    assert all("forecasts cover 0% of the first day for " + loc in chosen.fallback[loc] for loc in missing)
+    # only a city's instance that holds its forecasts is cached; the others are rebuilt (a later job's output)
+    assert {key[1] for key in coordinator._STRATEGY_CACHE} == set(have)
 
 
 def test_coordinator_drops_control_requests_the_api_gave_up_on():

@@ -84,12 +84,15 @@ def run(ticks, fleet, strategy, *, start=0, lag=0, targets=None, trace=True):
                            soc_min=0.2, soc_max=1.0, targets=targets, trace=trace)
 
 
+LOCS = tuple(CFG.fleet.locations)
+
+
 @lru_cache(maxsize=1)
 def feed_2025() -> InMemoryPriceFeed:
-    return snapshot_feed(years=(2025,), locations=("LZ_HOUSTON", "LZ_NORTH"))
+    return snapshot_feed(years=(2025,), locations=LOCS)
 
 
-def real_series(first_local_day: str, days: int, warmup_days: int = 7, locations=("LZ_HOUSTON", "LZ_NORTH")):
+def real_series(first_local_day: str, days: int, warmup_days: int = 7, locations=LOCS):
     """Real 5-min ticks: `days` local days from first_local_day, after `warmup_days` of warm-up."""
     from src.backtest.engine import local_midnight_utc
     from datetime import date
@@ -192,16 +195,22 @@ def test_location_counts():
 def test_build_fleets_is_the_seeded_fleet_in_contiguous_blocks():
     fleets = build_fleets(10, CFG.fleet.locations, CFG.battery, CFG.seed)
     states = generate_batteries(10, CFG.battery, CFG.seed)
-    assert [f.size for f in fleets.values()] == [5, 5]
+    assert list(fleets) == list(CFG.fleet.locations)
+    assert [f.size for f in fleets.values()] == list(location_counts(10, CFG.fleet.locations).values())
     ids = [b for f in fleets.values() for b in f.battery_ids]
     assert ids == [s.battery_id for s in states]
     caps = np.concatenate([f.capacity_kwh for f in fleets.values()])
     assert list(caps) == [s.capacity_kwh for s in states]
     assert np.all(np.concatenate([f.power_kw for f in fleets.values()]) <= caps)
-    # the full fleet is the same battery population
-    big = build_fleets(20000, CFG.fleet.locations, CFG.battery, CFG.seed)
-    assert big["LZ_HOUSTON"].battery_ids[:5] == fleets["LZ_HOUSTON"].battery_ids
-    assert big["LZ_NORTH"].battery_ids[0] == "b10000"
+    # the full fleet is the same battery population, each location a contiguous block in config order
+    size = CFG.fleet.size
+    big = build_fleets(size, CFG.fleet.locations, CFG.battery, CFG.seed)
+    first = 0
+    for loc, n in location_counts(size, CFG.fleet.locations).items():
+        assert big[loc].battery_ids[0] == f"b{first:05d}" and big[loc].size == n
+        first += n
+    houston = next(iter(CFG.fleet.locations))
+    assert big[houston].battery_ids[:fleets[houston].size] == fleets[houston].battery_ids
 
 
 def test_year_bounds_are_operating_days():

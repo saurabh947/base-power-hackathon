@@ -91,8 +91,9 @@ def build_fleets(
 ) -> dict[str, Fleet]:
     """The seeded fleet (src.sim.fleet.generate_batteries), split into contiguous blocks.
 
-    Locations take consecutive blocks of the battery list in config order: with 20,000
-    batteries at 50/50, LZ_HOUSTON gets b00000-b09999 and LZ_NORTH gets b10000-b19999.
+    Locations take consecutive blocks of the battery list in config order
+    (src.sim.fleet.assign_locations): at 20,000 batteries LZ_HOUSTON gets b00000-b06999,
+    LZ_NORTH b07000-b14999, LZ_CPS b15000-b17599 and LZ_AEN b17600-b19999.
     Battery i has the same specs at any fleet size, so a smaller test fleet is a prefix.
     """
     states = generate_batteries(size, battery, seed, soc_init=soc_init)

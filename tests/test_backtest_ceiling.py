@@ -175,7 +175,7 @@ def test_ceiling_record_end_to_end_and_cached(tmp_path):
     b = m["uncapped"]["bracket_fleet_usd"]
     assert b["low"] <= m["uncapped"]["fleet_usd_year"] + 1e-9 <= b["high"] + 2e-9
     assert sum(rec["per_location"].values()) == pytest.approx(rec["fleet_total_usd"])
-    assert m["days"] == {"LZ_HOUSTON": 14, "LZ_NORTH": 14} and m["scope"].startswith("all batteries")
+    assert m["days"] == {loc: 14 for loc in CFG.fleet.locations} and m["scope"].startswith("all batteries")
     cached = list((tmp_path / "cache").glob("ceiling_curves_*.json"))
     assert len(cached) == 1
     again = ceiling.ceiling_record(ctx, out_dir=tmp_path, log=lambda s: None)

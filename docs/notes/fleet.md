@@ -10,14 +10,16 @@ make fleet-up            # Postgres :5442 + Redis :6442 (project-local)
 make fleet-test          # fleet, recovery, idempotency, API, adapter suites against that Redis (~1 min)
 make fleet-test-all      # the whole suite with Redis reachable (nothing redis-marked skipped)
 make fleet-m2            # M2: 1 sim day, 20,000 batteries, 20 worker processes, max speed
-make fleet-m3            # M3: SIGKILL worker 7 during max discharge at max speed
+make fleet-m3            # M3: SIGKILL worker 17 (600 San Antonio + 400 Austin) during max discharge, max speed
 make fleet-m3-2tps       # M3 at the demo speed, 2 ticks/s
-make fleet-parity        # one sim day through the fleet vs src.backtest: bit-identical (SoC, kWh, ledger)
+make fleet-parity        # one sim day through the fleet vs src.backtest: bit-identical (SoC, kWh, ledger), 4 cities
 make fleet-serve         # whole backend on :8442 (coordinator + 20 workers + API)
 make fleet-down
 ```
 
 - Plain `make test` runs everything; tests marked `redis` skip cleanly when `REDIS_URL` (default `redis://127.0.0.1:6379/0`) is unreachable.
+- Other ports: `make fleet-up fleet-test FLEET_PGPORT=5445 FLEET_REDIS_PORT=6445` (the Texas Triangle work used these).
+- `make fleet-m3 FLEET_KILL_WORKER=7` kills another controller.
 - Tests use unique key prefixes and delete only their own keys, so they are safe on a shared Redis.
 - Container: `python -m src.launcher` with `START_REDIS=1` (the Dockerfile already sets it).
 
@@ -48,7 +50,8 @@ Every key sits under an optional prefix (`FLEET_REDIS_PREFIX`, `""` in productio
 | `lease:{w}` | The worker's epoch. On DEAD the coordinator overwrites it; this is the fence. |
 | `dead_letter`, `dead_letter:count` | One entry per failed command (JSON with reason), plus a per-run counter. |
 | `control`, `reply:{op}` | API → coordinator requests and their replies. |
-| `snapshot`, `events`, `ticks`, `workers`, `layout`, `kw`, `epoch`, `coordinator` | Read by the API. `workers` is the pid registry used by `/chaos/kill`. `kw` is float32 current power per battery. |
+| `snapshot`, `events`, `ticks`, `workers`, `layout`, `kw`, `epoch`, `coordinator` | Read by the API. `workers` is the pid registry used by `/chaos/kill`. `kw` is float32 current power per battery. The snapshot also carries `restarting`, `ready` and `workers_starting` (readiness for a Start). |
+| `battery_status` | Packed 4-bit status per battery at the latest tick (docs/API.md), overwritten every tick. |
 
 ## Design decisions
 
@@ -97,8 +100,8 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 
 ### Fleet split and battery ids
 
-- Battery g is `b{g:05d}` from `src.sim.fleet.generate_batteries`. `src.sim.fleet.assign_locations` gives each location a contiguous block in config order, the same split the backtest uses: at 20,000 / 50-50, LZ_HOUSTON is b00000–b09999 and LZ_NORTH is b10000–b19999.
-- Worker w starts with chunk w of every location (500 + 500 at 20k/20).
+- Battery g is `b{g:05d}` from `src.sim.fleet.generate_batteries`. `src.sim.fleet.assign_locations` gives each location a contiguous block in config order, the same split the backtest uses: at 20,000, LZ_HOUSTON is b00000–b06999, LZ_NORTH b07000–b14999, LZ_CPS b15000–b17599 and LZ_AEN b17600–b19999.
+- Worker w starts with chunk w of the fleet in id order (b{1000w}–b{1000w+999} at 20k/20), so it serves one city, or two at a boundary: worker 17 holds 600 San Antonio + 400 Austin batteries.
 - People see "Controller N" with N = worker_id + 1.
 
 ### Ledger and metering (parity with the backtest)
@@ -189,7 +192,133 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 
 **Client IP** is `request.client.host`. The launcher runs uvicorn with `--proxy-headers --forwarded-allow-ips '*'` (for Cloud Run).
 
-## Measured (M3 Pro, 12 cores; Redis 8.0.3 via scripts/dev/services.sh)
+## Texas Triangle (2026-09-26): four cities, the live map
+
+The fleet is `LZ_HOUSTON 0.35, LZ_NORTH 0.40, LZ_CPS 0.13, LZ_AEN 0.12` (config.yaml): 7,000 / 8,000 / 2,600 /
+2,400 batteries in contiguous id blocks in config order (b00000–b06999, b07000–b14999, b15000–b17599,
+b17600–b19999). Everything below is built against docs/API.md as written.
+
+### What changed, in one place each
+
+| Piece | Where | Notes |
+|---|---|---|
+| City names | `src/sim/geo.py` `CITIES` | THE mapping from a load zone to what people see: `Houston`/HOU, `Dallas–Fort Worth`/DFW, `San Antonio`/SA, `Austin`/AUS, plus a centre lon/lat. `control.area()`, the event messages, `GET /fleet/layout`, `GET /batteries/{id}` and the Results text (`src/backtest/results.py`) all read it. |
+| Controllers' cohorts | `FleetLayout.default_owners` | **Contiguous blocks of the fleet in id order** (was: a chunk of every location per worker). So a controller serves one city, or two at a boundary: 0–6 Houston, 7–14 Dallas–Fort Worth, 15–16 San Antonio, **17 = 600 San Antonio + 400 Austin**, 18–19 Austin. docs/API.md's Worker example (worker 7 → `{"LZ_NORTH": 1000}`) and the map's "controllers serving the selected city" need this. Parity is unaffected (allocation is per location, whoever owns the batteries). |
+| Prices for every city | `coordinator.price_feed(years, locations)`, `feeds.parquet` | **Bug fixed:** the snapshot feed defaulted to Houston + North, so the live fleet had no prices for San Antonio and Austin (they held all day). The feed now defaults to the fleet's locations and the coordinator passes its own. |
+| Positions | `src/sim/geo.py`, `src/api/layout.py` | see "Positions" below |
+| `battery_status` | `src/sim/battery_status.py`, coordinator `step()`, `Backend.battery_status` | see below |
+| `totals.by_location` | `RunState.by_location`, `_add_totals` | revenue_usd, sold_kwh, bought_kwh per city over the whole run, including late telemetry booked at its own tick's price. The cities add up to the fleet totals (to float rounding). |
+| `workers[].by_location` | `WorkerHandle.public(layout)` | batteries it owns **now**, per city, only cities it has (as in the API example); `{}` for a dead worker. Changes on hand-overs. |
+| Start after Reset | coordinator `restarting`, API `_wait_until_ready` | see below; new error code `simulator_restarting` |
+| Forecast fallback | `build_strategy_set` | **per city**, see below |
+
+### Positions (`GET /fleet/layout`)
+
+- Each metro is a hand-listed set of real city and suburb centres (approximate lon/lat, 12–28 per metro, e.g.
+  Katy, Cypress, The Woodlands for Houston; Plano, Arlington, Denton for DFW; Stone Oak, New Braunfels for San
+  Antonio; Round Rock, San Marcos for Austin), each weighted by rough population (thousands) and with its own
+  Gaussian jitter (2.5–6 km per axis: bigger for the core cities).
+- Battery i picks a centre with probability ∝ weight, then jitters. A point outside the metro radius (Houston
+  70 km, the others 65/55/55 km around the centre) is redrawn up to 3 times, then pulled back towards its centre,
+  so every battery lies inside its metro. The metros don't overlap.
+- Draws come from a counter-based hash (SplitMix64 over sha256(seed, location), the battery index and a stream
+  number), not a sequential RNG, so battery i's position depends only on (seed, i, its location): the same in every
+  process, run and fleet size. 20,000 positions take ~3 ms.
+- Encoding exactly per docs/API.md: little-endian Int16 `[lon, lat]` pairs in id order, `lon = -100 + v/1000`,
+  `lat = 31 + v/1000` (≤ 0.0005° ≈ 50 m rounding), base64. `cities[]` are in config order with `batteries`,
+  `first_battery`, `name`, `short` and `center_lonlat` (the hand-picked metro centre, e.g. DFW `[-96.97, 32.82]`,
+  for labels; not the centroid of the dots).
+- `version` = sha256 over (size, shares in order, seed, `GEO_VERSION`)[:16]. `GEO_VERSION` is there so a change to
+  the site list also changes the version. Built once per version (`lru_cache`), the JSON body is cached too, and
+  the response carries `ETag: "<version>"` (If-None-Match → 304) and `Cache-Control: public, max-age=300`.
+- Before the simulator is up (Redis unreachable or no layout yet) it answers from config.yaml, so the map can draw
+  during a cold start. Once up, size and seed come from the running fleet (tests run 300 batteries).
+- `GET /batteries/{id}` adds `city` (the name) and `lonlat`, the same Int16-grid point the map draws.
+- Size: 107 KB of JSON at 20,000 (106,668 base64 characters).
+
+### `battery_status`
+
+- Codes per battery at the latest tick, computed vectorized in `step()` from that tick's setpoints, the
+  availability overrides and ownership: `0` offline override wins; else `4` if its controller was not healthy when
+  the tick went out (suspect, dead, or no owner) **or** was sent the tick and didn't report it; else `2` setpoint
+  > 1e-6 kW, `3` < −1e-6 kW, `1` otherwise.
+- So after a SIGKILL, code 4 covers exactly the kill → hand-over window: the tick the worker missed (its batteries
+  really didn't move) and the next one (it is suspect, so they got 0); at the end of that tick it is declared dead
+  and re-homed, and the tick after shows them selling again. At 2 ticks/s that is ~1 s, so one frame shows it.
+- Packed as docs/API.md says (byte i // 2, low nibble for even i): 10,000 bytes at 20,000. The coordinator writes
+  one key (`battery_status`) in the tick's existing Redis pipeline (no extra round trip), overwritten every tick;
+  the API base64s the latest into the snapshot and every frame (13,336 characters).
+- Outside ticks: boot, reset and run start write the idle form (1 or 0); an availability change with no run
+  writes the idle form at once; while paused or finished it is overlaid on the last tick's codes at once (the next
+  tick recomputes everything).
+- Overhead: 0.05 ms p50, 0.1–0.6 ms max per tick at 20,000 (compute + pack; the SET rides the tick's pipeline).
+- A 2 ticks/s frame at 20,000 is ~19.2 KB (13.3 KB of it `battery_status`); the snapshot with 6 ticks of history is
+  ~24 KB; an idle `/state` ~17 KB.
+
+### Start right after Reset
+
+- Why it failed: a Reset's reply goes out first, then the coordinator respawns the 20 workers and rewrites 20,000
+  hashes **blocking its loop** (seconds on 4 vCPUs). A Start sent meanwhile sat in the control stream and the API
+  gave up after `control_timeout_s` (4 s): the four 503s after ~4.1 s in the Cloud Run logs.
+- Now: the coordinator publishes `restarting: true` in its snapshot before the reply to a Reset (and at boot), and
+  clears it once no worker is `starting` (every one has sent its first heartbeat, or was given up on after
+  `spawn_timeout_s`). `POST /run/start` (after validation and the rate limit) polls the snapshot every 0.2 s for
+  up to 15 s (`FLEET_START_READY_TIMEOUT_S`, or `api.start_ready_timeout_s`), then sends the Start, which the
+  now idle coordinator answers at once.
+- Still not ready after 15 s: `503 {"error": "simulator_restarting", "retry_after_s": 5, "message": "The simulator
+  is still restarting its controllers. Please try again in 5 seconds."}` plus a `Retry-After: 5` header.
+  No coordinator snapshot at all (cold start where the coordinator never came up): `503 simulator_unavailable`.
+- Locally a Reset-then-Start is accepted ~0.6 s after the Reset (3 workers); the test slows the respawn to 1 s with
+  a 0.5 s control timeout and fails without the wait (mutation-checked).
+
+### Forecasts: the fallback is per city
+
+- `forecast.locations` lists the 4 cities; San Antonio and Austin forecasts are still being computed in the cloud.
+- **Live fleet: per city.** Each city gets its own forecast strategy instance, loading only that city's
+  forecasts (1 read per city instead of 4, cached per city while it holds forecasts). A city whose forecasts cover
+  under 90% of the first replayed day (or whose strategy can't be built) runs the simple rule; the others keep
+  the AI forecast. `run_started` is then `warn`: *"Replaying real prices from May 16, 2025, 4:00 pm (Central time)
+  at 1 hour of market time every 6 seconds, using the AI forecast (TimesFM-3) in Houston and Dallas–Fort Worth and
+  the simple rule in San Antonio and Austin, whose AI forecasts aren't ready yet."* with
+  `detail.strategy_by_location` and `detail.fallback_locations`. All four missing: the old fleet-wide message. Why
+  per city: a demo started before the cloud job finishes still shows the AI where it can, and each city's
+  decisions are independent anyway (one Strategy per location).
+- **Backtest: all-or-nothing, every city checked.** `run_strategy` checks every city against
+  `backtest.forecast_min_coverage` (99%) and raises `ForecastsMissing` naming all short cities
+  (`forecasts cover 0.0% at LZ_CPS, 0.0% at LZ_AEN of 2025 (need 99% in every city)`); the Results say *"its AI
+  price forecasts for San Antonio and Austin aren't ready for 2025 yet."* A headline number must be one method
+  for the whole fleet. The backtest also builds one forecast instance per city now (4 reads instead of 16).
+- The warm-up thread logs which cities are not ready yet.
+
+### Wording
+
+- City names everywhere from `geo`: *"Batteries in all four cities are now selling while prices are high."*;
+  grouped when mixed (*"Houston and San Antonio batteries are now charging while power is cheap; Dallas–Fort Worth
+  batteries are now waiting; ..."*); *"Prices jumped in Dallas–Fort Worth, San Antonio and Austin, up to $1,295/MWh
+  ($1.29 per kWh) in San Antonio."* (cities that cross in the same tick share one event; before, each city got
+  its own); *"Controller 18's 1,000 batteries in San Antonio and Austin were handed to the other 19 controllers in
+  5 ms."*; *"30% of the Houston batteries (2,100) are now offline; ..."*; one `forecast_issued` per issue time
+  (*"New AI price forecasts for all four cities are ready."*).
+- Times say "(Central time)": all four cities keep America/Chicago time, so "Houston time" singled one out.
+- Preset descriptions (config.yaml, descriptions only) talk about the four cities, checked against real prices:
+  May 16 all four above $2,000 at 7:45 pm (San Antonio $3,150); Apr 7 all four above $3,500 at 6:45 am; Jul 11 all
+  four ≈ $1,755 at 9 pm; Jun 28 is at the 44th–51st percentile of 2025 daily spread in every city.
+
+### Measured at four cities (M3 Pro, 2026-09-26; Redis 8 on :6445, Postgres 16 on :5445 with 2024–2025 ingested)
+
+| What | Number |
+|---|---|
+| M2: 288 ticks × 20,000 × 20 workers, max speed, bands, spike evening | **38.3 ticks/s** (7.5 s), max error **0.0%**, barrier p50 22.3 ms, max 35.3 ms |
+| M3 at max speed, SIGKILL **worker 17** (600 SA + 400 AUS) during max discharge | tick +1: **4.964%**, then **0.000%** from +2; declared dead at +2; hand-over 5 ms; 2,000 `expired_owner_dead` |
+| M3 at 2 ticks/s, worker 17 | tick +1: **4.964%**, then **0.000%**; hand-over 8 ms; 2,000 dead letters; 1.94 ticks/s |
+| `battery_status` code 4 after the kill | ticks +1 and +2: exactly its 1,000 batteries; +3: none (each survivor now holds ~31–32 SA + 21–22 AUS) |
+| Parity with src.backtest, 4 cities, 20 workers | bit-identical per-battery SoC, kWh and feasible target per tick, and Ledger summary, on 4 days (2,000 batteries: M0 day, demo evening, Jan 1; **20,000**: 2025-02-19) |
+| 2025-02-19, the worker-17 day | Austin tops $951/MWh, San Antonio $389: the simple rule decides opposite directions for worker 17's two cities on 21 ticks and they act differently on 111 of 288 |
+| `battery_status` per tick | 0.05 ms p50, ≤ 0.6 ms max |
+| Frame at 2 ticks/s, 20,000 | ~19.2 KB |
+| Full-year backtest, 2025, 20,000 × 4 cities (`make backtest-speed`) | bands 21.1 s (lag 3 + lag 0), peak 33.8 s; bands $123.67 and peak $136.70 per battery (two cities gave $119.78 and $126.58) |
+
+## Measured before the Texas Triangle (2 cities; M3 Pro, 12 cores; Redis 8.0.3 via scripts/dev/services.sh)
 
 | What | Number |
 |---|---|
@@ -210,13 +339,15 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 | File | Proves |
 |---|---|
 | `test_fleet_m2.py` | M2 at 20k/20: every tick within 5% (in fact 0.0%). Hashes, telemetry and a journal replay agree exactly. The ledger saw every tick. |
-| `test_recovery.py` | M3 at max speed and at 2 ticks/s: DEAD on the 2nd miss, reassigned for the very next tick, within 5% from kill+2, `expired_owner_dead` entries, nothing lost or double-applied. Also covers: a frozen worker fenced out as `epoch_mismatch` when it wakes; one miss is only SUSPECT (its late energy is booked); heartbeat expiry while paused; reset. |
+| `test_recovery.py` | M3 at max speed (worker 17, two cities) and at 2 ticks/s (worker 13): DEAD on the 2nd miss, reassigned for the very next tick, within 5% from kill+2, `expired_owner_dead` entries, nothing lost or double-applied; `battery_status` 4 for exactly its batteries from the kill to the hand-over and not after; `by_location` moves to the adopters. Also covers: a frozen worker fenced out as `epoch_mismatch` when it wakes; one miss is only SUSPECT (its late energy is booked); heartbeat expiry while paused; reset. |
 | `test_idempotency.py` | Real worker processes, with SoC compared exactly against one application of `battery.step` per tick: duplicate/stale redelivery, redelivery across adoption (same command ids), zombie writes, and retries including "the write landed but the reply was lost". |
 | `test_fleet_parity.py` | `run_fleet_targets()` gives exactly the SoC of the in-process `allocate` + `step` loop. |
 | `test_fleet_strategy_parity.py` | On the M0 day the fleet decides exactly like `src/sim/skeleton.py` (bands and peak, lag 3), with the same RT and decision prices. |
-| `test_fleet_backtest_parity.py` | `run_fleet_replay()` vs `src.backtest` (seam path and bands fast path): bit-identical target, feasible target, kWh per tick, final SoC per battery, and Ledger summary. Three days: the M0 day, the demo evening and 1 Jan 2025 (warm-up in 2024). |
+| `test_fleet_backtest_parity.py` | `run_fleet_replay()` vs `src.backtest` (seam path and bands fast path) at 4 cities and 20 workers: bit-identical target, feasible target, kWh per tick, final SoC per battery (worker 17's cohort checked on its own), and Ledger summary. Four days: the M0 day, the demo evening, 1 Jan 2025 (warm-up in 2024) and, at the full 20,000, 2025-02-19 when worker 17's two cities act differently on 111 of 288 ticks. |
+| `test_fleet_cities.py` | Four-city event wording through the real fleet (price spikes grouped per tick, all four cities, Central time), controllers' `by_location`, per-city totals, the per-city AI-forecast fallback and its `run_started` message, `battery_status` overlaid while paused. |
+| `test_geo.py`, `test_battery_status.py` | Positions: deterministic across runs, processes and fleet sizes, inside a Texas bbox and their metro radius, per-city counts, population weighting, the Int16 encoding, the version hash. Status codes: nibble order, 10,000 bytes at 20k, precedence, speed. |
 | `test_fleet_price_source.py` | `PRICE_SOURCE=postgres` replays exactly like the snapshot (needs Postgres with real RT rows). |
-| `test_api_unit.py`, `test_api_live.py` | Every message shape in docs/API.md, availability scopes, presenter auth, rate limits, CORS, chaos-kill guards, run controls, forecasts riding along, 501 bridges. |
+| `test_api_unit.py`, `test_api_live.py` | Every message shape in docs/API.md (now with `battery_status`, `totals.by_location`, `workers[].by_location`, battery `city`/`lonlat`), `GET /fleet/layout` (contract keys, decoding, ETag/304, from config before the simulator is up), availability scopes, presenter auth, rate limits, CORS, chaos-kill guards, run controls, Start right after Reset, `simulator_restarting`, forecasts riding along, 501 bridges. |
 | `test_fleet_launcher.py` | SIGTERM → exit 0 with nothing left running; dead coordinator → exit 1; SIGKILLed launcher → no orphans. |
 | `test_contracts_battery.py[redis]` | The Redis BatteryAdapter passes the frozen seam's 25 contract tests. |
 
@@ -226,3 +357,21 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 - **The M0 finding reproduces live:** on the spike evening, bands sells before the 7:45 pm spike (empty by 5:30 pm). That is the strategy area's concern.
 - **Postgres prices are the opt-in source.** Set `PRICE_SOURCE=postgres` on Cloud Run to read Cloud SQL; the image already ships the snapshot, which is the default.
 - **The forecast strategy uses the configured fleet's duration** (`make_forecast_strategy`'s default, 20,000 batteries), even for smaller test fleets. That's what the integrator asked for (no extra context).
+- **The code-4 flash lasts 2 ticks** (the missed tick and the suspect one): ~1 s at 2 ticks/s, so one 1 s frame shows it, but only 0.4 s at 5 and 0.2 s at 10 ticks/s, where a frame can miss it. See the requests below.
+- **The snapshot's 2,000-tick history grows with the cities:** a Tick with four cities is ~0.9 KB, so a full history is ~1.8 MB on connect (it was ~1.2 MB with two). No compression in the app.
+- **Hand-over time** measured 5–8 ms in these runs (3–7 ms for worker 7 in repeated runs), vs 2–4 ms in the earlier notes; the timed code didn't change, so this looks like run-to-run noise (it includes draining pending telemetry).
+- **`src/forecast/evaluate.py`** (the forecast area's research evaluation) still compares strategies on two cities with its own half/half split. It isn't on any live or backtest path.
+- **A stale test was fixed on the way:** `test_ingest_parse.py`'s native-load check (it only runs when `data/raw` holds the ERCOT files, as after `--cache-dir data/raw`) still expected the snapshot's old swapped fall-back hour, which data/snapshot/README.md says was corrected.
+
+## Requests for integrator
+
+1. **New error code for docs/API.md:** `POST /run/start` → `503 {"error": "simulator_restarting", "retry_after_s": 5, "message": "The simulator is still restarting its controllers. Please try again in 5 seconds."}` with a `Retry-After` header, after waiting up to ~15 s for a Reset's (or a cold start's) controllers. The doc says only a 429 carries `retry_after_s`/`Retry-After`; this 503 does too. A Start with no coordinator at all still ends in `503 simulator_unavailable` (now after the same wait).
+2. **Controllers now serve one city each** (contiguous id blocks; worker 17 = 600 San Antonio + 400 Austin), as docs/API.md's Worker example and the map's "controllers serving the selected city" need. RUNLOG's M2/M3 text ("500 + 500" per controller, "SIGKILL worker 7" = half Houston, half DFW) is out of date: killing worker 7 now takes out 1,000 Dallas–Fort Worth batteries. Decision 2 in RUNLOG ("LZ_HOUSTON and LZ_NORTH, 50/50") is superseded by config.yaml.
+3. **Code 4 visibility above 2 ticks/s** (see Open issues). Options: (a) the map also flashes a controller's cities on `worker_suspect`/`worker_dead` (the events carry `detail.worker_id`; `worker_adopted` and `worker_suspect` now also carry `detail.by_location`), or (b) change the contract so the API reports 4 when any tick since that connection's previous frame had it. I kept "the latest tick", as specified.
+4. **`idle` messages have no `battery_status`** (as the contract says), so "take offline" while idle reaches a viewer only through a new snapshot or `GET /state`, although the coordinator updates the codes at once. Either allow `battery_status` in `idle`, or the web refetches `/state` after its own `POST /availability`.
+5. **docs/UX.md still speaks of two areas** ("Houston area", "Dallas–Fort Worth area", "Houston & Dallas–Fort Worth" on the Start card, "Houston time" on the clock). Events now use the layout's city names and say "(Central time)", which all four cities share.
+6. **`workers[].by_location` lists only cities the controller has** (the API example shows `{"LZ_NORTH": 1000}`); a dead controller has `{}`. `totals.by_location` always has all four cities. Say if the web wants all four keys in both.
+7. **`cities[].center_lonlat` is a hand-picked metro centre** (DFW is the doc's `[-96.97, 32.82]`), meant for labels, not the centroid of the dots. The layout `version` also hashes `GEO_VERSION`, so a change to the site list invalidates cached layouts.
+8. **Forecasts:** the live fallback is per city (documented above); the full-year pitch needs all four cities' forecasts at ≥ 99% or it skips "forecast" and names the cities. Per the coordinator, the San Antonio and Austin forecasts are now in Cloud SQL, so in the cloud all four cities run the AI forecast; the per-city fallback still shows locally (no forecasts here) and for any replay date a city's forecasts don't cover.
+9. **Pitch numbers at four cities.** The cloud's 4-city 2025 backtest (per the coordinator): AI forecast $190.95, evening peak $136.70, simple rule $123.67 per battery, ceiling $421.29. The local full-year run here gives the same bands and peak figures to the cent from the snapshot prices, which cross-checks the four-city split. RUNLOG's M4/M6 tables still show the two-city numbers.
+

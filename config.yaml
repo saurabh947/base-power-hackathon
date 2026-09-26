@@ -65,22 +65,22 @@ presets:
       label: "Price-spike evening"
       date_local: "2025-05-16"
       start_utc: "2025-05-16T21:00:00Z"   # 4:00 pm CDT; Houston peaks $2,250/MWh at 7:45 pm
-      description: "Prices jump above $2,000/MWh around 7:45 pm."
+      description: "All four cities jump above $2,000/MWh around 7:45 pm; San Antonio tops $3,000."
     - id: morning_spike
       label: "Biggest spike of 2025"
       date_local: "2025-04-07"
       start_utc: "2025-04-07T08:00:00Z"   # 3:00 am CDT; Houston peaks $3,860/MWh around 6:45 am
-      description: "The year's highest price, just before 7 am."
+      description: "The year's highest prices: all four cities pass $3,500/MWh just before 7 am."
     - id: summer_spike
       label: "Summer night spike"
       date_local: "2025-07-11"
       start_utc: "2025-07-11T23:00:00Z"   # 6:00 pm CDT; both areas ~$1,755/MWh in the 9:00 pm interval
-      description: "Both areas jump to about $1,750/MWh at 9 pm."
+      description: "All four cities jump to about $1,750/MWh at 9 pm."
     - id: ordinary_day
       label: "An ordinary day"
       date_local: "2025-06-28"            # daily spread $64/$68 (Houston/North) ~ the 2025 medians $63/$68
       start_utc: "2025-06-28T05:00:00Z"
-      description: "A typical day with small ups and downs."
+      description: "A typical day in all four cities, with small ups and downs."
 
 # Area sections, one owner each; read via src.config.load_raw_config().
 data:       # owner: ingest (M1). python -m src.ingest.ercot; notes in docs/notes/data.md

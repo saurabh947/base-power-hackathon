@@ -239,3 +239,76 @@ def test_the_real_backtest_service_is_bridged(client):
     r = client.post("/backtest", json={"strategies": ["bands"], "year": 1999})
     assert r.status_code == 400
     assert main._backtest_listener in service._listeners  # backtest_done comes from the service's hook
+
+
+# --- the live map: GET /fleet/layout, and /run/start while the simulator restarts ------------------------
+
+
+def test_fleet_layout_contract_before_the_simulator_is_up(client):
+    """docs/API.md Layout, from config.yaml while Redis is unreachable (cold start): the map can draw at once."""
+    import base64
+    import json
+    import re
+
+    import numpy as np
+
+    from src.config import REPO_ROOT, load_config
+    from src.sim import geo
+    from src.sim.fleet import location_counts
+
+    cfg = load_config()
+    r = client.get("/fleet/layout")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/json")
+    layout = r.json()
+    example = json.loads(re.search(r"\*\*Layout\*\* \(`GET /fleet/layout`\)\s*```json\s*(\{.*?\})\s*```",
+                                   (REPO_ROOT / "docs" / "API.md").read_text(), re.S).group(1))
+    assert set(layout) == set(example) and all(set(c) == set(example["cities"][0]) for c in layout["cities"])
+    assert layout["fleet_size"] == cfg.fleet.size
+    counts = location_counts(cfg.fleet.size, cfg.fleet.locations)
+    firsts = np.concatenate([[0], np.cumsum(list(counts.values()))[:-1]]).tolist()
+    assert [(c["location"], c["batteries"], c["first_battery"]) for c in layout["cities"]] == \
+        list(zip(counts, counts.values(), firsts))
+    assert [(c["name"], c["short"]) for c in layout["cities"]] == [
+        ("Houston", "HOU"), ("Dallas–Fort Worth", "DFW"), ("San Antonio", "SA"), ("Austin", "AUS")]
+    raw = base64.b64decode(layout["positions"])
+    assert len(raw) == 4 * cfg.fleet.size  # little-endian Int16 [lon, lat] per battery
+    v = np.frombuffer(raw, dtype="<i2").reshape(-1, 2)
+    lon, lat = -100 + v[:, 0] / 1000, 31 + v[:, 1] / 1000  # the contract's decoding
+    assert np.array_equal(v, geo.quantize(geo.fleet_positions(list(counts.items()), cfg.seed)))
+    for c in layout["cities"]:
+        sl = slice(c["first_battery"], c["first_battery"] + c["batteries"])
+        d = geo.distance_km(geo.city(c["location"]), lon[sl], lat[sl])
+        assert d.max() <= geo.city(c["location"]).radius_km + 0.2
+    assert layout["version"] == geo.layout_version(cfg.fleet.size, cfg.fleet.locations, cfg.seed)
+    assert r.headers["etag"] == f'"{layout["version"]}"' and "max-age" in r.headers["cache-control"]
+    assert client.get("/fleet/layout", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
+    assert client.get("/fleet/layout").content == r.content  # cached, byte for byte
+
+
+def test_start_waits_for_a_restarting_simulator_then_says_so(client, monkeypatch):
+    """While a reset respawns the workers (snapshot 'restarting'), /run/start waits (up to ~15 s in production),
+    then answers 503 simulator_restarting with retry_after_s and a Retry-After header."""
+    import time
+
+    monkeypatch.setenv("FLEET_START_READY_TIMEOUT_S", "0.4")
+    backend = main.backend()
+    monkeypatch.setattr(backend, "coordinator_snapshot", lambda: {"status": "idle", "run_id": None,
+                                                                   "restarting": True, "workers_starting": 20})
+    t0 = time.monotonic()
+    r = client.post("/run/start", json={"speed_tps": 2})
+    assert time.monotonic() - t0 >= 0.4
+    body = r.json()
+    assert r.status_code == 503 and body["error"] == "simulator_restarting" and body["message"].endswith(".")
+    assert body["retry_after_s"] >= 1 and r.headers["Retry-After"] == str(body["retry_after_s"])
+    # once the controllers are up, the Start goes through to the coordinator (none answers here: 503 unavailable)
+    main.state.limits.run_start.reset()
+    flips = iter([None, {"restarting": True}, {"restarting": False, "workers_starting": 0}])
+    monkeypatch.setattr(backend, "coordinator_snapshot",
+                        lambda: next(flips, {"restarting": False, "workers_starting": 0}))
+    r = client.post("/run/start", json={"speed_tps": 2})
+    assert r.status_code == 503 and r.json()["error"] == "simulator_unavailable"
+    # no coordinator at all (it never published a snapshot): after the wait, simulator_unavailable
+    main.state.limits.run_start.reset()
+    monkeypatch.setattr(backend, "coordinator_snapshot", lambda: None)
+    r = client.post("/run/start", json={"speed_tps": 2})
+    assert r.status_code == 503 and r.json()["error"] == "simulator_unavailable" and "retry_after_s" not in r.json()

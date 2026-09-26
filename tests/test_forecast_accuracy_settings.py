@@ -56,7 +56,10 @@ def test_settings_from_config():
     assert (s.rt_price.step_minutes, s.rt_price.horizon_steps, s.rt_price.every_minutes) == (15, 96, 60)
     assert s.rt_price.horizon_minutes == 24 * 60
     assert (s.demand.step_minutes, s.demand.horizon_steps) == (60, 48)
-    assert s.demand_location == "ERCOT" and s.locations == ("LZ_HOUSTON", "LZ_NORTH")
+    from src.config import load_config, load_raw_config
+
+    assert s.demand_location == "ERCOT" and s.locations == tuple(load_raw_config()["forecast"]["locations"])
+    assert set(s.locations) == set(load_config().fleet.locations)  # a forecast for every city of the fleet
     assert s.weights_dir.name == "models"
 
 

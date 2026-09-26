@@ -63,7 +63,10 @@ def test_prices_identical_for_every_snapshot_location(market, year):
     a, b = year_window(year)
     snap_fn, pg_fn = (series.rt_prices, series_pg.rt_prices) if market == "rt" else (series.da_prices, series_pg.da_prices)
     locations = snapshot_locations(market, year)
-    assert len(locations) == 7
+    from src.config import load_config
+
+    hubs = {"HB_BUSAVG", "HB_HOUSTON", "HB_NORTH", "HB_SOUTH", "HB_WEST"}
+    assert set(locations) == hubs | set(load_config().fleet.locations)  # the reference hubs and every fleet city
     for loc in locations:
         pd.testing.assert_series_equal(pg_fn(loc, a, b), snap_fn(loc, a, b), check_exact=True)
 

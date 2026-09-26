@@ -27,6 +27,7 @@ One tick (5 sim-minutes):
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -45,7 +46,9 @@ import numpy as np
 from src.config import REPO_ROOT, Config, load_config, load_raw_config
 from src.core.models import PriceTick
 from src.ledger.backtest import BacktestLedger
+from src.sim import battery_status as bstatus
 from src.sim import control as ctl
+from src.sim import geo
 from src.sim.allocation import allocate, fleet_headroom_kw
 from src.sim.battery import fleet_soc, grid_kwh_from_soc_change, headroom_kw
 from src.sim.decision import decision_tick
@@ -116,15 +119,21 @@ _FEEDS: dict = {}
 _FEEDS_LOCK = threading.Lock()
 
 
-def price_feed(years: tuple[int, ...]):
-    """The PriceFeed for a run. env PRICE_SOURCE=snapshot (default, data/snapshot) | postgres."""
+def price_feed(years: tuple[int, ...], locations: Sequence[str] | None = None):
+    """The PriceFeed for a run. env PRICE_SOURCE=snapshot (default, data/snapshot) | postgres.
+
+    locations: the fleet's (default: config.yaml fleet.locations). The snapshot feed holds only these.
+    """
     source = os.environ.get("PRICE_SOURCE", "snapshot")
-    key = (source,) if source == "postgres" else (source, years)
+    if locations is None:
+        locations = tuple(load_config().fleet.locations)
+    locations = tuple(locations)
+    key = (source,) if source == "postgres" else (source, years, locations)
     with _FEEDS_LOCK:
-        return _price_feed_locked(source, key, years)
+        return _price_feed_locked(source, key, years, locations)
 
 
-def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...]):
+def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...], locations: tuple[str, ...]):
     if key not in _FEEDS:
         if source == "postgres":
             from src.feeds.replay import PostgresReplayFeed  # M1: the prices table (Cloud SQL in the container)
@@ -133,7 +142,7 @@ def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...]):
         elif source == "snapshot":
             from src.feeds.parquet import snapshot_feed
 
-            _FEEDS[key] = snapshot_feed(years=years)
+            _FEEDS[key] = snapshot_feed(years=years, locations=locations)
         else:
             raise ValueError(f"PRICE_SOURCE must be snapshot or postgres, got {source!r}")
     return _FEEDS[key]
@@ -232,36 +241,70 @@ class PriceWindow:
 
 _STRATEGY_CACHE: dict = {}
 STRATEGY_CACHE_S = 600.0  # forecast strategies load a year of forecasts; they are pure, so reuse them
+FORECAST_MIN_FIRST_DAY_COVERAGE = 0.9
+
+
+@dataclass
+class StrategySet:
+    """The strategies of one run: one instance per location, and the cities that fell back."""
+
+    strategies: dict
+    name: str  # effective: the requested name if at least one city runs it, else "bands"
+    fallback: dict = field(default_factory=dict)  # {location: reason} for cities on the simple rule instead
+
+    @property
+    def warning(self) -> str | None:
+        return "; ".join(self.fallback.values()) or None
+
+
+def build_strategy_set(name: str, cfg: Config, locations: Sequence[str], *, start_ts: int | None = None,
+                       tick_s: int = 300, refresh: bool = False) -> StrategySet:
+    """One Strategy instance per location, from make_strategy(cfg.strategy, tick_seconds, name) (as the
+    backtest builds them; the forecast instance of a city loads only that city's forecasts).
+
+    'forecast' falls back to bands PER CITY: a city whose forecast strategy can't be built, or whose cached
+    forecasts cover under 90% of the first replayed day, uses the simple rule and the other cities keep the
+    AI forecast. So a fleet whose newest cities have no forecasts yet still shows the AI where it can.
+    """
+    from src.strategy import make_strategy
+
+    if name != "forecast":
+        return StrategySet({loc: make_strategy(cfg.strategy, cfg.sim.tick_seconds, name) for loc in locations}, name)
+    strategies, fallback = {}, {}
+    for loc in locations:
+        try:
+            strategy = _forecast_strategy(cfg, loc, refresh)
+            if start_ts is not None:
+                cover = forecast_coverage(strategy, loc, start_ts, tick_s)
+                if cover is not None and cover < FORECAST_MIN_FIRST_DAY_COVERAGE:
+                    raise LookupError(f"forecasts cover {cover:.0%} of the first day for {loc}")
+            strategies[loc] = strategy
+        except Exception as exc:  # no forecasts cached for these dates, or the module failed to load
+            fallback[loc] = f"{type(exc).__name__}: {exc}"
+            strategies[loc] = make_strategy(cfg.strategy, cfg.sim.tick_seconds, "bands")
+    return StrategySet(strategies, "bands" if len(fallback) == len(strategies) else name, fallback)
 
 
 def build_strategies(name: str, cfg: Config, locations: Sequence[str], *, start_ts: int | None = None,
                      tick_s: int = 300, refresh: bool = False) -> tuple[dict, str, str | None]:
-    """One Strategy instance per location, from make_strategy(cfg.strategy, tick_seconds, name) with no
-    extra context (as the backtest builds them). 'forecast' falls back to bands, with the reason, when it
-    can't be built or its cached forecasts don't cover the first day of the replay."""
+    """build_strategy_set as (strategies, effective name, warning naming the cities that fell back)."""
+    s = build_strategy_set(name, cfg, locations, start_ts=start_ts, tick_s=tick_s, refresh=refresh)
+    return s.strategies, s.name, s.warning
+
+
+def _forecast_strategy(cfg: Config, location: str, refresh: bool):
+    """The forecast strategy for one city, cached per city while it holds that city's forecasts (only then:
+    a later forecast job's output must not be ignored)."""
     from src.strategy import make_strategy
 
-    warning = None
-    if name == "forecast":
-        try:
-            cached = None if refresh else _STRATEGY_CACHE.get(name)
-            if cached and cached[0] > time.monotonic() and set(cached[1]) >= set(locations):
-                strategies = {loc: cached[1][loc] for loc in locations}
-            else:
-                strategies = {loc: make_strategy(cfg.strategy, cfg.sim.tick_seconds, name) for loc in locations}
-                if all(len((getattr(s, "books", None) or {}).get(loc, ())) for loc, s in strategies.items()):
-                    # only instances that hold forecasts: a later forecast job's output must not be ignored
-                    _STRATEGY_CACHE[name] = (time.monotonic() + STRATEGY_CACHE_S, dict(strategies))
-            if start_ts is not None:
-                for loc, strategy in strategies.items():
-                    cover = forecast_coverage(strategy, loc, start_ts, tick_s)
-                    if cover is not None and cover < 0.9:
-                        raise LookupError(f"forecasts cover {cover:.0%} of the first day for {loc}")
-            return strategies, name, None
-        except Exception as exc:  # no forecasts cached for these dates, or the module failed to load
-            warning = f"{type(exc).__name__}: {exc}"
-            name = "bands"
-    return {loc: make_strategy(cfg.strategy, cfg.sim.tick_seconds, name) for loc in locations}, name, warning
+    key = ("forecast", location)
+    cached = None if refresh else _STRATEGY_CACHE.get(key)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+    strategy = make_strategy(cfg.strategy, cfg.sim.tick_seconds, "forecast", locations=[location])
+    if len((getattr(strategy, "books", None) or {}).get(location, ())):
+        _STRATEGY_CACHE[key] = (time.monotonic() + STRATEGY_CACHE_S, strategy)
+    return strategy
 
 
 def forecast_coverage(strategy, location: str, start_ts: int, tick_s: int, ticks: int = 288) -> float | None:
@@ -344,10 +387,14 @@ class WorkerHandle:
     exit_code: int | None = None
     ready_run: str | None = None
 
-    def public(self) -> dict:
-        return {"worker_id": self.worker_id, "status": self.status, "pid": self.pid,
-                "batteries": int(len(self.owned)), "last_tick_utc": to_utc_iso(self.last_tick_ts),
-                "adopted_from": list(self.adopted_from)}
+    def public(self, layout: FleetLayout | None = None) -> dict:
+        """docs/API.md Worker. by_location: the batteries it owns right now per city (changes on hand-overs)."""
+        out = {"worker_id": self.worker_id, "status": self.status, "pid": self.pid,
+               "batteries": int(len(self.owned)), "last_tick_utc": to_utc_iso(self.last_tick_ts),
+               "adopted_from": list(self.adopted_from)}
+        if layout is not None:
+            out["by_location"] = layout.counts_by_location(self.owned)
+        return out
 
 
 @dataclass
@@ -362,10 +409,12 @@ class RunState:
     prices: PriceWindow | None = None
     strategy_name: str = ""
     strategy_warning: str | None = None
+    strategy_fallback: dict = field(default_factory=dict)  # {location: why it uses the simple rule instead}
     ledger: BacktestLedger | None = None
     revenue_usd: float = 0.0
     sold_kwh: float = 0.0
     bought_kwh: float = 0.0
+    by_location: dict = field(default_factory=dict)  # {location: [revenue_usd, sold_kwh, bought_kwh]}
     ticks_done: int = 0
     next_tick_at: float = 0.0
     initialized: np.ndarray | None = None
@@ -428,6 +477,8 @@ class Coordinator:
         self.tick_hooks: list[Callable[[dict], None]] = []
         self.events: list[dict] = []
         self.tick_log: list[dict] = []
+        self.status_codes = bstatus.idle_codes(self.availability.offline)  # battery_status at the latest tick
+        self.restarting = False  # boot or a reset is (re)spawning workers: POST /run/start waits for readiness
         self._stop = False
         self._tele_last = "0-0"
         self._control_last = "0-0"
@@ -441,9 +492,12 @@ class Coordinator:
     def boot(self, *, wait_healthy: bool = True) -> None:
         """Fresh namespace: layout, battery hashes, 20 worker processes."""
         self._clear_runtime_keys()
+        self.restarting = True  # until every worker has sent its first heartbeat (see _supervise)
+        self._publish_snapshot(force=True)  # the API sees 'restarting' at once and holds a Start until ready
         self.r.set(self.keys.layout, json.dumps(self.layout.public()))
         self.r.set(self.keys.coordinator, json.dumps({"pid": os.getpid(), "started_utc": now_utc_iso()}))
         self._write_all_hashes(self.cfg.battery.soc_init)
+        self._publish_status(bstatus.idle_codes(self.availability.offline))
         self._spawn_all()
         self._booted = True
         if wait_healthy:
@@ -486,7 +540,7 @@ class Coordinator:
     def _clear_runtime_keys(self) -> None:
         k = self.keys
         names = [k.telemetry, k.control, k.ticks, k.dead_letter, k.dead_letter_count, k.events, k.snapshot,
-                 k.workers, k.kw]
+                 k.workers, k.kw, k.battery_status]
         for w in range(self.n_workers):
             names += [k.commands(w), k.hb(w), k.lease(w)]
         self.r.delete(*names)
@@ -616,6 +670,13 @@ class Coordinator:
                 self._declare_dead(h, "heartbeat_expired", k_now)
         if (self.owner < 0).any():
             self._reassign_orphans()
+        if self.restarting and not any(h.status == STARTING for h in self.workers):
+            self.restarting = False  # every worker is up (or was given up on): a Start can go ahead
+            self._snapshot_dirty = True
+
+    def ready(self) -> bool:
+        """True when a Start can begin at once: not restarting and no worker still starting."""
+        return not self.restarting and bool(self.workers) and not any(h.status == STARTING for h in self.workers)
 
     # --- control ----------------------------------------------------------------------------
 
@@ -676,7 +737,8 @@ class Coordinator:
             raise ctl.ControlError(409, "no_active_run", "There's no replay running to pause.")
         if run.status == "running":
             run.status = self.status = "paused"
-            self._emit("run_paused", "info", f"Replay paused at {ctl.local_clock(self._sim_ts())} (Houston time).")
+            self._emit("run_paused", "info",
+                       f"Replay paused at {ctl.local_clock(self._sim_ts())} ({ctl.TIME_ZONE_PHRASE}).")
         return {"status": "paused"}, None
 
     def _ctl_resume(self, _args):
@@ -704,6 +766,7 @@ class Coordinator:
     def _ctl_reset(self, _args):
         self._retire_run()
         self.status = "idle"
+        self.restarting = True  # published with the reply, so a Start sent right after waits for the workers
         return {"status": "idle"}, self.reset
 
     def _ctl_availability(self, args: Mapping):
@@ -716,6 +779,13 @@ class Coordinator:
             pipe.execute()
         summary = self.availability.summary()
         next_ts = self._next_tick_ts()
+        if self.run is None:  # no run: the map shows waiting/offline at once
+            self._publish_status(bstatus.idle_codes(self.availability.offline))
+        elif self.run.status != "running":  # paused or finished: no tick is coming soon, so overlay the change
+            codes = self.status_codes.copy()
+            codes[(codes == bstatus.OFFLINE) & ~self.availability.offline] = bstatus.WAITING
+            codes[self.availability.offline] = bstatus.OFFLINE
+            self._publish_status(codes)
         self._emit("availability_changed", "info", ctl.availability_message(detail, summary),
                    detail={k: v for k, v in detail.items()} | {"available": summary["available"]})
         self._snapshot_dirty = True
@@ -754,8 +824,9 @@ class Coordinator:
         s = run.settings
         start = datetime.fromtimestamp(run.start_ts, UTC)
         try:
-            prices = PriceWindow(price_feed(snapshot_years(start)), self.layout.locations, run.start_ts,
-                                 lag=self.lag, window=self.window, warmup_s=self.warmup_s, tick_s=self.tick_s)
+            prices = PriceWindow(price_feed(snapshot_years(start), self.layout.locations), self.layout.locations,
+                                 run.start_ts, lag=self.lag, window=self.window, warmup_s=self.warmup_s,
+                                 tick_s=self.tick_s)
         except Exception as exc:
             if not run.fixed:
                 _log(f"could not load prices: {exc!r}")
@@ -771,11 +842,13 @@ class Coordinator:
             if run.max_ticks is None:
                 run.max_ticks = run.decide.length
         else:
-            strategies, name, warning = build_strategies(s["strategy"], self.cfg, self.layout.locations,
-                                                         start_ts=run.start_ts, tick_s=self.tick_s)
-            run.decide = StrategyTargets(strategies, prices, self.lag, self.tick_s)
-            run.strategy_name, run.strategy_warning = name, warning
+            chosen = build_strategy_set(s["strategy"], self.cfg, self.layout.locations, start_ts=run.start_ts,
+                                        tick_s=self.tick_s)
+            run.decide = StrategyTargets(chosen.strategies, prices, self.lag, self.tick_s)
+            run.strategy_name, run.strategy_warning = chosen.name, chosen.warning
+            run.strategy_fallback = dict(chosen.fallback)
         run.ledger = BacktestLedger({loc: int(n) for loc, n in zip(self.layout.locations, self.layout.counts)})
+        run.by_location = {loc: [0.0, 0.0, 0.0] for loc in self.layout.locations}
         run.initialized = np.zeros(self.N, dtype=bool)
         soc0 = float(s["start_charge_level"])
         self.soc[:] = soc0
@@ -783,9 +856,11 @@ class Coordinator:
         self.kw[:] = 0.0
         self.tick_log = []
         self.journal = {}
+        self.status_codes = bstatus.idle_codes(self.availability.offline)  # no tick yet: waiting or offline
         pipe = self.r.pipeline(transaction=False)
         pipe.delete(self.keys.ticks, self.keys.dead_letter, self.keys.dead_letter_count)
         pipe.set(self.keys.kw, np.zeros(self.N, dtype=np.float32).tobytes())
+        pipe.set(self.keys.battery_status, bstatus.pack(self.status_codes))
         pipe.execute()
         if any(h.status == STARTING for h in self.workers):  # e.g. right after a reset
             self.wait_workers_up(self.orch.spawn_timeout_s)
@@ -814,23 +889,35 @@ class Coordinator:
                 h.misses += 1
                 h.status = SUSPECT
                 self._emit("worker_suspect", "warn", f"Controller {h.worker_id + 1} is slow to get ready, so its "
-                           "batteries wait while the others start.",
+                           f"batteries{self._in_cities(h.owned)} wait while the others start.",
                            detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "phase": "load"})
         run.status = self.status = "running"
         run.next_tick_at = time.monotonic()
-        where = ctl.local_clock(run.start_ts)
-        method = ctl.STRATEGY_LABELS.get(run.strategy_name, (run.strategy_name,))[0]
-        msg = f"Replaying real prices from {where} (Houston time) at {ctl.speed_phrase(s['speed_tps'])}, using the {method.lower()}."
-        severity = "info"
-        if run.strategy_warning:
-            msg = (f"Replaying real prices from {where} (Houston time) with the simple rule, because the AI forecast "
-                   "isn't available yet.")
-            severity = "warn"
+        msg, severity = self._run_started_message(run)
+        by_loc = {loc: ("bands" if loc in run.strategy_fallback else run.strategy_name)
+                  for loc in self.layout.locations}
         self._emit("run_started", severity, msg, sim_ts=run.start_ts, detail={
             "run_id": run.run_id, "settings": self.public_settings(), "strategy_effective": run.strategy_name,
+            "strategy_by_location": by_loc, "fallback_locations": list(run.strategy_fallback),
             "fallback_reason": run.strategy_warning})
         self._publish_snapshot(force=True)
         return True
+
+    def _run_started_message(self, run: RunState) -> tuple[str, str]:
+        """One sentence: where the replay starts, how fast, and which decision method runs where."""
+        where = f"{ctl.local_clock(run.start_ts)} ({ctl.TIME_ZONE_PHRASE})"
+        speed = ctl.speed_phrase(run.settings["speed_tps"])
+        label = ctl.STRATEGY_LABELS.get(run.strategy_name, (run.strategy_name,))[0]
+        fallback = [loc for loc in self.layout.locations if loc in run.strategy_fallback]
+        if not fallback:
+            return f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)}.", "info"
+        if len(fallback) == len(self.layout.locations):
+            return (f"Replaying real prices from {where} with the simple rule, because the AI forecast "
+                    "isn't available yet.", "warn")
+        keep = [loc for loc in self.layout.locations if loc not in fallback]
+        return (f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)} in "
+                f"{geo.cities_phrase(keep)} and the simple rule in {geo.cities_phrase(fallback)}, whose AI forecasts "
+                "aren't ready yet.", "warn")
 
     def start(self, settings: Mapping | None = None, **kwargs) -> str:
         """prepare_run + init_run in one call (tests, bench, parity helper)."""
@@ -845,16 +932,25 @@ class Coordinator:
         self.run = None
 
     def _totals(self) -> dict:
+        """docs/API.md Totals, over the whole run, with the same three sums per city."""
         run = self.run
+        per = (run.by_location if run else None) or {}
+        by_location = {}
+        for loc in self.layout.locations:
+            usd, sold, bought = per.get(loc, (0.0, 0.0, 0.0))
+            by_location[loc] = {"revenue_usd": round(usd, 6), "sold_kwh": round(sold, 6),
+                                "bought_kwh": round(bought, 6)}
         return {"revenue_usd": round(run.revenue_usd, 6) if run else 0.0,
                 "sold_kwh": round(run.sold_kwh, 6) if run else 0.0,
                 "bought_kwh": round(run.bought_kwh, 6) if run else 0.0,
-                "ticks": run.ticks_done if run else 0}
+                "ticks": run.ticks_done if run else 0,
+                "by_location": by_location}
 
     def reset(self) -> None:
         """Stop the run, restart all workers (including killed ones), bring every battery back online."""
         self._retire_run()
         self.status = "idle"
+        self.restarting = True
         self._stop_workers()
         self.availability.clear()
         self.owner = self.layout.default_owners()
@@ -868,6 +964,7 @@ class Coordinator:
         self._tele_last = "0-0"
         self._spawn_all()
         self._write_all_hashes(self.cfg.battery.soc_init)
+        self._publish_status(bstatus.idle_codes(self.availability.offline))
         self._emit("run_reset", "good", f"Simulation reset: all {self.n_workers} controllers were restarted and every "
                    "battery is back online.", detail={"workers": self.n_workers})
         self._publish_snapshot(force=True)
@@ -929,7 +1026,7 @@ class Coordinator:
             run.status = self.status = "finished"
             end = "the end of the requested replay" if run.max_ticks is not None else "the end of the loaded price data"
             self._emit("run_finished", "info", f"The replay reached {end} ({ctl.local_clock(self._sim_ts())}, "
-                       f"Houston time) after {ctl.fmt_int(run.ticks_done)} five-minute steps.",
+                       f"{ctl.TIME_ZONE_PHRASE}) after {ctl.fmt_int(run.ticks_done)} five-minute steps.",
                        detail={"run_id": run.run_id, "ticks": run.ticks_done, "revenue_usd": round(run.revenue_usd, 2)})
             self._publish_snapshot(force=True)
             return None
@@ -959,6 +1056,18 @@ class Coordinator:
         sent = self._dispatch(run, k, ts, setpoints)
         reports = self._collect(k, {h.worker_id for h in sent}, t0 + self.deadline_s())
         barrier_ms = (time.monotonic() - t0) * 1000.0
+        t_status = time.perf_counter()
+        # battery_status: a battery whose controller was not healthy when the tick went out, or didn't report it,
+        # is "controller down" until the tick after its hand-over
+        down = ~healthy
+        for h in sent:
+            if h.worker_id not in reports:
+                infl = h.inflight.get(k)
+                if infl is not None:
+                    down[infl.idx] = True
+        self.status_codes = bstatus.tick_codes(setpoints, self.availability.offline, down)
+        status_packed = bstatus.pack(self.status_codes)
+        status_ms = (time.perf_counter() - t_status) * 1000.0
 
         # Grid-side energy is metered from each battery's SoC change (grid_kwh_from_soc_change, as the
         # skeleton and the backtest meter it) and summed over the location's whole array in index order,
@@ -985,7 +1094,7 @@ class Coordinator:
                 revenue[loc] = kwh * tick.price_usd_mwh / 1000.0
             else:
                 revenue[loc] = 0.0
-            self._add_totals(run, kwh, revenue[loc])
+            self._add_totals(run, loc, kwh, revenue[loc])
 
 
         newly_dead = []
@@ -1005,10 +1114,12 @@ class Coordinator:
                     h.status = SUSPECT
                     self._snapshot_dirty = True
                     self._emit("worker_suspect", "warn",
-                               f"Controller {h.worker_id + 1} didn't answer in time, so its batteries are paused while "
-                               f"the other controllers cover for it.", sim_ts=ts,
+                               f"Controller {h.worker_id + 1} didn't answer in time, so its batteries"
+                               f"{self._in_cities(h.owned)} are paused while the other controllers cover for it.",
+                               sim_ts=ts,
                                detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "pid": h.pid,
-                                       "tick_index": k, "deadline_ms": round(self.deadline_s() * 1000, 1)})
+                                       "tick_index": k, "deadline_ms": round(self.deadline_s() * 1000, 1),
+                                       "by_location": self.layout.counts_by_location(h.owned)})
         for h in newly_dead:
             self._declare_dead(h, "missed_deadlines", k)
         self._supervise(force=True)  # heartbeat expiry, whichever comes first
@@ -1022,9 +1133,10 @@ class Coordinator:
         pipe.xadd(self.keys.ticks, {"run": run.run_id, "k": k, "j": json.dumps(record)},
                   maxlen=self.orch.maxlen["ticks"], approximate=True)
         pipe.set(self.keys.kw, delivered.astype(np.float32).tobytes())
+        pipe.set(self.keys.battery_status, status_packed)  # rides the tick's pipeline: no extra round trip
         pipe.execute()
         self._tick_events(run, k, ts, decisions, feasible)
-        self.tick_log.append({**record, "k": k, "barrier_ms": round(barrier_ms, 2),
+        self.tick_log.append({**record, "k": k, "barrier_ms": round(barrier_ms, 2), "status_ms": round(status_ms, 4),
                               "reported": len(reports), "sent": len(sent),
                               "raw_kw": {loc: dec.raw_kw for loc, dec in decisions.items()},  # unrounded, for parity
                               "feasible_exact": dict(feasible), "kwh_exact": kwh_by_loc})
@@ -1044,10 +1156,16 @@ class Coordinator:
                 fallback, _, _ = build_strategies("bands", self.cfg, [loc])
                 run.decide.strategies[loc] = fallback[loc]
                 run.strategy_warning = run.strategy_warning or repr(exc)
-                self._emit("action_changed", "warn", f"The decision method for the {ctl.area(loc)} failed, so the "
-                           "simple rule took over.", sim_ts=ts, detail={"location": loc, "error": repr(exc)})
+                run.strategy_fallback[loc] = f"{type(exc).__name__}: {exc}"
+                self._emit("action_changed", "warn", f"The decision method for {ctl.area(loc)} failed, so the "
+                           "simple rule took over there.", sim_ts=ts, detail={"location": loc, "error": repr(exc)})
                 return run.decide(k, ts, loc, fsoc, h_kw)
             return Decision(0.0, None, None)
+
+    def _in_cities(self, idx: np.ndarray) -> str:
+        """' in San Antonio and Austin' for the cities these batteries are in (' in all four cities', or '')."""
+        locs = list(self.layout.counts_by_location(idx))
+        return f" in {geo.cities_phrase(locs, total=len(self.layout.locations))}" if locs else ""
 
     def _healthy_owner_mask(self) -> np.ndarray:
         status_ok = np.zeros(self.n_workers + 1, dtype=bool)  # index -1 (orphan) maps to the last slot
@@ -1168,15 +1286,19 @@ class Coordinator:
             if tick is not None:
                 run.ledger.record(tick, kwh)
                 usd = kwh * tick.price_usd_mwh / 1000.0
-            self._add_totals(run, kwh, usd)
+            self._add_totals(run, loc, kwh, usd)
 
     @staticmethod
-    def _add_totals(run: RunState, kwh: float, usd: float) -> None:
+    def _add_totals(run: RunState, location: str, kwh: float, usd: float) -> None:
+        per = run.by_location.setdefault(location, [0.0, 0.0, 0.0])
         run.revenue_usd += usd
+        per[0] += usd
         if kwh > 0:
             run.sold_kwh += kwh
+            per[1] += kwh
         elif kwh < 0:
             run.bought_kwh -= kwh
+            per[2] -= kwh
 
     def _metered_kwh(self, idx: np.ndarray, soc_new: np.ndarray) -> np.ndarray:
         """Grid-side kWh per reported battery from its SoC change (0 where the worker reported no SoC)."""
@@ -1220,11 +1342,13 @@ class Coordinator:
             others = len(adopters)
             when = "under 1 ms" if handover_ms < 1 else f"{handover_ms:.0f} ms"
             if others:
-                msg = (f"Controller {h.worker_id + 1}'s {ctl.fmt_int(len(cohort))} batteries were handed to the other "
+                msg = (f"Controller {h.worker_id + 1}'s {ctl.fmt_int(len(cohort))} batteries"
+                       f"{self._in_cities(cohort)} were handed to the other "
                        f"{others} controller{'s' if others != 1 else ''} in {when}.")
                 self._emit("worker_adopted", "good", msg, sim_ts=sim_ts, detail={
                     "worker_id": h.worker_id, "controller": h.worker_id + 1, "batteries": int(len(cohort)),
                     "adopted_by": [a.worker_id for a in adopters], "ms": round(handover_ms, 3),
+                    "by_location": self.layout.counts_by_location(cohort),
                     "declared_at_tick_index": k, "reassigned_for_tick_index": (k + 1) if k is not None else None})
         if run is not None and expired:
             entries = []
@@ -1337,16 +1461,25 @@ class Coordinator:
     def _tick_events(self, run: RunState, k: int, ts: int, decisions: dict, feasible: dict) -> None:
         if run.fixed:
             return
-        for loc, dec in decisions.items():  # price spikes, once per episode
+        spiking = {}  # price spikes, once per episode per city; cities that jump together share one event
+        for loc, dec in decisions.items():
             if dec.now is None:
                 continue
             p = dec.now.price_usd_mwh
             if p >= self.orch.price_spike_usd_mwh and not run.spike_active.get(loc):
                 run.spike_active[loc] = True
-                self._emit("price_spike", "info", f"The price in the {ctl.area(loc)} jumped to {ctl.price_phrase(p)}.",
-                           sim_ts=ts, detail={"location": loc, "price_usd_mwh": p})
+                spiking[loc] = p
             elif p < 0.5 * self.orch.price_spike_usd_mwh:
                 run.spike_active[loc] = False
+        if spiking:
+            top = max(spiking, key=spiking.get)
+            if len(spiking) == 1:
+                msg = f"The price in {ctl.area(top)} jumped to {ctl.price_phrase(spiking[top])}."
+            else:
+                msg = (f"Prices jumped in {geo.cities_phrase(list(spiking), total=len(decisions))}, up to "
+                       f"{ctl.price_phrase(spiking[top])} in {ctl.area(top)}.")
+            self._emit("price_spike", "info", msg, sim_ts=ts, detail={
+                "location": top, "price_usd_mwh": spiking[top], "prices": dict(spiking)})
         eps = 1e-6
         actions = {loc: ("sell" if f > eps else "charge" if f < -eps else "hold") for loc, f in feasible.items()}
         if actions != run.announced_action and k - run.last_action_event_k >= self.orch.action_event_min_ticks:
@@ -1381,14 +1514,25 @@ class Coordinator:
             "speed_tps": (run.settings["speed_tps"] if run else ctl.default_settings(self.cfg, self.raw, self.N)["speed_tps"]),
             "totals": self._totals(),
             "last_run": self.last_run,
-            "workers": [h.public() for h in self.workers],
+            "workers": [h.public(self.layout) for h in self.workers],
             "availability": self.availability.summary(),
             "strategy_effective": run.strategy_name if run else None,
             "tick_index": run.k if run else None,
             "next_tick_utc": to_utc_iso(self._next_tick_ts()),
             "coordinator_pid": os.getpid(),
+            "restarting": self.restarting,
+            "ready": self.ready(),
+            "workers_starting": sum(1 for h in self.workers if h.status == STARTING),
             "updated_utc": now_utc_iso(),
         }
+
+    def _publish_status(self, codes: np.ndarray) -> None:
+        """Overwrite the battery_status key (outside ticks: boot, reset, availability while idle)."""
+        self.status_codes = codes
+        try:
+            self.r.set(self.keys.battery_status, bstatus.pack(codes))
+        except Exception as exc:
+            _log(f"battery_status not published: {exc!r}")
 
     def _publish_snapshot(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -1529,7 +1673,7 @@ def run_fleet_replay(
         co.boot()
         co.start({"start_utc": start_utc, "speed_tps": "max", "strategy": strategy, "start_charge_level": soc_init},
                  max_ticks=ticks, internal=True)
-        if strict and co.run.strategy_name != strategy:
+        if strict and (co.run.strategy_name != strategy or co.run.strategy_fallback):
             raise RuntimeError(f"{strategy!r} could not run ({co.run.strategy_warning}); it fell back to "
                                f"{co.run.strategy_name!r}")
         while co.run is not None and co.run.status == "running":
@@ -1575,12 +1719,16 @@ def _bench(args) -> int:
         co.start(settings, max_ticks=args.ticks, internal=True)
         init_s = time.perf_counter() - t_init
         killed = {}
+        down_by_tick: dict[int, int] = {}  # battery_status: the victim's batteries shown as "controller down"
 
         def kill_hook(rec):
+            if killed and rec["k"] <= killed["after_tick"] + 5:
+                down_by_tick[rec["k"]] = int((co.status_codes[killed["cohort"]] == bstatus.CONTROLLER_DOWN).sum())
             if args.kill_at is not None and rec["k"] == args.kill_at and not killed:
                 victim = co.workers[args.kill_worker]
                 os.kill(victim.pid, signal.SIGKILL)
-                killed.update(worker_id=victim.worker_id, pid=victim.pid, after_tick=rec["k"])
+                killed.update(worker_id=victim.worker_id, pid=victim.pid, after_tick=rec["k"],
+                              cohort=victim.owned.copy(), by_location=co.layout.counts_by_location(victim.owned))
                 _log(f"SIGKILLed worker {victim.worker_id} (pid {victim.pid}) after tick {rec['k']}")
 
         co.tick_hooks.append(kill_hook)
@@ -1589,6 +1737,8 @@ def _bench(args) -> int:
         wall = time.perf_counter() - t0
         log = co.tick_log
         errs = [r["error_pct"] for r in log]
+        status = [r["status_ms"] for r in log]
+        packed = bstatus.pack(co.status_codes)
         out = {
             "fleet_size": co.N, "workers": co.n_workers, "ticks": len(log), "speed": speed,
             "wall_s": round(wall, 3), "ticks_per_s": round(len(log) / wall, 2) if wall else None,
@@ -1598,7 +1748,11 @@ def _bench(args) -> int:
             "barrier_ms_p50": float(np.percentile([r["barrier_ms"] for r in log], 50)) if log else None,
             "barrier_ms_max": max((r["barrier_ms"] for r in log), default=None),
             "revenue_usd": round(co.run.revenue_usd, 2) if co.run else None,
-            "killed": killed or None,
+            "battery_status_ms_p50": round(float(np.percentile(status, 50)), 4) if status else None,
+            "battery_status_ms_max": round(max(status), 4) if status else None,
+            "battery_status_bytes": len(packed),
+            "battery_status_base64_chars": len(base64.b64encode(packed)),
+            "killed": {k: v for k, v in killed.items() if k != "cohort"} or None,
         }
         if killed:
             ka = killed["after_tick"]
@@ -1606,6 +1760,8 @@ def _bench(args) -> int:
                                            for r in log if ka < r["k"] <= ka + 5]
             out["events"] = [f"{e['kind']}: {e['message']}" for e in co.events if e["kind"].startswith("worker_")]
             out["dead_letter"] = int(co.r.get(co.keys.dead_letter_count) or 0)
+            out["controller_down_by_tick"] = {f"tick {k}": n for k, n in sorted(down_by_tick.items())}
+            out["workers_by_location_after"] = {h.worker_id: h.public(co.layout)["by_location"] for h in co.workers}
         print(json.dumps(out, indent=2))
         return 0 if out["ticks_over_5pct"] == 0 or killed else 1
     finally:
@@ -1673,11 +1829,13 @@ def _keep_forecasts_warm(co: Coordinator, every_s: float = 0.8 * STRATEGY_CACHE_
     while not co._stop:
         t0 = time.monotonic()
         try:
-            strategies, name, warning = build_strategies("forecast", co.cfg, co.layout.locations, refresh=True)
-            counts = {loc: len((getattr(s, "books", None) or {}).get(loc, ())) for loc, s in strategies.items()}
-            if warning or not all(counts.values()):
-                _log(f"forecast strategy not ready ({warning or f'forecasts cached: {counts}'}); "
-                     "runs that ask for it use the simple rule")
+            chosen = build_strategy_set("forecast", co.cfg, co.layout.locations, refresh=True)
+            counts = {loc: len((getattr(s, "books", None) or {}).get(loc, ())) for loc, s in chosen.strategies.items()}
+            missing = [loc for loc, n in counts.items() if not n]
+            if chosen.fallback or missing:
+                _log(f"forecast strategy not ready for {', '.join(sorted(set(chosen.fallback) | set(missing)))} "
+                     f"({chosen.warning or f'forecasts cached: {counts}'}); runs that ask for it use the simple rule "
+                     "in those cities")
             else:
                 _log(f"forecast strategies loaded in {time.monotonic() - t0:.1f}s ({counts} forecasts)")
         except Exception as exc:

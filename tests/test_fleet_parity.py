@@ -33,13 +33,17 @@ def test_parity_helper_matches_the_in_process_loop():
     if not reachable(url):
         pytest.skip(f"Redis not reachable at {url}")
     cfg = load_config()
-    layout = FleetLayout.build(cfg, size=2000, workers=4)
+    layout = FleetLayout.build(cfg, size=2000, workers=20)
     nameplate = {loc: float(layout.power_kw[layout.location_indices(li)].sum()) for li, loc in enumerate(layout.locations)}
-    # synthetic targets (test input, not prices): charge hard, hold, sell, over-ask beyond headroom, flip
+    # synthetic targets (test input, not prices): charge hard, hold, sell, over-ask beyond headroom, flip; each
+    # city gets its own sign and scale, so a controller that straddles two cities gets opposite setpoints
     shape = [-1.0, -0.6, -0.6, 0.0, 0.3, 0.8, 2.0, 2.0, -0.2, 0.0, -3.0, -1.0] * 4
-    targets = {"LZ_HOUSTON": [x * nameplate["LZ_HOUSTON"] for x in shape],
-               "LZ_NORTH": [-x * 0.5 * nameplate["LZ_NORTH"] for x in shape]}
-    result = run_fleet_targets(targets, soc_init=0.55, fleet_size=2000, workers=4, url=url,
+    scale = [1.0, -0.5, 0.7, -1.2, 0.4, -0.9]
+    targets = {loc: [x * scale[li % len(scale)] * nameplate[loc] for x in shape]
+               for li, loc in enumerate(layout.locations)}
+    spans = [w for w in range(20) if len(layout.counts_by_location(np.flatnonzero(layout.default_owners() == w))) > 1]
+    assert spans  # e.g. at 2,000 / 20 worker 17 holds San Antonio and Austin batteries
+    result = run_fleet_targets(targets, soc_init=0.55, fleet_size=2000, workers=20, url=url,
                                prefix=f"test:parity:{uuid.uuid4().hex[:8]}:")
     assert result["ticks"] == len(shape)
     assert result["battery_ids"][:2] == ["b00000", "b00001"]
