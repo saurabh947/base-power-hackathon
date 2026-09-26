@@ -57,7 +57,7 @@ const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-Presenter-Passcode',
-  'Access-Control-Expose-Headers': 'Retry-After',
+  'Access-Control-Expose-Headers': 'Retry-After, ETag',
   'Access-Control-Max-Age': '600',
 };
 
@@ -165,8 +165,19 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
         return send(res, 200, mockSettingsResponse());
       case 'GET /state':
         return send(res, 200, sim.snapshot());
-      case 'GET /fleet/layout':
-        return send(res, 200, sim.layout(), { 'Cache-Control': 'public, max-age=300' });
+      case 'GET /fleet/layout': {
+        // Like the backend: the version is the ETag, and a matching If-None-Match gets a 304.
+        const layout = sim.layout();
+        const etag = `"${layout.version}"`;
+        const headers = { ETag: etag, 'Cache-Control': 'public, max-age=300' };
+        const match = String(req.headers['if-none-match'] ?? '').split(',').map((s) => s.trim());
+        if (match.includes(etag)) {
+          res.writeHead(304, { ...CORS, ...headers });
+          res.end();
+          return;
+        }
+        return send(res, 200, layout, headers);
+      }
       case 'POST /run/start': {
         limited(runLimit);
         const body = (await readJson(req)) as Partial<EditableSettings>;

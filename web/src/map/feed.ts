@@ -5,11 +5,12 @@
 
 import { api } from '../api/client.ts';
 import { API_BASE } from '../api/config.ts';
-import type { Tick } from '../api/types.ts';
+import type { LiveEvent, Tick } from '../api/types.ts';
 import { setCities } from '../lib/cities.ts';
 import { createStore, useStore } from '../lib/store.ts';
 import { liveStore } from '../live/liveStore.ts';
 import type { LiveState } from '../live/reducer.ts';
+import { ControllerFlash } from './flash.ts';
 import { readLayout, type MapLayout } from './layout.ts';
 import { countCodes, decodeStatus, synthesizeStatus, WAITING, type CodeCounts } from './status.ts';
 
@@ -40,6 +41,8 @@ export interface StatusView {
   /** Length of the last battery_status field (base64 characters). */
   statusChars: number;
   decodeMs: number;
+  /** Batteries shown as "controller down" from the worker events because the frame missed the code. */
+  fromEvents: number;
 }
 
 const EMPTY_COUNTS: CodeCounts = [0, 0, 0, 0, 0];
@@ -50,6 +53,7 @@ export const statusStore = createStore<StatusView>({
   byCity: [],
   statusChars: 0,
   decodeMs: 0,
+  fromEvents: 0,
 });
 
 export function useMapStatus<S>(selector: (s: StatusView) => S): S {
@@ -101,18 +105,44 @@ function maybeReload(state: LiveState, layout: MapLayout): void {
 
 // ---- the status ------------------------------------------------------------------
 
-let seen: { status: string | null; tick: Tick | null; layout: MapLayout | null } = { status: null, tick: null, layout: null };
+interface Seen {
+  status: string | null;
+  tick: Tick | null;
+  layout: MapLayout | null;
+  events: LiveEvent[] | null;
+  /** The last update marked batteries down from events: decode the next one afresh so they come back. */
+  synthetic: boolean;
+}
+
+let seen: Seen = { status: null, tick: null, layout: null, events: null, synthetic: false };
+const flash = new ControllerFlash();
+let flashKey = '';
 
 function refreshStatus(force = false): void {
   const state = liveStore.get();
   const layout = layoutStore.get().layout;
   const tick = state.history.length ? state.history[state.history.length - 1] : null;
-  if (!force && seen.status === state.batteryStatus && seen.layout === layout && (state.batteryStatus !== null || seen.tick === tick)) {
+  if (
+    !force &&
+    !seen.synthetic &&
+    seen.status === state.batteryStatus &&
+    seen.layout === layout &&
+    seen.events === state.events &&
+    (state.batteryStatus !== null || seen.tick === tick)
+  ) {
     return;
   }
-  seen = { status: state.batteryStatus, tick, layout };
+  seen = { status: state.batteryStatus, tick, layout, events: state.events, synthetic: false };
   if (!layout) {
-    statusStore.set({ codes: null, source: 'none', fleet: EMPTY_COUNTS, byCity: [], statusChars: state.batteryStatus?.length ?? 0, decodeMs: 0 });
+    statusStore.set({
+      codes: null,
+      source: 'none',
+      fleet: EMPTY_COUNTS,
+      byCity: [],
+      statusChars: state.batteryStatus?.length ?? 0,
+      decodeMs: 0,
+      fromEvents: 0,
+    });
     return;
   }
   maybeReload(state, layout);
@@ -124,9 +154,27 @@ function refreshStatus(force = false): void {
     source = 'from_actions';
   }
   if (!codes) codes = new Uint8Array(layout.size).fill(WAITING);
+
+  // Controller ownership starts over with every run (and every reset, and every new layout).
+  const key = `${layout.version}|${layout.size}|${state.runId ?? 'no run'}`;
+  if (key !== flashKey) {
+    flash.reset(layout.size, state.workers.length || 20, state.events);
+    flashKey = key;
+  }
+  const fromEvents = state.status === 'idle' ? 0 : flash.apply(state.events, codes, Date.now());
+  if (fromEvents) seen.synthetic = true;
+
   const byCity = layout.cities.map((_, k) => countCodes(codes, layout.cityOf, k));
   const fleet = countCodes(codes, null, null);
-  statusStore.set({ codes, source, fleet, byCity, statusChars: state.batteryStatus?.length ?? 0, decodeMs: performance.now() - t0 });
+  statusStore.set({
+    codes,
+    source,
+    fleet,
+    byCity,
+    statusChars: state.batteryStatus?.length ?? 0,
+    decodeMs: performance.now() - t0,
+    fromEvents,
+  });
 }
 
 // ---- lifetime ----------------------------------------------------------------------

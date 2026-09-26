@@ -115,13 +115,13 @@ describe('speed', () => {
   });
 });
 
-describe('Houston time', () => {
+describe('Central time', () => {
   it('formats the replay clock like the UX guide', () => {
-    expect(fmtClock('2025-05-17T00:45:00Z')).toBe('May 16, 2025, 7:45 pm, Houston time');
+    expect(fmtClock('2025-05-17T00:45:00Z')).toBe('May 16, 2025, 7:45 pm, Central time');
   });
 
   it('handles standard time (CST) as well as daylight time', () => {
-    expect(fmtClock('2025-01-15T13:30:00Z')).toBe('Jan 15, 2025, 7:30 am, Houston time');
+    expect(fmtClock('2025-01-15T13:30:00Z')).toBe('Jan 15, 2025, 7:30 am, Central time');
   });
 
   it('drops :00 in compact times, and says midnight and noon in words', () => {

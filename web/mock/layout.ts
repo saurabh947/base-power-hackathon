@@ -89,7 +89,7 @@ export const METROS: Metro[] = [
   {
     location: 'LZ_AEN',
     name: 'Austin',
-    short: 'ATX',
+    short: 'AUS',
     center: [-97.74, 30.27],
     blobs: [
       b(-97.74, 30.28, 0.26, 6), // central Austin

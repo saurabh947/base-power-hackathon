@@ -24,7 +24,7 @@ export const DEFAULT_CITIES: readonly City[] = Object.freeze([
   { location: 'LZ_HOUSTON', name: 'Houston', short: 'HOU', batteries: 7000, firstBattery: 0, center: [-95.37, 29.76] },
   { location: 'LZ_NORTH', name: 'Dallas–Fort Worth', short: 'DFW', batteries: 8000, firstBattery: 7000, center: [-96.97, 32.82] },
   { location: 'LZ_CPS', name: 'San Antonio', short: 'SA', batteries: 2600, firstBattery: 15000, center: [-98.49, 29.42] },
-  { location: 'LZ_AEN', name: 'Austin', short: 'ATX', batteries: 2400, firstBattery: 17600, center: [-97.74, 30.27] },
+  { location: 'LZ_AEN', name: 'Austin', short: 'AUS', batteries: 2400, firstBattery: 17600, center: [-97.74, 30.27] },
 ] satisfies City[]);
 
 const FALLBACK_NAMES: Record<string, string> = Object.fromEntries(DEFAULT_CITIES.map((c) => [c.location, c.name]));

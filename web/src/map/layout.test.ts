@@ -56,7 +56,7 @@ describe('readLayout', () => {
   it('marks batteries outside every city block, and fills in missing names from the defaults', () => {
     const layout = readLayout({ ...raw, cities: [{ location: 'LZ_AEN', batteries: 1, first_battery: 1 }] });
     expect(Array.from(layout?.cityOf ?? [])).toEqual([NO_CITY, 0, NO_CITY, NO_CITY]);
-    expect(layout?.cities[0]).toMatchObject({ name: 'Austin', short: 'ATX', center: [-97.74, 30.27] });
+    expect(layout?.cities[0]).toMatchObject({ name: 'Austin', short: 'AUS', center: [-97.74, 30.27] });
   });
 
   it('returns null for anything unusable', () => {

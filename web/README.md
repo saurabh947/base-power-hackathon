@@ -102,7 +102,8 @@ src/
                 reducer.ts (snapshot/frame/idle → view, capped, structurally shared), liveStore.ts
   map/          the live map's engine: albers.ts (EPSG:3083), texasOutline.ts (generated), geometry.ts,
                 layout.ts (GET /fleet/layout), status.ts (battery_status nibbles), cells.ts (screen-space
-                aggregation), style.ts (dot looks), renderer.ts (canvas), selection.ts, feed.ts
+                aggregation), style.ts (dot looks), renderer.ts (canvas), selection.ts, owners.ts and flash.ts
+                (the crash flash from events), feed.ts
   lib/          format.ts (units + plain-language translations), cities.ts (names from the layout), fleet.ts,
                 store.ts, router.ts, contrast.ts
   state/        backend health / wake-up, technical-details switch, presenter passcode, toasts
@@ -130,10 +131,12 @@ layout (remembered for the tab); "Show map" switches back.
   hundred dots at any size); each dot's area is proportional to its battery count and it sits between its
   batteries' centroid and its hex centre. Each dot mixes its batteries' looks: green (medium when waiting,
   bright with a soft glow when selling, a light ring when charging), dim gray when offline.
-- **Controller down (code 4).** Each affected battery gets a dark speck at its own position, pulsing, and its dot
-  darkens in proportion; when the other controllers take the batteries over, the specks go and each spot briefly
-  lights up green. A crashed controller's batteries are spread over every city, so this shows exactly where they
-  are without dimming the whole map for a 5% event.
+- **Controller down (code 4).** Each dot gets a dark core whose area is the share of its batteries that lost
+  their controller, pulsing; when the other controllers take them over, the cores close and those dots briefly
+  light up green. A controller runs 1,000 batteries spread over its city, so the flash shows in that city without
+  blacking it out for a 12% event. Code 4 lasts about two ticks, so at 5-10 ticks a second a frame can miss it:
+  then the `worker_suspect`/`worker_dead`/`worker_adopted` events trigger the same flash on that controller's
+  batteries, which `src/map/owners.ts` replays from the default blocks and each hand-over's `adopted_by`.
 - **Drawing.** Two canvases: the outline (redrawn on resize) and the dots (redrawn on each 1 Hz frame).
   `requestAnimationFrame` runs only while a transition, a flash or a re-light plays. `prefers-reduced-motion`
   turns off glows, pulses and transitions.

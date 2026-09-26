@@ -7,7 +7,7 @@ import { Icon } from '../../components/Icon.tsx';
 import { ErrorNotice } from '../../components/Notice.tsx';
 import { HowItWorks } from '../../components/Panel.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
-import { useLive } from '../../live/liveStore.ts';
+import { liveStore, resync, useLive } from '../../live/liveStore.ts';
 import { byBatteries, useCities } from '../../lib/cities.ts';
 import {
   areaOfBattery,
@@ -35,7 +35,10 @@ async function applyChange(change: AvailabilityRequest, describe: (r: Availabili
   return runAction(
     () => api.availability(change),
     'availability',
-    (r) =>
+    (r) => {
+      // With no run, the server sends idle messages without battery_status: fetch the state so the map redraws.
+      const status = liveStore.get().status;
+      if (status === 'idle' || status === null) void resync();
       showToast({
         kind: 'success',
         title: describe(r),
@@ -43,7 +46,8 @@ async function applyChange(change: AvailabilityRequest, describe: (r: Availabili
           r.applied_from_tick_utc ? `, from ${fmtTimeOfDay(r.applied_from_tick_utc)} market time` : ''
         }.`,
         technical: JSON.stringify(change),
-      }),
+      });
+    },
   );
 }
 

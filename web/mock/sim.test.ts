@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FrameMessage, IdleMessage } from '../src/api/types.ts';
 import { initialLiveState, liveReducer, type LiveState } from '../src/live/reducer.ts';
+import { ControllerFlash } from '../src/map/flash.ts';
 import { projectLonLat } from '../src/map/albers.ts';
 import { pointInRing } from '../src/map/geometry.ts';
 import { readLayout } from '../src/map/layout.ts';
@@ -139,8 +140,9 @@ describe('MockSim', () => {
     expect(f2.workers.reduce((a, w) => a + w.batteries, 0)).toBe(20_000);
     expect(f2.workers.filter((w) => w.adopted_from.includes(6))).toHaveLength(19);
     const adopted = f2.events.find((e) => e.kind === 'worker_adopted');
-    expect(adopted?.message).toMatch(/^Controller 7's 1,000 batteries were handed to the other 19 controllers in \d+ ms\.$/);
-    expect(adopted?.detail).toMatchObject({ worker_id: 6, controller: 7 });
+    expect(adopted?.message).toMatch(/^Controller 7's 1,000 batteries in Houston were handed to the other 19 controllers in \d+ ms\.$/);
+    expect(adopted?.detail).toMatchObject({ worker_id: 6, controller: 7, by_location: { LZ_HOUSTON: 1000 } });
+    expect(suspect?.detail).toMatchObject({ by_location: { LZ_HOUSTON: 1000 } });
     expect(adopted?.detail?.adopted_by).toHaveLength(19);
     expect(typeof adopted?.detail?.ms).toBe('number');
     expect(f2.events.find((e) => e.kind === 'worker_dead')?.detail).toMatchObject({ worker_id: 6, controller: 7 });
@@ -215,13 +217,15 @@ describe('MockSim', () => {
     expect(caught(() => sim.backtestStatus('nope'))).toMatchObject({ status: 404 });
   });
 
-  it('runs every controller over a share of every city, and moves them on a crash (workers[].by_location)', () => {
+  it('gives each controller a contiguous block of 1,000, and moves them on a crash (workers[].by_location)', () => {
     const { sim, step } = running(1);
     const before = frame(step()).workers;
-    for (const w of before) {
-      expect(w.by_location).toEqual({ LZ_HOUSTON: 350, LZ_NORTH: 400, LZ_CPS: 130, LZ_AEN: 120 });
-      expect(w.batteries).toBe(1000);
-    }
+    for (const w of before) expect(w.batteries).toBe(1000);
+    expect(before[0].by_location).toEqual({ LZ_HOUSTON: 1000 });
+    expect(before[6].by_location).toEqual({ LZ_HOUSTON: 1000 });
+    expect(before[7].by_location).toEqual({ LZ_NORTH: 1000 });
+    expect(before[17].by_location).toEqual({ LZ_CPS: 600, LZ_AEN: 400 });
+    expect(before[19].by_location).toEqual({ LZ_AEN: 1000 });
     sim.kill(3);
     step();
     const after = frame(step()).workers;
@@ -307,19 +311,42 @@ describe('battery_status', () => {
     expect(counts[OFFLINE]).toBe(1200);
   });
 
-  it("shows a crashed controller's batteries as 4 in one frame, then back once handed over, even at 2 steps a second", () => {
+  it("shows a crashed controller's batteries as 4 for its two missed steps, then back once handed over", () => {
     const { sim, step } = running(2);
     step();
     sim.kill(5);
-    const f1 = frame(step()); // not responding, then handed over, inside one frame
-    expect(f1.events.map((e) => e.kind)).toEqual(expect.arrayContaining(['worker_suspect', 'worker_adopted']));
+    const f1 = frame(step()); // both missed steps fall in this frame; the hand-over comes after the second
+    expect(f1.events.map((e) => e.kind)).toEqual(expect.arrayContaining(['worker_suspect', 'worker_dead', 'worker_adopted']));
     const down = codesOf(f1);
     expect(countCodes(down, null, null)[DOWN]).toBe(1000);
-    // Worker 5 ran chunk 5 of every city: b01750-b02099 in Houston, for example.
-    expect(down[1750]).toBe(DOWN);
-    expect(down[2099]).toBe(DOWN);
-    expect(down[2100]).not.toBe(DOWN);
+    // Worker 5 runs b05000-b05999, all in Houston.
+    expect(down[5000]).toBe(DOWN);
+    expect(down[5999]).toBe(DOWN);
+    expect(down[6000]).not.toBe(DOWN);
     const f2 = frame(step());
     expect(countCodes(codesOf(f2), null, null)[DOWN]).toBe(0);
+  });
+
+  it('can miss code 4 at 5 steps a second, like the backend; the map then flashes from the events', () => {
+    const { sim, step } = running(5);
+    let state: LiveState = liveReducer(initialLiveState, sim.snapshot());
+    state = liveReducer(state, step());
+    const flash = new ControllerFlash();
+    flash.reset(20_000, 20, state.events);
+    sim.kill(8); // Dallas–Fort Worth, b08000-b08999
+    const f1 = frame(step());
+    state = liveReducer(state, f1);
+    const codes = codesOf(f1);
+    expect(countCodes(codes, null, null)[DOWN]).toBe(0); // the last of the 5 steps is after the hand-over
+    const wall = Date.parse(f1.events[f1.events.length - 1].wall_utc); // the simulated wall clock
+    expect(flash.apply(state.events, codes, wall)).toBe(1000);
+    expect(codes[8000]).toBe(DOWN);
+    expect(codes[8999]).toBe(DOWN);
+    // The next frame: handed over, nothing new, so they come back.
+    const f2 = frame(step());
+    state = liveReducer(state, f2);
+    const next = codesOf(f2);
+    expect(flash.apply(state.events, next, wall + 1000)).toBe(0);
+    expect(countCodes(next, null, null)[DOWN]).toBe(0);
   });
 });

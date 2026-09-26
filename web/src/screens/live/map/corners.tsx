@@ -50,7 +50,7 @@ function MapClock() {
   const simTime = useLive((s) => s.simTimeUtc);
   const status = useLive((s) => s.status);
   if (!simTime) return <p className="map-clock">{status === 'idle' ? 'No simulation running' : 'Replay clock'}</p>;
-  const [when, zone] = fmtClock(simTime).split(/, (?=Houston time$)/);
+  const [when, zone] = fmtClock(simTime).split(/, (?=Central time$)/);
   return (
     <p className="map-clock">
       <span className="sr-only">Replay time: </span>
@@ -378,6 +378,7 @@ function BatteryCounts({ scope }: { scope: Scope }) {
   const fleet = useMapStatus((s) => s.fleet);
   const source = useMapStatus((s) => s.source);
   const statusChars = useMapStatus((s) => s.statusChars);
+  const fromEvents = useMapStatus((s) => s.fromEvents);
   // byCity is indexed like the layout's cities.
   const layoutCities = useLayoutState().layout?.cities ?? [];
   const index = scope === null ? -1 : layoutCities.findIndex((c) => c.location === scope);
@@ -407,6 +408,7 @@ function BatteryCounts({ scope }: { scope: Scope }) {
         <p className="tech">
           battery_status: {source === 'battery_status' ? `${fmtCount(statusChars)} base64 chars` : source === 'from_actions' ? 'missing, colours from each city action' : 'none yet'}
           {counts ? ` · codes 0-4 [${counts.join(', ')}]` : ''}
+          {fromEvents ? ` · ${fmtCount(fromEvents)} shown down from the controller events (the frame missed code 4)` : ''}
         </p>
       </TechOnly>
     </div>

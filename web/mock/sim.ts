@@ -9,9 +9,10 @@
 //
 // Contract details (docs/API.md): worker_id 0-19 shown as "Controller N+1";
 // battery ids b00000-b19999 in city blocks (Houston b00000-b06999, Dallas–Fort
-// Worth b07000-b14999, San Antonio b15000-b17599, Austin b17600-b19999); each
-// city split into 20 chunks, one per controller, as the backend's
-// FleetLayout.default_owners does; idle message every 5 s.
+// Worth b07000-b14999, San Antonio b15000-b17599, Austin b17600-b19999); the
+// fleet split into 20 contiguous controller blocks of 1,000, as the backend's
+// FleetLayout.default_owners does (controller 18, worker 17, spans San Antonio
+// and Austin); idle message every 5 s.
 
 import type {
   Availability,
@@ -88,7 +89,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-05-16',
     start_utc: '2025-05-16T21:00:00Z',
     start_local: '2025-05-16T16:00:00-05:00',
-    description: 'Prices jump above $2,000/MWh around 7:45 pm.',
+    description: 'All four cities jump above $2,000/MWh around 7:45 pm; San Antonio tops $3,000.',
   },
   {
     id: 'morning_spike',
@@ -96,7 +97,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-04-07',
     start_utc: '2025-04-07T08:00:00Z',
     start_local: '2025-04-07T03:00:00-05:00',
-    description: "The year's highest price, just before 7 am.",
+    description: "The year's highest prices: all four cities pass $3,500/MWh just before 7 am.",
   },
   {
     id: 'summer_spike',
@@ -104,7 +105,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-07-11',
     start_utc: '2025-07-11T23:00:00Z',
     start_local: '2025-07-11T18:00:00-05:00',
-    description: 'Both areas jump to about $1,750/MWh at 9 pm.',
+    description: 'All four cities jump to about $1,750/MWh at 9 pm.',
   },
   {
     id: 'ordinary_day',
@@ -112,7 +113,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-06-28',
     start_utc: '2025-06-28T05:00:00Z',
     start_local: '2025-06-28T00:00:00-05:00',
-    description: 'A typical day with small ups and downs.',
+    description: 'A typical day in all four cities, with small ups and downs.',
   },
 ];
 
@@ -291,21 +292,30 @@ export function batteryIndex(id: string): number | null {
 }
 
 /**
- * Initial cohorts, as the backend's FleetLayout.default_owners: every city is split into 20
- * contiguous chunks (numpy.array_split), so each controller runs a share of every city.
+ * Initial cohorts, as the backend's FleetLayout.default_owners: the fleet in id order split into 20
+ * contiguous chunks (numpy.array_split), so each controller serves one city, or two where a city
+ * boundary falls inside its chunk (worker 17: 600 San Antonio + 400 Austin).
  */
 function defaultOwners(out: Uint8Array): void {
-  for (const loc of LOCS) {
-    const n = COUNT[loc];
-    const small = Math.floor(n / WORKERS);
-    const extra = n % WORKERS;
-    let g = BASE[loc];
-    for (let w = 0; w < WORKERS; w++) {
-      const size = small + (w < extra ? 1 : 0);
-      out.fill(w, g, g + size);
-      g += size;
-    }
+  const small = Math.floor(FLEET / WORKERS);
+  const extra = FLEET % WORKERS;
+  let g = 0;
+  for (let w = 0; w < WORKERS; w++) {
+    const size = small + (w < extra ? 1 : 0);
+    out.fill(w, g, g + size);
+    g += size;
   }
+}
+
+/** {location: batteries} among these battery indices, only locations that have some (event details). */
+function byLocation(idx: Iterable<number>): Record<string, number> {
+  const counts = new Uint32Array(LOCS.length);
+  for (const g of idx) counts[LOC_OF[g]]++;
+  const out: Record<string, number> = {};
+  LOCS.forEach((loc, k) => {
+    if (counts[k]) out[loc] = counts[k];
+  });
+  return out;
 }
 
 /** People count controllers from 1; worker_id counts from 0. */
@@ -387,12 +397,8 @@ export class MockSim {
   private offWorker = new Uint8Array(FLEET);
   private offBattery = new Uint8Array(FLEET);
   private lastSetpoint = new Float64Array(FLEET);
-  /**
-   * Batteries whose controller was not responding at a tick since the last frame. The frame shows
-   * them as 4 even if they were handed over before it was sent (at 2+ ticks a second, detection and
-   * hand-over often fall inside one frame), so the map's crash flash always appears.
-   */
-  private downLatch = new Uint8Array(FLEET);
+  /** Each battery's code at the latest tick (docs/API.md battery_status), or null before the first tick. */
+  private tickCodes: Uint8Array | null = null;
   private workers: WorkerState[] = [];
   private offlineWorkers = new Set<number>();
   private failed: { count: number; recent: FailedCommand[] } = { count: 0, recent: [] };
@@ -428,7 +434,7 @@ export class MockSim {
     this.offWorker.fill(0);
     this.offBattery.fill(0);
     this.lastSetpoint.fill(0);
-    this.downLatch.fill(0);
+    this.tickCodes = null;
     this.offlineWorkers.clear();
     this.workers = Array.from({ length: WORKERS }, (_, i) => ({
       worker_id: i,
@@ -555,16 +561,18 @@ export class MockSim {
     return LAYOUT.json;
   }
 
-  /** Each battery's state now (docs/API.md battery_status codes), before packing. */
+  /**
+   * battery_status codes: the latest tick's, like the backend (so, like the backend, a frame at
+   * 5-10 ticks a second can miss the two ticks a crashed controller's batteries are down). Offline
+   * batteries show at once, and while paused a controller that stops responding shows as down.
+   */
   statusCodes(): Uint8Array {
-    const codes = new Uint8Array(FLEET);
-    const down = new Set(this.workers.filter((w) => w.status === 'suspect').map((w) => w.worker_id));
+    const codes = this.status === 'idle' || !this.tickCodes ? new Uint8Array(FLEET).fill(WAITING) : this.tickCodes.slice();
+    const down = this.status === 'paused' ? new Set(this.workers.filter((w) => w.status === 'suspect').map((w) => w.worker_id)) : null;
     for (let g = 0; g < FLEET; g++) {
       if (!this.isAvailable(g)) codes[g] = OFFLINE;
-      else if (this.downLatch[g] || down.has(this.owner[g])) codes[g] = DOWN;
-      else if (this.lastSetpoint[g] > 1e-9) codes[g] = SELLING;
-      else if (this.lastSetpoint[g] < -1e-9) codes[g] = CHARGING;
-      else codes[g] = WAITING;
+      else if (down?.has(this.owner[g])) codes[g] = DOWN;
+      else if (codes[g] === OFFLINE) codes[g] = WAITING; // back online since the last tick
     }
     return codes;
   }
@@ -765,7 +773,6 @@ export class MockSim {
       events: this.pendingEvents.splice(0),
       battery_status: this.batteryStatus(),
     };
-    this.downLatch.fill(0);
     if (forecast) frame.forecast = forecast;
     return frame;
   }
@@ -886,7 +893,7 @@ export class MockSim {
     const index = this.tickIndex;
     const tsS = this.tickS(index);
     this.currentTickUtc = isoUtc(tsS);
-    this.detectAtTick();
+    const dying = this.detectAtTick();
 
     const price = perLoc(() => 0);
     const decision = perLoc(() => 0);
@@ -899,9 +906,10 @@ export class MockSim {
     const stopped: { loc: Loc; action: TickAction; offline: boolean }[] = [];
     const spikes: { loc: Loc; price: number }[] = [];
 
-    // A controller that is not responding sends no orders: its batteries miss them (the gap),
-    // they end up as failed commands, and the map shows those batteries as "controller down".
+    // A controller that is not responding (or was just declared dead) sends no orders: its batteries
+    // miss them (the gap), they end up as failed commands, and the map shows them as "controller down".
     const lost = new Set(this.workers.filter((w) => w.status === 'suspect').map((w) => w.worker_id));
+    for (const w of dying) lost.add(w.worker_id);
     const newlyFailed: FailedCommand[] = [];
 
     for (const loc of LOCS) {
@@ -941,7 +949,6 @@ export class MockSim {
       let delivered = 0;
       for (let n = 0; n < count; n++) {
         const g = base + n;
-        if (lost.has(this.owner[g])) this.downLatch[g] = 1;
         const setpoint = headroom > 0 ? sign * h[n] : 0;
         if (lost.has(this.owner[g])) {
           this.lastSetpoint[g] = 0;
@@ -1022,6 +1029,19 @@ export class MockSim {
     this.pendingTicks.push(t);
     for (const w of this.workers) if (w.status !== 'dead' && w.killedAtTick === null) w.last_tick_utc = t.ts_utc;
     if (index % FORECAST_EVERY_TICKS === 0) this.issueForecast(tsS);
+
+    // This tick's codes for battery_status; then the hand-over of controllers declared dead at it.
+    const codes = new Uint8Array(FLEET);
+    for (let g = 0; g < FLEET; g++) {
+      if (!this.isAvailable(g)) codes[g] = OFFLINE;
+      else if (lost.has(this.owner[g])) codes[g] = DOWN;
+      else if (this.lastSetpoint[g] > 1e-9) codes[g] = SELLING;
+      else if (this.lastSetpoint[g] < -1e-9) codes[g] = CHARGING;
+      else codes[g] = WAITING;
+    }
+    this.tickCodes = codes;
+    for (const w of dying) this.handOver(w);
+
     this.tickIndex += 1;
     this.currentTickUtc = null;
   }
@@ -1124,23 +1144,31 @@ export class MockSim {
 
   // ---- failure detection -------------------------------------------------------------
 
-  /** A crashed controller misses this step's deadline: first "not responding", then crashed and adopted. */
-  private detectAtTick(): void {
+  /**
+   * A crashed controller misses this step's deadline: first "not responding", then, at the second
+   * miss, crashed. Its batteries are down for both steps and are handed over after the second one
+   * (the backend reassigns them for the next tick). Returns the controllers declared dead now.
+   */
+  private detectAtTick(): WorkerState[] {
+    const dying: WorkerState[] = [];
     for (const w of this.workers) {
       if (w.killedAtTick === null || w.status === 'dead') continue;
       w.missed += 1;
       if (w.missed === 1) {
         w.status = 'suspect';
+        const owned = this.ownedBy(w.worker_id);
         this.emit(
           'worker_suspect',
           'warn',
-          `${controller(w.worker_id)} stopped responding. Its batteries get no new orders while the others cover for it.`,
-          workerDetail(w),
+          `${controller(w.worker_id)} stopped responding. Its batteries${this.inCities(owned)} get no new orders while the others cover for it.`,
+          { ...workerDetail(w), by_location: byLocation(owned) },
         );
       } else if (w.missed >= 2) {
-        this.adopt(w);
+        this.declareDead(w);
+        dying.push(w);
       }
     }
+    return dying;
   }
 
   private detectWhilePaused(nowMs: number): void {
@@ -1150,17 +1178,44 @@ export class MockSim {
       if (w.status !== 'suspect' && age >= 2000) {
         w.status = 'suspect';
         w.missed = 1;
-        this.emit('worker_suspect', 'warn', `${controller(w.worker_id)} stopped sending its heartbeat.`, workerDetail(w));
+        const owned = this.ownedBy(w.worker_id);
+        this.emit('worker_suspect', 'warn', `${controller(w.worker_id)} stopped sending its heartbeat.`, {
+          ...workerDetail(w),
+          by_location: byLocation(owned),
+        });
       }
-      if (age >= 6000) this.adopt(w);
+      if (age >= 6000) {
+        this.declareDead(w);
+        this.handOver(w);
+      }
     }
   }
 
-  private adopt(dead: WorkerState): void {
+  private ownedBy(workerId: number): number[] {
+    const out: number[] = [];
+    for (let g = 0; g < FLEET; g++) if (this.owner[g] === workerId) out.push(g);
+    return out;
+  }
+
+  /** " in Houston", " in San Antonio and Austin" for these batteries. */
+  private inCities(idx: number[]): string {
+    const locs = Object.keys(byLocation(idx)) as Loc[];
+    return locs.length ? ` in ${cityList(locs)}` : '';
+  }
+
+  private declareDead(dead: WorkerState): void {
     dead.status = 'dead';
+    this.emit('worker_dead', 'warn', `${controller(dead.worker_id)} crashed: it missed two 5-minute steps in a row.`, {
+      ...workerDetail(dead),
+      missed_ticks: 2,
+    });
+  }
+
+  /** Round-robin in id order over the healthy controllers, as coordinator._reassign does. */
+  private handOver(dead: WorkerState): void {
     const survivors = this.workers.filter((w) => w.status === 'healthy');
-    const moved: number[] = [];
-    for (let g = 0; g < FLEET; g++) if (this.owner[g] === dead.worker_id) moved.push(g);
+    const moved = this.ownedBy(dead.worker_id);
+    if (!survivors.length) return;
     moved.forEach((g, i) => {
       const to = survivors[i % survivors.length];
       this.owner[g] = to.worker_id;
@@ -1171,15 +1226,17 @@ export class MockSim {
     }
     this.recountWorkers();
     const ms = 1 + Math.round(this.random() * 3);
-    this.emit('worker_dead', 'warn', `${controller(dead.worker_id)} crashed: it missed two 5-minute steps in a row.`, {
-      ...workerDetail(dead),
-      missed_ticks: 2,
-    });
     this.emit(
       'worker_adopted',
       'good',
-      `${controller(dead.worker_id)}'s ${moved.length.toLocaleString('en-US')} batteries were handed to the other ${survivors.length} controllers in ${ms} ms.`,
-      { ...workerDetail(dead), batteries: moved.length, adopted_by: survivors.map((s) => s.worker_id), ms },
+      `${controller(dead.worker_id)}'s ${moved.length.toLocaleString('en-US')} batteries${this.inCities(moved)} were handed to the other ${survivors.length} controllers in ${ms} ms.`,
+      {
+        ...workerDetail(dead),
+        batteries: moved.length,
+        adopted_by: survivors.map((s) => s.worker_id),
+        ms,
+        by_location: byLocation(moved),
+      },
     );
   }
 

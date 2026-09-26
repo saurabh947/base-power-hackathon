@@ -11,9 +11,9 @@ export function Clock() {
   if (!simTime) {
     return <div className="clock">{status === 'idle' ? 'No simulation running' : 'Replay clock'}</div>;
   }
-  // fmtClock gives "May 16, 2025, 7:45 pm, Houston time"; when space is tight, "Houston time" moves
+  // fmtClock gives "May 16, 2025, 7:45 pm, Central time"; when space is tight, "Central time" moves
   // to the next line as a whole instead of being cut off.
-  const [when, zone] = fmtClock(simTime).split(/, (?=Houston time$)/);
+  const [when, zone] = fmtClock(simTime).split(/, (?=Central time$)/);
   return (
     <div className="clock">
       <span className="sr-only">Replay time: </span>
