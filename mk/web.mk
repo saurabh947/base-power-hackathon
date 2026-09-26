@@ -40,7 +40,8 @@ web-build:
 web-check:
 	cd $(WEB_DIR) && $(NPM) run check
 
-# Re-export the mock's real-price fixture for every preset in config.yaml (needs `make setup`).
+# Re-export the mock's real-price fixture for every 2025 preset in config.yaml, plus the mock-only days that
+# stand in for 2026 (needs `make setup`).
 web-prices:
 	$(UV) run python web/mock/export_prices.py
 

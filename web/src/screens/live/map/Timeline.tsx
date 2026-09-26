@@ -143,9 +143,19 @@ export function Timeline({ scope }: { scope: Scope }) {
         ) : null}
       </div>
       <div className="timeline-caption">
+        {/* The honest label (docs/UX.md): where the track starts, and whose prices it shows. */}
         <span className="timeline-start">
-          {firstMs !== null ? `From ${fmtTimeOfDay(firstMs, { compact: true, words: true })}, ${shortDate(firstMs)}` : 'Starts when the replay does'}
-          {predictedX !== null ? <span className="timeline-key-predicted"> · shaded: AI prediction</span> : null}
+          {firstMs === null ? (
+            'Starts when the replay does'
+          ) : history[0]?.predicted ? (
+            <span className="timeline-key-predicted">The AI’s predicted prices (shaded)</span>
+          ) : predictedX !== null ? (
+            <>
+              Real prices, then <span className="timeline-key-predicted">the AI’s (shaded)</span>
+            </>
+          ) : (
+            `Real prices from ${fmtTimeOfDay(firstMs, { compact: true, words: true })}, ${shortDate(firstMs)}`
+          )}
         </span>
         <span className="timeline-now">
           {!n ? null : live ? (

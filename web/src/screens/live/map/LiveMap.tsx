@@ -223,15 +223,10 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
     if (!root || !br) return;
     const room = root.clientHeight - br.offsetHeight - 2 * EDGE - RIGHT_GAP;
     root.style.setProperty('--corner-tr-max', `${Math.max(180, Math.floor(room))}px`);
-    // Zoomed in, the Triangle fills the middle, so a notice moves to the free space between the left corners.
+    // The corners' width, for what sits between them: the scope pill, and (zoomed in, when the Triangle fills
+    // the middle) a notice as a compact bar at the bottom centre (css: .livemap.is-zoomed .map-notice).
     const tl = tlRef.current;
-    const bl = blRef.current;
-    if (tl && bl) {
-      const top = tl.offsetTop + tl.offsetHeight + RIGHT_GAP;
-      root.style.setProperty('--left-free-top', `${top}px`);
-      root.style.setProperty('--left-free-height', `${Math.max(120, bl.offsetTop - RIGHT_GAP - top)}px`);
-      root.style.setProperty('--corner-width', `${tl.offsetWidth}px`);
-    }
+    if (tl) root.style.setProperty('--corner-width', `${tl.offsetWidth}px`);
   }, []);
 
   // After every render that may move or resize a label, and whenever a corner panel changes size.

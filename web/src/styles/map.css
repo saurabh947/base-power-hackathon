@@ -593,8 +593,9 @@ html.map-mode .toasts {
 }
 
 /*
- * Short windows (1280 × 800 and the like): the money corner also holds the race, so the corners are a
- * little tighter and its power line lower, and both right-hand corners fit with a city selected.
+ * Short windows (1280 × 800 and the like): the money corner also holds the race (and in 2026 the projected
+ * line), so the corners are a little tighter, its power line lower and its notes one line each, and both
+ * right-hand corners fit with a city selected.
  */
 @media (max-height: 860px) and (min-width: 861px) {
   .corner {
@@ -624,6 +625,12 @@ html.map-mode .toasts {
 
   .corner .race-rows {
     gap: 1px;
+  }
+
+  /* One line each: the money's definition and the projection's reason are in their tooltips here. */
+  .corner .corner-sub-def,
+  .corner .projected-why {
+    display: none;
   }
 }
 

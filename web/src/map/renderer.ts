@@ -556,7 +556,8 @@ export class MapRenderer {
       ys[i] = m.k * cells.y[i] + m.oy;
     }
     const pulsePhase = this.reduced ? 0 : (((now - this.pulseStartMs) / PULSE_MS) % 1 + 1) % 1;
-    const throb = this.reduced ? 1 : 0.62 + 0.38 * Math.cos(TWO_PI * pulsePhase);
+    // Between 45% and 100%: always there, clearly beating.
+    const throb = this.reduced ? 1 : 0.725 + 0.275 * Math.cos(TWO_PI * pulsePhase);
 
     // 1. The halo under selling dots: added light on the dark page.
     if (!this.reduced && this.glow) {

@@ -200,23 +200,29 @@ function useAvgPowerKw(): number {
   });
 }
 
-/** "$6,790 of it is projected, on the AI's predicted prices" (docs/API.md Tick.predicted). */
+const WHOLESALE =
+  'Gross wholesale value: what the power the fleet sold was worth, minus what the power it bought cost.';
+
+/**
+ * "$6,790 of it is projected, on the AI's predicted prices" (docs/API.md Tick.predicted). In a short window the
+ * reason moves to the tooltip (css: .projected-why), so the line stays one line.
+ */
 function ProjectedLine({ scope }: { scope: Scope }) {
   const usd = useLiveData((s) => projectedMoney(s.history, scope)?.usd ?? null);
   const exact = useLiveData((s) => projectedMoney(s.history, scope)?.exact ?? true);
   if (usd === null) return null;
+  const why = <span className="projected-why">, on the AI’s predicted prices</span>;
   return (
     <p className="corner-sub projected-line" title="Money earned while the prices are the AI's prediction, not real ERCOT data, is a projection.">
       <Icon name="ai" size={13} />
       {!exact ? (
-        <span>Part of it is projected, on the AI’s predicted prices</span>
+        <span>Part of it is projected{why}</span>
       ) : Math.abs(usd) >= 0.005 ? (
         <span>
-          <strong className="num">{fmtUsd(usd, Math.abs(usd) < 100 ? 2 : 0)}</strong> of it is projected, on the AI’s
-          predicted prices
+          <strong className="num">{fmtUsd(usd, Math.abs(usd) < 100 ? 2 : 0)}</strong> of it is projected{why}
         </span>
       ) : (
-        <span>From here on it is projected: prices are the AI’s prediction</span>
+        <span>From here on it is projected{why}</span>
       )}
     </p>
   );
@@ -255,11 +261,12 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
           <span className="muted">–</span>
         )}
       </p>
-      <p className="corner-sub">
+      <p className="corner-sub" title={money ? WHOLESALE : undefined}>
         {money ? (
           <>
-            Gross wholesale value. Sold <strong>{fmtEnergy(money.sold_kwh)}</strong> · Bought{' '}
-            <strong>{fmtEnergy(money.bought_kwh)}</strong>
+            {/* In a short window only the tooltip says it (css: .corner-sub-def), so both right-hand corners fit. */}
+            <span className="corner-sub-def">Gross wholesale value. </span>
+            Sold <strong>{fmtEnergy(money.sold_kwh)}</strong> · Bought <strong>{fmtEnergy(money.bought_kwh)}</strong>
           </>
         ) : (
           'This simulator does not report money per city.'
