@@ -82,30 +82,33 @@ def test_the_rules():
     assert [y["year"] for y in gains["years"]] == [2025, 2024] and [y["is_pitch"] for y in gains["years"]] == [True,
                                                                                                              False]
     y25, y24 = gains["years"]
-    assert list(y25) == ["year", "is_pitch", "fleet_size", "best_possible_per_battery_usd_year", "strategies",
-                         "uplift"]
+    assert list(y25) == ["year", "is_pitch", "fleet_size", "real_until_utc", "best_possible_per_battery_usd_year",
+                         "strategies", "uplift"]
     assert y25["fleet_size"] == y24["fleet_size"] == 20000
+    assert y25["real_until_utc"] is None and y24["real_until_utc"] is None  # real prices all year
     assert list(y25["strategies"]) == ["forecast", "bands", "peak"]
     ai = y25["strategies"]["forecast"]
     assert ai["label"] == "AI forecast (TimesFM-3)" and y25["strategies"]["bands"]["label"] == "Simple rule"
     assert ai["per_battery_usd_year"] == 190.95 and ai["fleet_usd_year"] == 3819000.0
+    assert (ai["real_per_battery_usd"], ai["projected_per_battery_usd"]) == (190.95, 0.0)  # all real
     assert ai["share_of_best"] == round(190.95 / 421.29, 3) == 0.453
     assert (ai["surplus_mwh"], ai["spike_mwh"], ai["spike_events"], ai["spike_charge_level"]) == (7011.3, 25.2, 21,
                                                                                                     0.231)
     assert (ai["sold_mwh"], ai["bought_mwh"], ai["avg_sell_usd_mwh"], ai["avg_buy_usd_mwh"]) == (80168.1, 89231.5,
                                                                                                   66.58, 17.02)
-    assert y25["uplift"] == {"per_battery_usd_year": 67.28, "pct": round(67.28 / 123.67, 3),
+    assert y25["uplift"] == {"per_battery_usd_year": 67.28, "real_per_battery_usd": 67.28,
+                             "projected_per_battery_usd": 0.0, "pct": round(67.28 / 123.67, 3),
                              "fleet_usd_year": round(67.28 * 20000, 2)}
     assert y25["best_possible_per_battery_usd_year"] == 421.29
     # spikes are defined by prices: one count for the year, on every strategy (even a run without insights)
     assert [s["spike_events"] for s in y25["strategies"].values()] == [21, 21, 21]
-    assert set(y25["strategies"]["peak"]) == {"label", "per_battery_usd_year", "fleet_usd_year", "share_of_best",
-                                              "spike_events"}
+    money = {"label", "per_battery_usd_year", "real_per_battery_usd", "projected_per_battery_usd", "fleet_usd_year"}
+    assert set(y25["strategies"]["peak"]) == money | {"share_of_best", "spike_events"}
     # 2024: the four-city set, whose runs predate metrics.insights: money only, no insight fields
     assert y24["strategies"]["forecast"]["per_battery_usd_year"] == 271.45
     assert y24["strategies"]["bands"]["per_battery_usd_year"] == 113.71
     for s in y24["strategies"].values():
-        assert set(s) == {"label", "per_battery_usd_year", "fleet_usd_year", "share_of_best"}
+        assert set(s) == money | {"share_of_best"}
     assert y24["uplift"]["pct"] == round((271.45 - 113.71) / 113.71, 3)
     # no hindsight run for a year: no best possible, no share_of_best
     no_best = build_ai_gains([r for r in records if not (r["strategy"] == "hindsight" and r["year"] == 2025)],
@@ -183,16 +186,20 @@ def test_the_service_serves_the_stored_runs(stored, monkeypatch):
     example, strategy_example = contract()
     assert set(gains) == set(example) and (gains["ai"], gains["baseline"]) == ("forecast", "bands")
     assert [(y["year"], y["is_pitch"]) for y in gains["years"]] == [(2025, True), (2024, False)]
+    split = {"real_per_battery_usd", "projected_per_battery_usd"}  # docs/API.md: 2026 splits its money
     for y in gains["years"]:
-        # docs/API.md's AiGains year plus fleet_size (the website asked for it; see docs/notes/backtest.md)
-        assert set(y) == set(example["years"][0]) | {"fleet_size"} and y["fleet_size"] == 20
+        # docs/API.md's AiGains year plus fleet_size (the website asked for it; see docs/notes/backtest.md) and
+        # real_until_utc (null: these years are real all year)
+        assert set(y) == set(example["years"][0]) | {"fleet_size", "real_until_utc"} and y["fleet_size"] == 20
+        assert y["real_until_utc"] is None
         assert list(y["strategies"]) == ["forecast", "bands", "peak"]
         assert len({s["spike_events"] for s in y["strategies"].values()}) == 1  # the year's count
-        assert set(y["uplift"]) == set(example["years"][0]["uplift"])
+        assert set(y["uplift"]) == set(example["years"][0]["uplift"]) | split
         mine = runs[y["year"]]
         assert y["best_possible_per_battery_usd_year"] == round(mine["hindsight"]["per_battery_avg_usd"], 2)
         for name, s in y["strategies"].items():
-            assert set(s) == set(strategy_example), name  # every StrategyGains field: these runs have insights
+            assert set(s) == set(strategy_example) | split, name  # every StrategyGains field: runs with insights
+            assert (s["real_per_battery_usd"], s["projected_per_battery_usd"]) == (s["per_battery_usd_year"], 0.0)
             r = mine[name]
             assert s["per_battery_usd_year"] == round(r["per_battery_avg_usd"], 2)
             assert s["fleet_usd_year"] == round(r["fleet_total_usd"], 2)

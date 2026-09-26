@@ -13,11 +13,15 @@ comparison strategy side by side with the live one, inside the coordinator's pro
     Then the kWh are booked at that tick's RT price as the Ledger books them (usd = kWh x price / 1000, summed
     per city in tick order), so a race over a window earns exactly what src.backtest earns there
     (tests/test_race.py: bit for bit).
-- It mirrors the live availability overrides (an offline battery has no headroom and holds its charge) but
-  not controller crashes: it has no controllers.
+- It mirrors the live availability overrides (an offline battery has no headroom and holds its charge) and the
+  charge the live fleet loses (docs/API.md failure model: a crash empties the controller's batteries to the
+  reserve, a controller taken offline halves their usable charge: `adjust`, on the same batteries), so the race
+  compares decisions only. It doesn't mirror the crash's outage itself (the ticks until the hand-over): it has no
+  controllers.
 
 The potential (docs/API.md race.potential) is a second shadow fleet of the same class: the LIVE strategy (the
-live run's own Strategy instances, which are pure) with every battery online and no controller crashes. It
+live run's own Strategy instances, which are pure) with every battery online and no controller crashes, and it
+never loses charge (no emptying, no halving), so shortfall_usd includes the energy the outages destroyed. It
 books its revenue in the live ledger's order (per tick, city by city in config order: `running_usd`), so with no
 outage it earns exactly the live fleet's totals.revenue_usd, to the bit (tests/test_race_fleet.py, and the
 20,000-battery bench). shortfall_usd = potential - live: what the outages cost (negative if an outage happened to
@@ -123,6 +127,17 @@ class Race:
                     c.bought_kwh -= delivered
         self.ticks += 1
         self.last_ms = (time.perf_counter() - t0) * 1000.0
+
+    def adjust(self, indices: Mapping[str, np.ndarray], fn: Callable[[np.ndarray], np.ndarray]) -> None:
+        """Change some batteries' charge between ticks, as the live fleet's did (docs/API.md: a crash empties a
+        controller's batteries, taking a controller offline halves their usable charge; the race mirrors both on the
+        same batteries). indices: {location: positions in that city's arrays}; fn(their SoC) -> their new SoC.
+        Nothing is booked: that energy is lost, not sold."""
+        for loc, local in indices.items():
+            c = self.cities[loc]
+            soc = c.soc.copy()
+            soc[local] = fn(soc[local])
+            c.soc = soc
 
     def revenue_usd(self) -> float:
         return math.fsum(c.revenue_usd for c in self.cities.values())  # as Ledger.summary()'s total

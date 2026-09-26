@@ -34,7 +34,7 @@ EDITABLE = ("year", "preset", "speed_tps", "strategy", "start_charge_level")
 EVENT_KINDS = (
     "run_started", "run_paused", "run_resumed", "run_finished", "speed_changed", "run_reset", "worker_suspect",
     "worker_dead", "worker_adopted", "availability_changed", "price_spike", "action_changed", "forecast_issued",
-    "backtest_done", "race_update", "prediction_started",
+    "backtest_done", "race_update", "prediction_started", "worker_recovered",
 )
 PRESET_KEYS = ("id", "year", "label", "date_local", "start_utc", "start_local", "description")
 EVENING_BEFORE_REAL_UNTIL = "evening_before_real_until"  # a computed preset start (config presets.items[].start)
@@ -472,6 +472,8 @@ def availability_message(detail: Mapping, summary: Mapping) -> str:
                 f"({fmt_int(detail['offline'])}) are now offline; {online}")
     if scope == "worker":
         verb = "back online" if detail["available"] else "offline"
+        if detail.get("halved"):  # taking a controller offline halves its batteries' usable charge (docs/API.md)
+            verb += " and have lost half of their usable charge"
         cities = list(detail.get("by_location") or ())
         where = f" in {geo.cities_phrase(cities)}" if cities else ""
         return (f"{controller(detail['worker_id'])}'s {fmt_int(detail['batteries'])} batteries{where} are {verb}; "

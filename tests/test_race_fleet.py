@@ -1,12 +1,14 @@
 """The live race inside the real coordinator and worker processes (small fleet, real snapshot prices, Redis):
 the Race block in the snapshot, race_update events at a real price spike, the race earning exactly what
-src.backtest earns for the comparison strategy (bit for bit) while the live fleet runs next to it, availability
-mirrored, crashes not, null while idle, and the AI forecast racing a live simple rule (SYNTHETIC forecast books:
-test doubles, labelled as such; a local checkout has no TimesFM forecasts)."""
+src.backtest earns for the comparison strategy (bit for bit) while the live fleet runs next to it, availability and
+the charge a crash destroys mirrored (not the crash's outage: the race has no controllers), null while idle, and the
+AI forecast racing a live simple rule (SYNTHETIC forecast books: test doubles, labelled as such; a local checkout has
+no TimesFM forecasts)."""
 import json
 import os
 import re
 import signal
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -104,7 +106,10 @@ def test_the_race_runs_next_to_the_live_fleet(co):
     assert all(e["kind"] != "race_update" or e["message"].endswith(".") for e in co.events)
 
 
-def test_the_race_mirrors_availability_but_not_crashes(co):
+def test_the_race_mirrors_availability_and_the_charge_a_crash_destroys(co):
+    """The race mirrors the availability overrides and the charge the live fleet loses (a crash empties the
+    controller's batteries: docs/API.md failure model), on the same batteries, so it compares decisions only. It has
+    no controllers, so the crash's outage itself (the ticks until the hand-over) is not mirrored."""
     co.start({"start_utc": SUMMER_SPIKE, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
              max_ticks=40, internal=True)
     for _ in range(24):  # to 8 pm, while the simple rule sells
@@ -112,16 +117,30 @@ def test_the_race_mirrors_availability_but_not_crashes(co):
     reply = co.handle_control({"cmd": "availability", "args": {"scope": "location", "location": "LZ_HOUSTON",
                                                                 "offline_fraction": 0.3}})
     assert reply["ok"]
-    held = co.availability.offline[co.loc_slice["LZ_HOUSTON"]].copy()
+    hou = co.loc_slice["LZ_HOUSTON"]
+    held = co.availability.offline[hou].copy()
     assert held.sum() == round(0.3 * held.size)
     before = co.run.race.cities["LZ_HOUSTON"].soc.copy()
     victim = co.workers[1]
-    os.kill(victim.pid, signal.SIGKILL)  # a controller crash: the live fleet feels it, the race does not
+    cohort = victim.owned.copy()
+    crashed = np.zeros(hou.stop - hou.start, dtype=bool)
+    crashed[cohort[(cohort >= hou.start) & (cohort < hou.stop)] - hou.start] = True
+    assert crashed.any() and (~crashed & ~held).any() and (~crashed & held).any()
+    assert (before[crashed] > 0.2).mean() > 0.5  # the race's copies still hold charge (the simple rule sold later)
+    potential_before = co.run.potential.cities["LZ_HOUSTON"].soc.copy()
+    os.kill(victim.pid, signal.SIGKILL)  # a controller crash: its batteries lose their charge, in the race too
+    deadline = time.monotonic() + 5
+    while victim.exit_code is None and time.monotonic() < deadline:
+        co._supervise(force=True)  # the loop notices an exited process within 0.2 s
+    assert (co.run.race.cities["LZ_HOUSTON"].soc[crashed] == 0.2).all() and (co.soc[cohort] == 0.2).all()
+    assert np.array_equal(co.run.potential.cities["LZ_HOUSTON"].soc, potential_before)  # it never loses charge
     for _ in range(12):
         co.step()
     assert victim.status == "dead"
     after = co.run.race.cities["LZ_HOUSTON"].soc
-    assert np.array_equal(after[held], before[held]) and (after[~held] < before[~held]).all()
+    assert (after[crashed] == 0.2).all() and (co.soc[cohort] == 0.2).all()  # emptied, live and race alike
+    assert np.array_equal(after[held & ~crashed], before[held & ~crashed])  # offline: they held their charge
+    assert (after[~held & ~crashed] < before[~held & ~crashed]).all()  # the others kept selling
     assert co.snapshot()["race"]["by_location"]["LZ_HOUSTON"]["action"] in ("sell", "hold")
 
 

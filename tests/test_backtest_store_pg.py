@@ -247,3 +247,57 @@ def test_ai_gains_reads_the_database(pg, tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL")
     monkeypatch.setenv("BACKTEST_RESULTS_DIR", str(tmp_path))
     assert json.dumps(service.ai_gains(), sort_keys=True) == json.dumps(from_db, sort_keys=True)
+
+
+def test_each_year_has_its_own_pitch_set_and_2026_splits_its_money(pg, tmp_path, monkeypatch):
+    """A 2026 pitch set (real prices to real_until_utc, then a SYNTHETIC prediction: a test double written where the
+    prediction job writes, no TimesFM) is stored next to 2025's without touching it; the database serves its split."""
+    import numpy as np
+    import pandas as pd
+
+    from src.data import years
+    from src.forecast import predictions
+
+    cutoff = pd.Timestamp("2026-09-20T05:00Z")  # the committed 2026 snapshot's real_until_utc
+    n = 3 * 96
+    ts = cutoff.value + np.arange(n, dtype=np.int64) * 15 * 60 * 10**9
+    hour = pd.to_datetime(ts, utc=True).tz_convert("America/Chicago").hour.to_numpy() + 0.0
+    wave = np.round(50.0 + 30.0 * np.sin((hour - 13.0) / 24.0 * 2 * np.pi), 2)
+    monkeypatch.setenv("FORECAST_SOURCE", "parquet")
+    monkeypatch.setattr(predictions, "default_cache_dir", lambda: tmp_path / "predictions")
+    years.clear_cache()
+    predictions.clear_cache()
+    predictions.write([predictions.PredictionPath(loc, "timesfm-3.0", cutoff, pd.Timestamp("2026-09-26T12:00Z"), ts,
+                                                  wave - 8, wave, wave + 8, np.zeros(n, dtype=np.int16))
+                       for loc in LOCS], out="parquet", cache_dir=tmp_path / "predictions")
+    try:
+        first = mini_backtest(tmp_path)  # the 2025 pitch set
+        flags25 = flags(pg)
+        start = local_midnight_utc(date(2026, 9, 10))
+        rows = [r for r in load_rt_rows(years=(2026,), locations=LOCS) if r.ts >= start - timedelta(days=7)]
+        settings = backtest_settings()
+        settings["ceiling"].update(ratio_step=0.25, workers=1)
+        out26 = run_backtest(["bands", "peak"], 2026, settings=settings, pitch=True, fleet_size=20,
+                             feed=InMemoryPriceFeed.from_intervals(rows), out_dir=tmp_path, log=lambda s: None)
+        assert out26.stored_in_db
+        now = flags(pg)
+        assert all(now[run_id] == flag for run_id, flag in flags25.items())  # 2025's pitch set untouched
+        assert {r["run_id"] for r in store.load_pitch_records(2025)} == {r["run_id"] for r in first.records}
+        assert {r["run_id"] for r in store.load_pitch_records(2026)} == {r["run_id"] for r in out26.records}
+        (tmp_path / "pitch_2026.json").unlink()  # prove it is the database that answers
+        results = service.pitch_results(2026)
+        assert results == build_results(out26.records, year=2026)
+        assert results["real_until_utc"] == "2026-09-20T05:00:00Z"
+        for s in results["strategies"] + [results["ceiling"]]:
+            assert round(s["real_per_battery_usd"] + s["projected_per_battery_usd"], 2) == s["per_battery_usd_year"]
+            assert s["projected_per_battery_usd"] != 0.0
+        slim = {r["run_id"]: r for r in store.load_gains_records()}
+        for r in out26.records:
+            got = slim[r["run_id"]]["split"]
+            assert got["real_until_utc"] == "2026-09-20T05:00:00Z"
+            assert got["real_per_battery_usd"] == r["metrics"]["split"]["real_per_battery_usd"]
+        assert all(slim[r["run_id"]]["split"]["real_until_utc"] is None for r in first.records
+                   if r["fleet_total_usd"] is not None)
+    finally:
+        years.clear_cache()
+        predictions.clear_cache()

@@ -155,6 +155,7 @@ def make_forecast_strategy(
     books: Mapping[str, ForecastBook] | None = None,
     batteries=None,
     locations=None,
+    price_source: str | None = None,
 ) -> ForecastStrategy:
     """ForecastStrategy from config.yaml: rule knobs from forecast.strategy, physics from battery.
 
@@ -162,6 +163,8 @@ def make_forecast_strategy(
     forecast.locations (Postgres when configured, else the parquet cache).
     batteries: the BatteryStates this instance steers (for duration_h); default:
     the configured fleet from src.sim.fleet.generate_batteries.
+    price_source: where a year's real_until_utc is read for the virtual forecasts after it
+    ('postgres' or 'snapshot'; default env PRICE_SOURCE, as the live fleet reads its prices).
     """
     from src.config import load_config
     from src.forecast.settings import load_settings
@@ -174,7 +177,7 @@ def make_forecast_strategy(
     duration = fleet_duration_h([b.capacity_kwh for b in batteries], [b.power_kw for b in batteries])
     if books is None:
         # virtual=True: after a year's real_until_utc the book holds hourly slices of the AI's prediction
-        books = {loc: ForecastBook.load(loc, settings.strategy.series, virtual=True)
+        books = {loc: ForecastBook.load(loc, settings.strategy.series, virtual=True, price_source=price_source)
                  for loc in (locations or settings.locations)}
     st = settings.strategy
     return ForecastStrategy(

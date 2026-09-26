@@ -27,6 +27,12 @@ The headline is the uncapped LP. The simulated batteries have no cycle limit or 
 and neither do the strategies (the simple rule cycles more than once on some days), so only
 the uncapped LP bounds what any strategy could earn under the same rules. The one-cycle-a-day
 number is shown as a reference for warranty-limited operation.
+
+A year whose real prices end early (2026) is planned on its replayed prices: real ERCOT prices up to
+real_until_utc, the AI's predicted p50 after it. The ceiling splits like the strategies
+(metrics["split"]): days before the cutoff are real money, days from it on projected; a day that
+straddles the cutoff is split interval by interval along its optimal schedule. (real_until_utc has
+been local midnight so far, so no day straddles it.)
 """
 from __future__ import annotations
 
@@ -138,6 +144,7 @@ class Day:
     date_local: str
     prices: np.ndarray  # $/MWh per 15-min interval (0 where missing)
     tradable: np.ndarray  # False where the interval has no price
+    first: int = 0  # index of its first interval in the year's 15-minute grid (where a cutoff falls)
 
 
 def days_from_ticks(ticks, start: datetime, end: datetime, tz: str = "America/Chicago") -> list[Day]:
@@ -163,9 +170,16 @@ def days_from_ticks(ticks, start: datetime, end: datetime, tz: str = "America/Ch
         k_end = min(n, int((nxt_utc.timestamp() - t0) // step))
         chunk = prices[k:k_end]
         ok = np.isfinite(chunk)
-        days.append(Day(day.isoformat(), np.where(ok, chunk, 0.0), ok))
+        days.append(Day(day.isoformat(), np.where(ok, chunk, 0.0), ok, k))
         k, day = k_end, nxt.date()
     return days
+
+
+def cutoff_interval(cutoff: datetime | None, start: datetime) -> int | None:
+    """Index in the year's 15-minute grid of the first interval at or after `cutoff` (None: no cutoff)."""
+    if cutoff is None:
+        return None
+    return max(0, math.ceil((cutoff - start).total_seconds() / (INTERVAL_MINUTES * 60) - 1e-9))
 
 
 # --- per-kWh curves over the ratio grid -------------------------------------------------------
@@ -179,17 +193,38 @@ def ratio_grid(ratios: np.ndarray, step: float) -> np.ndarray:
     return grid if len(grid) >= 2 else np.array([lo, lo + step])
 
 
-def _curve_point(args) -> tuple[str, float, float, float, float, float]:
-    loc, ratio, days, physics, cap = args
-    u_rev = u_out = c_rev = c_out = 0.0
-    for prices, ok in days:
+def _real_part(prices: np.ndarray, ok: np.ndarray, ratio: float, physics: dict, before: int,
+               cycles_cap: float | None) -> float:
+    """$ per kWh of capacity a day's optimal schedule earns in its first `before` intervals (a day that straddles
+    the cutoff between real and predicted prices)."""
+    day = solve_day(prices, ratio, tradable=ok, cycles_cap=cycles_cap, schedule=True, **physics)
+    if day.charge is None:
+        return 0.0
+    p = np.where(ok, prices, 0.0)[:before]
+    return float(np.sum(p / 1000.0 * (INTERVAL_MINUTES / 60) * (day.discharge[:before] - day.charge[:before])))
+
+
+def _curve_point(args) -> tuple:
+    loc, ratio, days, physics, cap = args[:5]
+    cut = args[5] if len(args) > 5 else None  # the cutoff's interval index, or None: no split
+    u_rev = u_out = c_rev = c_out = u_real = c_real = 0.0
+    for day in days:
+        prices, ok = day[0], day[1]
         u = solve_day(prices, ratio, tradable=ok, **physics)
         c = solve_day(prices, ratio, tradable=ok, cycles_cap=cap, **physics)
         u_rev += u.revenue_per_kwh
         u_out += u.discharged_per_kwh
         c_rev += c.revenue_per_kwh
         c_out += c.discharged_per_kwh
-    return loc, ratio, u_rev, u_out, c_rev, c_out
+        if cut is not None:
+            first = day[2]
+            if first + len(prices) <= cut:  # a real day
+                u_real += u.revenue_per_kwh
+                c_real += c.revenue_per_kwh
+            elif first < cut:  # it straddles the cutoff: split along its schedule
+                u_real += _real_part(prices, ok, ratio, physics, cut - first, None)
+                c_real += _real_part(prices, ok, ratio, physics, cut - first, cap)
+    return loc, ratio, u_rev, u_out, c_rev, c_out, u_real, c_real
 
 
 def curves(
@@ -201,10 +236,13 @@ def curves(
     soc_max: float,
     cycles_cap: float,
     workers: int = 1,
+    split_at: int | None = None,
 ) -> dict:
-    """{location: {"ratio", "uncapped_usd", "uncapped_out", "capped_usd", "capped_out"}}, per kWh of capacity."""
+    """{location: {"ratio", "uncapped_usd", "uncapped_out", "capped_usd", "capped_out"}}, per kWh of capacity.
+    split_at (the cutoff's interval index in the year's grid): also "uncapped_usd_real" and "capped_usd_real", the
+    part earned before it."""
     physics = {"efficiency": efficiency, "soc_min": soc_min, "soc_max": soc_max}
-    tasks = [(loc, float(r), [(d.prices, d.tradable) for d in days], physics, cycles_cap)
+    tasks = [(loc, float(r), [(d.prices, d.tradable, d.first) for d in days], physics, cycles_cap, split_at)
              for loc, days in days_by_location.items() for r in grid]
     if workers > 1 and len(tasks) > 1:
         import multiprocessing
@@ -213,14 +251,19 @@ def curves(
             points = list(pool.map(_curve_point, tasks))
     else:
         points = [_curve_point(t) for t in tasks]
-    out = {loc: {"ratio": [float(r) for r in grid], "uncapped_usd": [], "uncapped_out": [], "capped_usd": [],
-                 "capped_out": []} for loc in days_by_location}
-    for loc, _, u_rev, u_out, c_rev, c_out in points:  # pool.map keeps the task order
+    keys = ["uncapped_usd", "uncapped_out", "capped_usd", "capped_out"]
+    if split_at is not None:
+        keys += ["uncapped_usd_real", "capped_usd_real"]
+    out = {loc: {"ratio": [float(r) for r in grid], **{k: [] for k in keys}} for loc in days_by_location}
+    for loc, _, u_rev, u_out, c_rev, c_out, u_real, c_real in points:  # pool.map keeps the task order
         o = out[loc]
         o["uncapped_usd"].append(u_rev)
         o["uncapped_out"].append(u_out)
         o["capped_usd"].append(c_rev)
         o["capped_out"].append(c_out)
+        if split_at is not None:
+            o["uncapped_usd_real"].append(u_real)
+            o["capped_usd_real"].append(c_real)
     return out
 
 
@@ -273,13 +316,36 @@ def fleet_value(fleets, curve: Mapping[str, dict], variant: str, soc_min: float,
     }
 
 
+def split_value(fleets, curve: Mapping[str, dict], variant: str, value: dict, real_until_utc: str | None) -> dict:
+    """A variant's money on either side of the cutoff (docs/API.md Results): real = what it earns before
+    real_until_utc, interpolated like the total (fleet_value's interpolation) over the '<variant>_usd_real' curve;
+    projected = the total minus that, so the two add up exactly. No cutoff: all of it is real."""
+    total, n = float(value["fleet_usd_year"]), sum(f.size for f in fleets.values())
+    if real_until_utc is None:
+        real = total
+    else:
+        real = 0.0
+        for loc, fleet in fleets.items():
+            c = curve[loc]
+            ratios = fleet.power_kw / fleet.capacity_kwh
+            real += float((fleet.capacity_kwh * np.interp(ratios, np.asarray(c["ratio"]),
+                                                          np.asarray(c[f"{variant}_usd_real"]))).sum())
+    real_pb = real / n if n else 0.0
+    return {"real_until_utc": real_until_utc, "real_usd": real, "projected_usd": total - real,
+            "real_per_battery_usd": real_pb, "projected_per_battery_usd": float(value["per_battery_usd_year"]) - real_pb}
+
+
 # --- the record ------------------------------------------------------------------------------
 
 
-def cache_key(days_by_location: Mapping[str, Sequence[Day]], grid, physics: dict, cap: float) -> str:
+def cache_key(days_by_location: Mapping[str, Sequence[Day]], grid, physics: dict, cap: float,
+              split_at: int | None = None) -> str:
     h = hashlib.sha256()
-    h.update(json.dumps({"v": METHOD_VERSION, "grid": [float(g) for g in grid], "physics": physics, "cap": cap,
-                         "interval_minutes": INTERVAL_MINUTES}, sort_keys=True).encode())
+    spec = {"v": METHOD_VERSION, "grid": [float(g) for g in grid], "physics": physics, "cap": cap,
+            "interval_minutes": INTERVAL_MINUTES}
+    if split_at is not None:  # only years with a cutoff: a real year's key (and its cached curves) stay as they were
+        spec["split_at"] = int(split_at)
+    h.update(json.dumps(spec, sort_keys=True).encode())
     for loc, days in sorted(days_by_location.items()):
         h.update(loc.encode())
         for d in days:
@@ -311,7 +377,9 @@ def ceiling_record(ctx, *, out_dir: str | Path | None = None, workers: int | Non
     days = {loc: days_from_ticks(ctx.series[loc].replayed, ctx.start, ctx.end) for loc in ctx.fleets}
     all_ratios = np.concatenate([f.power_kw / f.capacity_kwh for f in ctx.fleets.values()])
     grid = ratio_grid(all_ratios, step)
-    key = cache_key(days, grid, physics, cap)
+    real_until = getattr(ctx, "real_until", None)  # prices after it are the AI's prediction (2026)
+    split_at = cutoff_interval(real_until, ctx.start)
+    key = cache_key(days, grid, physics, cap, split_at)
     base = results_dir(out_dir, settings)
     cache = base / "cache" / f"ceiling_curves_{key}.json"
     curve = json.loads(cache.read_text()) if cache.exists() else None
@@ -324,11 +392,14 @@ def ceiling_record(ctx, *, out_dir: str | Path | None = None, workers: int | Non
         else:
             log(f"ceiling: solving {len(grid)} ratios x {sum(len(d) for d in days.values())} location-days x 2 "
                 f"with {workers} process(es)...")
-            curve = curves(days, grid, cycles_cap=cap, workers=workers, **physics)
+            curve = curves(days, grid, cycles_cap=cap, workers=workers, split_at=split_at, **physics)
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(curve))
     uncapped = fleet_value(ctx.fleets, curve, "uncapped", b.soc_min, b.soc_max)
     capped = fleet_value(ctx.fleets, curve, "capped", b.soc_min, b.soc_max)
+    real_until_utc = None if real_until is None else real_until.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    split = split_value(ctx.fleets, curve, "uncapped", uncapped, real_until_utc)
+    split["capped"] = split_value(ctx.fleets, curve, "capped", capped, real_until_utc)
     negative = {loc: int(sum(int(((d.prices < 0) & d.tradable).sum()) for d in ds)) for loc, ds in days.items()}
     n = sum(f.size for f in ctx.fleets.values())
     method = (f"Per-day LP (HiGHS) with perfect knowledge of each day's real-time prices at "
@@ -361,6 +432,7 @@ def ceiling_record(ctx, *, out_dir: str | Path | None = None, workers: int | Non
                              "the same rules. The one-cycle-a-day figure is a reference for warranty-limited "
                              "operation."),
             "method": method,
+            "split": split,  # real (before real_until_utc) vs projected money, uncapped; "capped" inside
             "scope": "all batteries (exact per-kWh scaling), not a sample",
             "interval_minutes": INTERVAL_MINUTES,
             "ratio_grid": [float(g) for g in grid],

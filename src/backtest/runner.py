@@ -18,12 +18,21 @@ database is configured, to backtest_runs; --pitch marks them as the Results scre
 
 A strategy that is not in this build (for example 'forecast' before it lands) or that fails
 is skipped: its record says why, and so do the Results.
+
+A year whose real prices end early (2026: src.data.years real_until_utc) replays exactly as the live
+fleet does: real ERCOT prices up to real_until_utc, then the AI's stored prediction (p50,
+src/feeds/predicted.py over src/forecast/predictions.py). The AI forecast strategy acts on the real
+rolling forecasts before the cutoff and on the virtual hourly ones sliced from the prediction after it
+(src.forecast.provider, as make_forecast_strategy loads them for the live fleet). Every record then
+splits its money at the cutoff (metrics["split"]: real_per_battery_usd + projected_per_battery_usd =
+per_battery_usd_year), and so does the ceiling. A fully real year has real_until_utc None and projected 0.
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import json
+import math
 import subprocess
 import sys
 import time
@@ -112,15 +121,20 @@ class ForecastsMissing(StrategyUnavailable):
                       f"aren't ready for {year} yet.")
 
 
-def make_named_strategy(name: str, cfg: Config, location: str | None = None) -> Strategy:
+def make_named_strategy(name: str, cfg: Config, location: str | None = None, *,
+                        price_source: str | None = None) -> Strategy:
     """make_strategy(cfg.strategy, tick_seconds, name): plugs in 'forecast' once it is built.
 
     With `location`, a forecast instance loads only that city's forecasts: it never reads another city's
     (target_kw looks up tick.location), so the decisions are the same and the database is read once per city.
+    price_source: where the backtest's real prices come from ('postgres' or 'snapshot'), so the forecast strategy's
+    virtual forecasts start at the same real_until_utc as the replayed prediction.
     """
     from src.strategy import make_strategy
 
     context = {"locations": [location]} if name == "forecast" and location is not None else {}
+    if name == "forecast" and price_source is not None:
+        context["price_source"] = price_source
     try:
         return make_strategy(cfg.strategy, cfg.sim.tick_seconds, name, **context)
     except Exception as exc:  # unknown name, missing module, missing forecasts...
@@ -267,12 +281,20 @@ class Context:
     end: datetime
     expected_ticks: int
     window_cache: dict = field(default_factory=dict)
+    real_until: datetime | None = None  # the year's real_until_utc: prices after it are the AI's prediction
+    prediction: dict | None = None  # the replayed prediction: {"model", "cutoff_utc", "issued_utc", "locations"}
+    price_source: str | None = None  # 'postgres' or 'snapshot': where real prices (and real_until) come from
+
+    @property
+    def real_until_utc(self) -> str | None:
+        return None if self.real_until is None else utc_iso(self.real_until)
 
     def params(self, **extra) -> dict:
         cfg, b = self.cfg, self.cfg.battery
         totals = fleet_totals(self.fleets, b.soc_min, b.soc_max)
         return _jsonable({
             "year": self.year,
+            "real_until_utc": self.real_until_utc,
             **extra,
             "fleet": {
                 "size": totals["size"],
@@ -298,10 +320,15 @@ class Context:
                 "replay_end_utc": utc_iso(self.end),
                 "ticks": {loc: len(s.replayed) for loc, s in self.series.items()},
                 "warmup_ticks": {loc: s.start for loc, s in self.series.items()},
+                "real_until_utc": self.real_until_utc,
+                "after_real_until": self.prediction,  # the AI's predicted p50 (src/feeds/predicted.py), or None
             },
             "config": {**dataclasses.asdict(cfg), "backtest": self.settings},
             "code": {"git": _git_commit()},
         })
+
+
+AUTO = "auto"
 
 
 def build_context(
@@ -311,27 +338,114 @@ def build_context(
     *,
     fleet_size: int | None = None,
     feed: PriceFeed | None = None,
+    real_until: datetime | None | str = AUTO,
 ) -> Context:
-    """Load the year's real prices (plus the warm-up days before it) and build the fleet."""
+    """Load the year's prices (plus the warm-up days before it) and build the fleet.
+
+    A year whose real prices end early (src.data.years: real_until_utc, from the same source as the prices) replays
+    as the live fleet does: the real feed up to real_until_utc, then the AI's stored prediction p50 for every city
+    (src.feeds.predicted.PredictedFeed). A caller-supplied `feed` is the real feed and gets the prediction appended
+    the same way. real_until: 'auto' (look it up), or a UTC datetime / None to set it (tests)."""
     cfg = cfg or load_config()
     settings = settings or backtest_settings()
     start, end = year_bounds(year)
     warmup_start = start - timedelta(days=int(settings["warmup_days"]))
     locations = list(cfg.fleet.locations)
+    source = engine.price_source()
     backend = "caller-supplied PriceFeed"
     if feed is None:
         feed, backend = engine.feed_from_series(locations, warmup_start, end)
+    cutoff = real_until_of(year, locations, source) if real_until == AUTO else real_until
+    prediction = None
+    if cutoff is not None:
+        feed, prediction = predicted_feed(feed, cutoff, locations, year)
+        backend += f", then the AI's prediction ({prediction['model']}, p50) from {utc_iso(cutoff)}"
     series = load_ticks(feed, locations, start, end, warmup_start)
     missing = [loc for loc, s in series.items() if not s.replayed]
     if missing:
         raise NoPriceData(f"There are no real ERCOT prices for {year} ({', '.join(missing)}) to replay.")
     fleets = build_fleets(fleet_size or cfg.fleet.size, cfg.fleet.locations, cfg.battery, cfg.seed)
     expected = int((end - start).total_seconds()) // cfg.sim.tick_seconds
-    return Context(cfg, settings, year, series, fleets, backend, start, end, expected)
+    return Context(cfg, settings, year, series, fleets, backend, start, end, expected, real_until=cutoff,
+                   prediction=prediction, price_source=source)
 
 
 class NoPriceData(RuntimeError):
     pass
+
+
+def real_until_of(year: int, locations: Sequence[str], source: str) -> datetime | None:
+    """src.data.years real_until_utc of `year` (None when it is real all year), read from the backtest's own price
+    source, so the cutoff is exactly where the replayed real prices end."""
+    from src.data import years
+
+    return years.info(year, locations=locations, source=source).real_until_utc
+
+
+def predicted_feed(real: PriceFeed, cutoff: datetime, locations: Sequence[str], year: int) -> tuple[PriceFeed, dict]:
+    """The live replay's feed across the cutoff (src.sim.coordinator.run_feed): real prices before it, the AI's stored
+    prediction p50 after it (the latest one made at or before the cutoff). A full-year number needs the prediction
+    for every city: NoPriceData (a plain sentence) when a city has none."""
+    from src.data.years import last_real_day, short_date
+    from src.feeds.predicted import PredictedFeed
+    from src.forecast import predictions
+    from src.sim import geo
+
+    try:
+        paths = predictions.load_all(locations, cutoff)
+    except Exception as exc:  # no predictions table, or its cache can't be read
+        paths = {}
+        print(f"predictions not loaded: {exc!r}", file=sys.stderr, flush=True)
+    missing = [loc for loc in locations if loc not in paths]
+    if missing:
+        raise NoPriceData(f"Real {year} prices end on {short_date(last_real_day(cutoff))}, and the AI's prediction "
+                          f"for the rest of the year isn't ready yet for "
+                          f"{geo.join_names([geo.city_name(loc) for loc in missing])}, so the full year can't be "
+                          "replayed.")
+    first = next(iter(paths.values()))
+    info = {"model": first.model, "cutoff_utc": utc_iso(first.cutoff.to_pydatetime()),
+            "issued_utc": utc_iso(first.issued_at.to_pydatetime()), "locations": list(paths),
+            "end_utc": {loc: utc_iso(p.end.to_pydatetime()) for loc, p in paths.items()}}
+    return PredictedFeed(real, cutoff, paths), info
+
+
+def money_split(replay: Replay, ctx: Context) -> dict:
+    """The replay's money on either side of the year's real_until_utc (docs/API.md Results): real = ticks before it
+    (real ERCOT prices), projected = ticks from it on (the AI's predicted prices). The two add up to the Ledger's
+    totals exactly: projected is the total minus real, per city and for the fleet. A fully real year: all real."""
+    n = sum(f.size for f in ctx.fleets.values())
+    summary = replay.summary
+    total = float(summary["total_usd"])
+    per_loc = {loc: float(v) for loc, v in summary["per_location_usd"].items()}
+    cutoff = ctx.real_until
+    real_by_loc, ticks_real, ticks_projected = {}, 0, 0
+    for loc, run in replay.runs.items():
+        ticks = ctx.series[loc].replayed
+        if cutoff is None:
+            real_by_loc[loc] = per_loc.get(loc, 0.0)
+            ticks_real = max(ticks_real, len(ticks))
+            continue
+        cut_s = cutoff.timestamp()
+        stamps = np.fromiter((t.ts.timestamp() for t in ticks), dtype=np.float64, count=len(ticks))
+        prices = np.fromiter((t.price_usd_mwh for t in ticks), dtype=np.float64, count=len(ticks))
+        before = stamps < cut_s
+        real_by_loc[loc] = float(np.sum(np.asarray(run.delivered_kwh)[before] * prices[before] / 1000.0))
+        ticks_real = max(ticks_real, int(before.sum()))
+        ticks_projected = max(ticks_projected, int((~before).sum()))
+    real = total if cutoff is None else math.fsum(real_by_loc.values())
+    real_pb = real / n if n else 0.0
+    per_battery = total / n if n else 0.0
+    return {
+        "real_until_utc": ctx.real_until_utc,
+        "real_usd": real,
+        "projected_usd": total - real,
+        "real_per_battery_usd": real_pb,
+        "projected_per_battery_usd": per_battery - real_pb,
+        "by_location": {loc: {"real_usd": real_by_loc.get(loc, 0.0),
+                              "projected_usd": per_loc.get(loc, 0.0) - real_by_loc.get(loc, 0.0)} for loc in per_loc},
+        "ticks_real": ticks_real,
+        "ticks_projected": ticks_projected,
+    }
 
 
 def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | None = None,
@@ -342,7 +456,7 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     """
     started = datetime.now(UTC)
     if strategies is None:
-        strategies = {loc: make_named_strategy(name, ctx.cfg, loc) for loc in ctx.fleets}
+        strategies = {loc: make_named_strategy(name, ctx.cfg, loc, price_source=ctx.price_source) for loc in ctx.fleets}
     need = float(ctx.settings.get("forecast_min_coverage", 0.99))
     short = {}  # every city must be covered: one headline number is one decision method for the whole fleet
     for loc, strategy in strategies.items():
@@ -352,7 +466,8 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     if short:
         where = ", ".join(f"{cov:.1%} at {loc}" for loc, cov in short.items())
         raise ForecastsMissing(f"forecasts cover {where} of {ctx.year} (need {need:.0%} in every city); "
-                               "run the forecast job first (make cloud-forecast)", list(short), ctx.year)
+                               f"run the forecast job first (YEAR={ctx.year} make cloud-forecast)", list(short),
+                               ctx.year)
     lag = ctx.cfg.sim.decision_lag_ticks
     main_run = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=lag, fast=fast, expected_ticks=ctx.expected_ticks,
                       window_cache=ctx.window_cache, strategies=strategies)
@@ -361,6 +476,7 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     metrics["replay_seconds"] = round(main_run.seconds, 3)
     # what the AI adds (GET /results/ai-gains), read off this same replay: no extra replay
     metrics["insights"] = insights.from_replay(main_run, ctx.series)
+    metrics["split"] = money_split(main_run, ctx)  # real vs AI-projected money (docs/API.md Results)
     want_lag0 = ctx.settings["lag0_variant"] if lag0 is None else lag0
     if want_lag0 and lag != 0:
         zero = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=0, fast=fast, expected_ticks=ctx.expected_ticks,
@@ -388,9 +504,17 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
             decisions=("bands percentiles precomputed for all ticks (bit-identical to the seam)"
                        if main_run.fast_path else "Strategy.target_kw called every tick"),
         ),
-        "notes": (f"{label}: ${per_battery:,.2f} per battery, ${s['total_usd']:,.0f} for the fleet, "
-                  f"{ctx.year}, decision lag {lag} ticks."),
+        "notes": (f"{label}: ${per_battery:,.2f} per battery{_split_note(metrics['split'])}, "
+                  f"${s['total_usd']:,.0f} for the fleet, {ctx.year}, decision lag {lag} ticks."),
     }
+
+
+def _split_note(split: Mapping | None) -> str:
+    """' ($120.10 real until 2026-09-20T05:00:00Z + $30.20 projected)' for a year with a cutoff, else ''."""
+    if not split or not split.get("real_until_utc"):
+        return ""
+    return (f" (${split['real_per_battery_usd']:,.2f} real until {split['real_until_utc']} + "
+            f"${split['projected_per_battery_usd']:,.2f} projected)")
 
 
 def skipped_record(name: str, ctx: Context, reason: str, *, unavailable: bool, plain: str | None = None) -> dict:
@@ -495,7 +619,7 @@ def format_report(outcome: BacktestOutcome) -> str:
             continue
         lines += [
             f"\n{r['label']} ({r['strategy']}), {r['year']}, decision lag {m['lag_ticks']} ticks, run {r['run_id']}",
-            f"  per battery per year  ${m['per_battery_usd_year']:>12,.2f}",
+            f"  per battery per year  ${m['per_battery_usd_year']:>12,.2f}{_split_note(m.get('split'))}",
             f"  fleet per year        ${m['fleet_usd_year']:>12,.0f}",
             *[f"    {loc:<18}  ${v['usd']:>12,.0f}  (${v['per_battery_usd']:,.2f}/battery, "
               f"{v['batteries']:,} batteries)" for loc, v in m["per_location"].items()],
@@ -520,7 +644,7 @@ def format_report(outcome: BacktestOutcome) -> str:
         m = outcome.ceiling["metrics"]
         u, c = m["uncapped"], m["capped"]
         lines += [
-            f"\n{outcome.ceiling['label']}: ${u['per_battery_usd_year']:,.2f} per battery "
+            f"\n{outcome.ceiling['label']}: ${u['per_battery_usd_year']:,.2f} per battery{_split_note(m.get('split'))} "
             f"(fleet ${u['fleet_usd_year']:,.0f}, {u['cycles_per_year']:.0f} cycles/yr)",
             f"  capped at {m['cycles_per_day_cap']:g} cycle/day: ${c['per_battery_usd_year']:,.2f} per battery "
             f"(fleet ${c['fleet_usd_year']:,.0f})",

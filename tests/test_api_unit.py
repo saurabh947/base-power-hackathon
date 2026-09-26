@@ -112,6 +112,38 @@ def test_chaos_kill_is_limited_to_one_per_2s(client):
     assert client.post("/chaos/kill?worker_id=3").status_code == 503
 
 
+def test_worker_restart_is_limited_to_one_per_2s_like_the_kill(client):
+    """POST /workers/{worker_id}/restart (docs/API.md): open to everyone, one per 2 s globally, a malformed id refused
+    before it spends the budget."""
+    first = client.post("/workers/3/restart")
+    assert first.status_code == 503 and first.json()["error"] == "simulator_unavailable"  # counted, then no answer
+    second = client.post("/workers/3/restart")
+    assert second.status_code == 429 and second.json()["error"] == "rate_limited"
+    assert second.json()["retry_after_s"] in (1, 2) and second.headers["Retry-After"] == str(second.json()["retry_after_s"])
+    r = client.post("/workers/three/restart")
+    assert r.status_code == 400 and r.json()["error"] == "invalid_worker"
+    main.state.limits.worker_restart.reset()
+    assert client.post("/workers/3/restart").status_code == 503
+
+
+def test_results_follow_the_chosen_year(client, monkeypatch):
+    """GET /results/pitch?year= and /results/ai-gains?year= hand the year to the service (default: its pitch year)."""
+    calls = []
+    svc = _fake_service({"year": 2026, "strategies": []})
+    svc.pitch_results = lambda year=None: (calls.append(("pitch", year)), {"year": year or 2025, "strategies": []})[1]
+    svc.ai_gains = lambda year=None: (calls.append(("gains", year)),
+                                      {"ai": "forecast", "baseline": "bands", "years": [{"year": year or 2025}]})[1]
+    monkeypatch.setitem(sys.modules, "src.backtest.service", svc)
+    assert client.get("/results/pitch?year=2026").json()["year"] == 2026 and calls[-1] == ("pitch", 2026)
+    assert client.get("/results/pitch").json()["year"] == 2025 and calls[-1] == ("pitch", None)
+    assert client.get("/results/ai-gains", params={"year": "2026"}).json()["years"][0]["year"] == 2026
+    assert calls[-1] == ("gains", 2026)
+    assert client.get("/results/ai-gains").status_code == 200 and calls[-1] == ("gains", None)
+    for path in ("/results/pitch?year=soon", "/results/ai-gains?year=20.26"):
+        r = client.get(path)
+        assert r.status_code == 400 and r.json()["error"] == "invalid_year", path
+
+
 def test_run_start_and_reset_are_limited_to_one_per_5s(client):
     first = client.post("/run/start", json={"speed_tps": 2})
     assert first.status_code == 503  # counted, then the (absent) simulator didn't answer

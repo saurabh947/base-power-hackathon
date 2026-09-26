@@ -3,9 +3,12 @@
 - The dead worker's cohort is reassigned within 1 tick of the DEAD declaration.
 - Fleet output is back within 5% of the feasible target within 3 ticks of the kill.
 - Failures are visible in dead_letter; nothing is lost or applied twice (a replay of every
-  reported delivery through src.sim.battery equals the battery hashes exactly).
+  reported delivery through src.sim.battery, with the crash's emptying in between, equals the battery hashes
+  exactly).
 - The live map sees it: battery_status shows the cohort as "controller down" (4) from the kill until
   the hand-over, and workers[].by_location moves its batteries to the adopters.
+- The human's crash rule (docs/API.md failure model): the crash empties the cohort to the 20% reserve before the
+  hand-over, so during max discharge the adopters have nothing to sell from it: it waits (0 kW) from then on.
 Both at max speed and at the demo's 2 ticks/s, during max discharge (RUNLOG decision 8). Worker 17 is the
 controller whose batteries sit in two cities (600 San Antonio + 400 Austin).
 """
@@ -101,9 +104,11 @@ def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, so
         for k in range(killed_after + 1, declared + 1):
             assert (fired["codes"][k] == bstatus.CONTROLLER_DOWN).all(), k
             assert fired["down_elsewhere"][k] == 0, k
-        # ... then back to what they do: at max discharge, selling (a few may have hit the 20% floor)
+        # ... then back to what they do: the crash emptied them to the 20% reserve, so at max discharge the
+        # adopters have nothing to sell from them: they wait (0 kW)
         after = fired["codes"][declared + 1]
-        assert not (after == bstatus.CONTROLLER_DOWN).any() and (after == bstatus.SELLING).mean() > 0.9
+        assert not (after == bstatus.CONTROLLER_DOWN).any() and (after == bstatus.WAITING).all()
+        assert (co.soc[cohort] == 0.2).all()
         assert all(n == 0 for k, n in fired["down_elsewhere"].items() if k > declared)
         # workers[].by_location: the cohort's cities moved to the adopters; the dead worker has none
         before = fired["by_location_before"]

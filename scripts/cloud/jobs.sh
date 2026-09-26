@@ -7,6 +7,8 @@
 #             Builds the forecast image unless SKIP_BUILD=1 (reuse the image of this TAG).
 #   predict   YEAR (default 2026): the AI's prediction for the rest of YEAR from its real_until_utc
 #             (python -m src.forecast.predict), in the forecast image. SKIP_BUILD=1 reuses this TAG's image.
+#   backtest  YEAR (default 2025): the full-year pitch backtest into Cloud SQL (that year's own pitch set), in the
+#             api image of this TAG. 2026 needs its forecasts (forecast YEAR=2026) and the prediction (predict) first.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/cloud/env.sh
@@ -47,7 +49,7 @@ case "${1:?ingest|forecast|predict|backtest}" in
       --service-account "$SA" --set-cloudsql-instances "$SQL" \
       --set-env-vars "$DB_ENV" --set-secrets "$DB_SECRET" \
       --cpu 4 --memory 8Gi --task-timeout 1800 --max-retries 0 \
-      --command python --args="^;^-m;src.backtest.runner;--strategies;bands,forecast,peak;--year;2025;--pitch"  # ^;^ = ";" separates args
+      --command python --args="^;^-m;src.backtest.runner;--strategies;bands,forecast,peak;--year;${YEAR:-2025};--pitch"  # ^;^ = ";" separates args; YEAR=2026: that year's own pitch set
     JOB=fleet-sim-backtest ;;
   *) echo "usage: $0 ingest|forecast|predict|backtest [--no-run]" >&2; exit 2 ;;
 esac

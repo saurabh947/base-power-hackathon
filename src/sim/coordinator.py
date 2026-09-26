@@ -4,6 +4,7 @@ Run:
     python -m src.sim.coordinator serve                 # what src.launcher starts
     python -m src.sim.coordinator bench --ticks 288     # M2: 1 sim day at max speed, prints ticks/s
     python -m src.sim.coordinator bench --ticks 60 --kill-at 20 [--speed 2]   # M3: SIGKILL a worker mid-run
+    python -m src.sim.coordinator bench --ticks 24 --kill-at 6 --restart-at 14  # ... then a user restart
 
 One tick (5 sim-minutes):
   1. Per location, the Strategy sees decision_tick(now, published) with published =
@@ -25,6 +26,17 @@ One tick (5 sim-minutes):
      overwrites lease:{worker_id} (fencing the zombie), dead-letters the commands it
      never confirmed ('expired_owner_dead') and hands its cohort round-robin to the
      healthy workers, who HMGET it lazily with the very next tick's batch.
+
+The failure model (docs/API.md, the human's rules of 2026-09-26):
+  - Crash: a controller whose process exits, or that is declared DEAD, loses its batteries' charge: they are
+    emptied to the reserve (soc_min) in the SoC mirror and in the battery hashes (fenced and drained first), before
+    the hand-over, so the adopters load the emptied state. The race shadow empties the same batteries.
+  - A crashed controller stays down until a user restarts it (control 'restart', POST /workers/{id}/restart) or a
+    Reset: a new process with a new epoch; once it is up it takes its original batteries back from the adopters with
+    an owner-epoch bump (only when none of them has a tick in flight, so no zombie writes), then 'worker_recovered'.
+  - Controller offline (availability scope 'worker', available=false): the usable charge of the batteries it owns
+    at that moment is halved (soc = floor + (soc - floor) / 2) in the mirror, the hashes, the worker's own state (a
+    't': 'soc' message on its command stream) and the race shadow. City and battery scopes don't change charge.
 """
 from __future__ import annotations
 
@@ -53,12 +65,12 @@ from src.sim import control as ctl
 from src.sim import geo
 from src.sim import race as race_mod
 from src.sim.allocation import allocate, fleet_headroom_kw
-from src.sim.battery import fleet_soc, grid_kwh_from_soc_change, headroom_kw
+from src.sim.battery import SOC_MAX, SOC_MIN, fleet_soc, grid_kwh_from_soc_change, headroom_kw
 from src.sim.decision import decision_tick
 from src.sim.redis_layout import (
     DEFAULT_MAXLEN, F_AVAIL, F_CAP, F_CID, F_EFF, F_EPOCH, F_ID, F_IDX, F_LOC, F_OWNER, F_POW, F_RUN, F_SOC,
     F_TICK, NO_TICK, CommandIds, FleetLayout, Keys, connect, dead_letter_entry, f64, i32, now_utc_iso, pack,
-    redis_prefix, redis_url, to_utc_iso, u8, unpack, write_dead_letters,
+    redis_prefix, redis_url, resp, to_utc_iso, u8, unpack, write_dead_letters,
 )
 
 UTC = timezone.utc
@@ -416,11 +428,15 @@ class WorkerHandle:
     dead_reason: str | None = None
     exit_code: int | None = None
     ready_run: str | None = None
+    crash: dict | None = None  # its crash emptied its batteries (once per crash): {"run", "batteries", "emptied_kwh"}
+    pending_halve: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))  # offline, once idle
+    recovery: dict | None = None  # a user restart in progress: {"t0", "phase": "starting" | "loading", ...}
 
     def public(self, layout: FleetLayout | None = None, soc: np.ndarray | None = None,
-               cap: np.ndarray | None = None) -> dict:
+               cap: np.ndarray | None = None, soc_min: float = SOC_MIN, soc_max: float = SOC_MAX) -> dict:
         """docs/API.md Worker. by_location: the batteries it owns right now per city (changes on hand-overs).
-        charge_level: capacity-weighted average charge of those batteries (None when it owns none)."""
+        charge_level: capacity-weighted average charge of those batteries; usable_charge: the share of their usable
+        energy left above the reserve, (charge_level - soc_min) / (soc_max - soc_min). Both None when it owns none."""
         out = {"worker_id": self.worker_id, "status": self.status, "pid": self.pid,
                "batteries": int(len(self.owned)), "last_tick_utc": to_utc_iso(self.last_tick_ts),
                "adopted_from": list(self.adopted_from)}
@@ -428,6 +444,7 @@ class WorkerHandle:
             out["by_location"] = layout.counts_by_location(self.owned)
         if soc is not None and cap is not None:
             out["charge_level"] = worker_charge_level(self.owned, soc, cap)
+            out["usable_charge"] = worker_usable_charge(self.owned, soc, cap, soc_min, soc_max)
         return out
 
 
@@ -437,6 +454,22 @@ def worker_charge_level(owned: np.ndarray, soc: np.ndarray, cap: np.ndarray) -> 
         return None
     c = cap[owned]
     return round(float((soc[owned] * c).sum() / c.sum()), 4)
+
+
+def worker_usable_charge(owned: np.ndarray, soc: np.ndarray, cap: np.ndarray, soc_min: float = SOC_MIN,
+                         soc_max: float = SOC_MAX) -> float | None:
+    """docs/API.md Worker.usable_charge: the capacity-weighted share of usable energy left above the reserve,
+    (charge_level - soc_min) / (soc_max - soc_min), in [0, 1], rounded; None if it owns no batteries."""
+    if len(owned) == 0:
+        return None
+    c = cap[owned]
+    level = float((soc[owned] * c).sum() / c.sum())
+    return round(min(1.0, max(0.0, (level - soc_min) / (soc_max - soc_min))), 4)
+
+
+def usable_kwh(soc: np.ndarray, cap: np.ndarray, soc_min: float = SOC_MIN) -> float:
+    """Stored energy above the reserve, kWh (what a crash loses, or half of what a controller going offline loses)."""
+    return float((np.maximum(np.asarray(soc) - soc_min, 0.0) * np.asarray(cap)).sum())
 
 
 @dataclass
@@ -519,6 +552,7 @@ class Coordinator:
         self.soc_k = np.full(self.N, -1, dtype=np.int64)
         self.kw = np.zeros(self.N)
         self.owner = self.layout.default_owners()
+        self.home = self.layout.default_owners()  # each controller's original batteries: a user restart takes them back
         self.availability = ctl.AvailabilityState(self.layout, self.cfg.seed)
         self.workers: list[WorkerHandle] = []
         self.run: RunState | None = None
@@ -527,6 +561,7 @@ class Coordinator:
         self.parent_pid = parent_pid
         self.journal_on = journal
         self.journal: dict[int, list] = {}  # tick -> [(idx, delivered kW)] from every report, on time or late
+        self.journal_sets: list[tuple[int, np.ndarray, np.ndarray]] = []  # (before tick k, idx, SoC): crash, offline
         self.allow_max_speed = allow_max_speed
         self.tick_hooks: list[Callable[[dict], None]] = []
         self.events: list[dict] = []
@@ -699,14 +734,21 @@ class Coordinator:
         if self.parent_pid is not None and os.getppid() != self.parent_pid:
             _log(f"parent {self.parent_pid} is gone; shutting down")
             self._stop = True
-        exited = False
+        exited = []
         for h in self.workers:  # reap exited children (SIGKILLed workers stay zombies otherwise)
             if h.proc is not None and h.exit_code is None:
                 rc = h.proc.poll()
                 if rc is not None:
                     h.exit_code = rc
                     _log(f"worker {h.worker_id} (pid {h.pid}) exited with {rc}")
-                    exited = exited or h.status != DEAD
+                    if h.status != DEAD:
+                        exited.append(h)
+        k_now = self.run.k if self.run else None
+        for h in exited:
+            if h.status == STARTING:  # it never came up (a restart that crashed at once): no need to wait for 30 s
+                self._declare_dead(h, "exited_at_start", k_now)
+            else:  # a crash: its batteries lose their charge now; the hand-over follows the detection (2 missed
+                self._crash_empty(h)  # ticks, or the heartbeat's expiry while paused)
         if exited and self.run is not None:
             # a crash shows on the map at once, paused included: its batteries are "controller down" (4) until they
             # are handed over (at heartbeat expiry while paused, after 2 missed ticks while running)
@@ -715,7 +757,6 @@ class Coordinator:
         if not self.workers:
             return
         beats = self.r.mget([self.keys.hb(h.worker_id) for h in self.workers])
-        k_now = self.run.k if self.run else None
         for h, beat in zip(self.workers, beats):
             if h.status == DEAD:
                 continue
@@ -738,6 +779,18 @@ class Coordinator:
         if self.restarting and not any(h.status == STARTING for h in self.workers):
             self.restarting = False  # every worker is up (or was given up on): a Start can go ahead
             self._snapshot_dirty = True
+        self._between_ticks()
+
+    def _between_ticks(self) -> None:
+        """Work that must never run inside a tick (nothing is being dispatched or collected): halvings waiting for a
+        controller's tick to land, and user restarts taking their batteries back. Called by the loop, before every
+        tick, and by the supervision outside ticks."""
+        if self._in_tick:
+            return
+        if any(len(h.pending_halve) for h in self.workers):
+            self._apply_pending_halvings()
+        if any(h.recovery is not None for h in self.workers):
+            self._progress_recoveries()
 
     def ready(self) -> bool:
         """True when a Start can begin at once: not restarting and no worker still starting."""
@@ -771,7 +824,8 @@ class Coordinator:
             _log(f"dropping stale control {cmd!r} ({time.time() - sent:.1f}s old)")
             return {"ok": False, "status": 503, "error": "stale", "message": "Request expired."}
         handlers = {"start": self._ctl_start, "pause": self._ctl_pause, "resume": self._ctl_resume,
-                    "speed": self._ctl_speed, "reset": self._ctl_reset, "availability": self._ctl_availability}
+                    "speed": self._ctl_speed, "reset": self._ctl_reset, "availability": self._ctl_availability,
+                    "restart": self._ctl_restart}
         try:
             if cmd not in handlers:
                 raise ctl.ControlError(400, "unknown_command", f"Unknown command {cmd!r}.")
@@ -835,6 +889,7 @@ class Coordinator:
         return {"status": "idle"}, self.reset
 
     def _ctl_availability(self, args: Mapping):
+        offline_before = set(self.availability.offline_workers)
         detail = self.availability.apply(args, self.owner, self.n_workers)
         changed = detail.pop("changed_idx")
         if len(changed):
@@ -842,6 +897,11 @@ class Coordinator:
             for g in changed.tolist():
                 pipe.hset(self.keys.battery(self.layout.ids[g]), F_AVAIL, int(not self.availability.offline[g]))
             pipe.execute()
+        if detail.get("scope") == "worker" and detail.get("available") is False \
+                and detail["worker_id"] not in offline_before:
+            # taking a controller offline halves the usable charge of the batteries it owns now (docs/API.md); city
+            # and single-battery offline don't touch charge, and nothing but a user brings them back online
+            detail["halved"] = self._halve_controller(detail["worker_id"])
         summary = self.availability.summary()
         next_ts = self._next_tick_ts()
         # the map shows it at once, in every state (idle, starting, running, paused, finished): the very next frame
@@ -854,6 +914,278 @@ class Coordinator:
         self._snapshot_dirty = True
         return {"applied_from_tick_utc": to_utc_iso(next_ts), "affected": detail["affected"],
                 "available": summary["available"], "total": summary["total"]}, None
+
+    def _ctl_restart(self, args: Mapping):
+        """POST /workers/{worker_id}/restart: a user brings a crashed controller back (docs/API.md). Nothing restarts
+        on its own. The reply comes at once ('starting'); the new process takes its original batteries back as soon
+        as it is up, and worker_recovered follows (see _progress_recoveries)."""
+        w = args.get("worker_id")
+        if isinstance(w, bool) or not isinstance(w, int) or not 0 <= w < self.n_workers:
+            raise ctl.ControlError(404, "unknown_worker", f"There's no controller with worker_id {w!r}; ids run "
+                                   f"from 0 to {self.n_workers - 1}.")
+        h = self.workers[w]
+        if h.status != DEAD and h.exit_code is None and h.proc is not None and h.proc.poll() is not None:
+            h.exit_code = h.proc.returncode  # it has only just exited: the supervision hasn't seen it yet
+            _log(f"worker {w} (pid {h.pid}) exited with {h.exit_code}")
+        if h.status != DEAD:
+            if h.exit_code is None:  # its process is running: nothing to restart
+                if h.status == STARTING:
+                    raise ctl.ControlError(409, "not_crashed", f"{ctl.controller(w)} is already restarting.")
+                raise ctl.ControlError(409, "not_crashed",
+                                       f"{ctl.controller(w)} hasn't crashed, so there's nothing to restart.")
+            # crashed, but not declared dead yet (that takes 2 missed ticks, or the heartbeat's expiry while paused):
+            # do it now, so its batteries are emptied and handed over first, exactly as after any crash
+            k_now = self.run.k if self.run else None
+            if h.status == STARTING:
+                self._declare_dead(h, "exited_at_start", k_now)
+            else:
+                self._crash_empty(h)
+                self._declare_dead(h, "process_exited", k_now)
+        self._restart_worker(h)
+        return {"worker_id": w, "status": h.status}, None
+
+    # --- the failure model: crash emptying, controller-offline halving, user restarts ----------
+
+    def _restart_worker(self, h: WorkerHandle) -> None:
+        """A new process for a dead controller: a new epoch (the lease fences anything left of the old one), a fresh
+        command stream, status 'starting'. It owns nothing until _take_back hands its original batteries back."""
+        t0 = time.perf_counter()
+        if h.proc is not None and h.proc.poll() is None:  # declared dead but still there (frozen): never two per id
+            try:
+                h.proc.kill()
+                h.proc.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired) as exc:
+                _log(f"old process of worker {h.worker_id} (pid {h.pid}) did not go away: {exc!r}")
+        epoch = int(self.r.incr(self.keys.epoch))
+        pipe = self.r.pipeline(transaction=False)
+        pipe.set(self.keys.lease(h.worker_id), epoch)
+        pipe.delete(self.keys.commands(h.worker_id), self.keys.hb(h.worker_id))  # the new process reads from 0-0
+        pipe.execute()
+        h.epoch = epoch
+        h.misses = 0
+        h.inflight.clear()
+        h.pending_load = np.empty(0, dtype=np.int32)
+        h.pending_init = np.empty(0, dtype=bool)
+        h.pending_halve = np.empty(0, dtype=np.int32)
+        h.adopted_from = []
+        h.exit_code = h.dead_reason = h.ready_run = h.crash = None
+        h.last_tick_ts = None
+        h.recovery = {"t0": t0, "phase": "starting", "requested_utc": now_utc_iso()}
+        self._spawn_process(h)
+        self._snapshot_dirty = True
+        _log(f"worker {h.worker_id} restarted by a user: pid {h.pid}, epoch {epoch}")
+
+    def _awaiting_take_back(self, h: WorkerHandle) -> bool:
+        """A restarted controller that hasn't taken its batteries back yet: it adopts nothing meanwhile."""
+        return h.recovery is not None and h.recovery.get("phase") == "starting"
+
+    def _progress_recoveries(self) -> None:
+        """Move user restarts along (between ticks): once the new process is up, it takes its original batteries
+        back; once it has loaded them for the run (its 'ready'), worker_recovered goes out."""
+        if self._in_tick:
+            return
+        for h in self.workers:
+            rec = h.recovery
+            if rec is None:
+                continue
+            if h.status == DEAD:  # it crashed again before it was back: a user can restart it again
+                h.recovery = None
+                continue
+            if rec["phase"] == "starting":
+                if h.status != HEALTHY or not self._take_back(h):
+                    continue
+                rec["phase"] = "loading"
+            run = self.run
+            if run is not None and run.initialized is not None and h.ready_run != run.run_id:
+                self._read_telemetry(None, None, None)  # its 'ready' (outside a tick nothing else reads it)
+                if self.run is not run or h.ready_run != run.run_id:
+                    continue
+            self._worker_recovered(h)
+
+    def _take_back(self, h: WorkerHandle) -> bool:
+        """Hand a restarted controller its original batteries back from whoever runs them now, with whatever charge
+        they have by then: ownership moves in the coordinator and in the hashes, where owner_epoch is bumped to the
+        new epoch (an adopter could never load them again). Only when none of the holders has a tick in flight, so
+        no adopter can write them after this (no zombie writes); otherwise it is retried at the next supervision."""
+        run = self.run
+        if run is not None and run.status == "starting":
+            return False  # init_run is loading every controller: after it
+        home = np.flatnonzero(self.home == h.worker_id).astype(np.int32)
+        holders = sorted({int(x) for x in np.unique(self.owner[home]).tolist()} - {h.worker_id, -1})
+        busy = [x for x in holders if self.workers[x].inflight]
+        if busy or h.inflight:
+            self._read_telemetry(None, None, None)  # late reports that are in already
+            busy = [x for x in holders if self.workers[x].inflight]
+            if busy or h.inflight:
+                return False
+        t0 = time.perf_counter()
+        for x in holders:
+            xh = self.workers[x]
+            xh.owned = xh.owned[~np.isin(xh.owned, home)].astype(np.int32)
+            keep = ~np.isin(xh.pending_load, home)
+            xh.pending_load, xh.pending_init = xh.pending_load[keep].astype(np.int32), xh.pending_init[keep]
+            if h.worker_id in xh.adopted_from:
+                xh.adopted_from.remove(h.worker_id)
+        self.owner[home] = h.worker_id
+        h.owned = np.unique(np.concatenate([h.owned, home])).astype(np.int32)
+        tail = b"$5\r\nowner\r\n$%d\r\n%d\r\n$11\r\nowner_epoch\r\n$%d\r\n%d\r\n" % (
+            len(str(h.worker_id)), h.worker_id, len(str(h.epoch)), h.epoch)
+        self._send_raw([b"*6\r\n$4\r\nHSET\r\n$%d\r\n%s\r\n%s" % (len(self._bkey[g]), self._bkey[g], tail)
+                        for g in home.tolist()])
+        if run is not None and run.initialized is not None:
+            # the fresh process loads its batteries' stored state (the adopters' last committed SoC and fence)
+            idx = h.owned
+            self.r.xadd(self.keys.commands(h.worker_id), {"m": pack({
+                "t": "load", "run": run.run_id, "n": self.N, "dt_h": self.dt_h, "soc_min": self.soc_min,
+                "soc_max": self.soc_max, "load": {
+                    "idx": i32(idx), "ids": [self.layout.ids[g] for g in idx.tolist()],
+                    "init": u8(~run.initialized[idx]), "soc0": float(run.settings["start_charge_level"])}})},
+                maxlen=self.orch.maxlen["commands"], approximate=True)
+            h.pending_load = np.empty(0, dtype=np.int32)
+            h.pending_init = np.empty(0, dtype=bool)
+            h.ready_run = None
+        h.recovery.update(take_back_ms=(time.perf_counter() - t0) * 1000.0, taken_from=holders,
+                          batteries=int(len(home)))
+        self._snapshot_dirty = True
+        return True
+
+    def _worker_recovered(self, h: WorkerHandle) -> None:
+        """worker_recovered, in the contract's words: back, with its original batteries, starting from their charge."""
+        rec, h.recovery = h.recovery, None
+        home = np.flatnonzero(self.home == h.worker_id)
+        usable = worker_usable_charge(home, self.soc, self.cap, self.soc_min, self.soc_max)
+        ms = (time.perf_counter() - rec["t0"]) * 1000.0
+        who = ctl.controller(h.worker_id)
+        if len(home):
+            where = geo.join_names([geo.city_name(loc) for loc in self.layout.counts_by_location(home)])
+            msg = f"{who} is back and has taken back its {ctl.fmt_int(len(home))} {where} batteries"
+            if self.run is None:  # no run: their charge means nothing until a Start sets it
+                msg += "."
+            else:
+                msg += ", starting from empty." if (usable or 0.0) < 0.005 else f", now {usable:.0%} charged."
+        else:
+            msg = f"{who} is back."
+        running = self.run is not None
+        self._emit("worker_recovered", "good", msg, detail={
+            "worker_id": h.worker_id, "controller": h.worker_id + 1, "batteries": int(len(home)), "pid": h.pid,
+            "by_location": self.layout.counts_by_location(home), "usable_charge": usable if running else None,
+            "charge_level": worker_charge_level(home, self.soc, self.cap) if running else None,
+            "taken_from": rec.get("taken_from", []), "ms": round(ms, 1),
+            "take_back_ms": round(rec.get("take_back_ms", 0.0), 3)})
+        _log(f"worker {h.worker_id} recovered in {ms:.0f} ms (take-back {rec.get('take_back_ms', 0.0):.1f} ms)")
+        self._snapshot_dirty = True
+
+    def _crash_empty(self, h: WorkerHandle, *, fenced: bool = False) -> dict | None:
+        """A crash empties the controller's batteries to the reserve (docs/API.md failure model), once per crash:
+        fence its lease (nothing it left behind can commit any more) and book whatever it did commit, then set the
+        SoC mirror, the battery hashes and the race shadow's copies to soc_min. The adopters load the emptied state
+        from the hashes at the hand-over. With no run, charge means nothing yet (a run starts every battery afresh)."""
+        run = self.run
+        if run is None or run.initialized is None:
+            return None
+        if h.crash is not None and h.crash.get("run") == run.run_id:
+            return h.crash
+        if not fenced:
+            self.r.set(self.keys.lease(h.worker_id), f"dead:{h.epoch}")
+            self._read_telemetry(None, None, None)
+        idx = np.unique(np.concatenate([h.owned, h.pending_load])).astype(np.int32)
+        lost = usable_kwh(self.soc[idx], self.cap[idx], self.soc_min)
+        h.crash = {"run": run.run_id, "batteries": int(len(idx)), "emptied_kwh": lost}
+        h.pending_halve = np.empty(0, dtype=np.int32)
+        if len(idx):
+            self._set_soc(idx, np.full(len(idx), self.soc_min))
+            floor = self.soc_min
+            self._race_adjust(idx, lambda s: np.full_like(s, floor))
+            _log(f"worker {h.worker_id} crashed: {len(idx)} batteries emptied to the {floor:.0%} reserve "
+                 f"({lost:,.1f} kWh lost)")
+        self._snapshot_dirty = True
+        return h.crash
+
+    def _halve_controller(self, w: int) -> int:
+        """Controller w was taken offline: halve the usable charge of the batteries it owns now. Applied at once, or,
+        if one of its ticks is still in flight, as soon as it has reported (never under a worker applying a tick).
+        Returns how many batteries. With no run, charge means nothing yet: 0."""
+        run = self.run
+        h = self.workers[w]
+        if run is None or run.initialized is None or run.status == "starting" or h.status == DEAD:
+            return 0
+        idx = np.flatnonzero(self.owner == w).astype(np.int32)
+        if len(idx):
+            h.pending_halve = np.union1d(h.pending_halve, idx).astype(np.int32)
+            self._apply_pending_halvings()
+        return int(len(idx))
+
+    def _apply_pending_halvings(self) -> None:
+        """Halve the batteries of controllers taken offline (between ticks): soc = floor + (soc - floor) / 2 in the
+        mirror and the hashes, then a 't': 'soc' message makes the worker apply the same values to the state it holds
+        in-process (it comes after every tick already in its stream), and the race shadow halves its copies."""
+        todo = [h for h in self.workers if len(h.pending_halve)]
+        if self._in_tick or not todo:
+            return
+        run = self.run
+        if run is None or run.initialized is None or run.status == "starting":
+            for h in todo:
+                h.pending_halve = np.empty(0, dtype=np.int32)
+            return
+        if any(h.inflight for h in todo):
+            self._read_telemetry(None, None, None)  # late reports that are in already
+        floor = self.soc_min
+        for h in todo:
+            if h.status == DEAD:  # it crashed meanwhile: the crash emptied them
+                h.pending_halve = np.empty(0, dtype=np.int32)
+                continue
+            if h.inflight or h.ready_run != run.run_id:
+                # it hasn't reported a tick yet (never change SoC under a worker applying one), or hasn't loaded its
+                # batteries for this run yet (its load would start them afresh over the halving): once it has
+                continue
+            idx = h.pending_halve[self.owner[h.pending_halve] == h.worker_id].astype(np.int32)
+            h.pending_halve = np.empty(0, dtype=np.int32)
+            if not len(idx):
+                continue
+            values = floor + (self.soc[idx] - floor) / 2.0
+            self._set_soc(idx, values)
+            self.r.xadd(self.keys.commands(h.worker_id), {"m": pack({
+                "t": "soc", "run": run.run_id, "idx": i32(idx), "soc": f64(values)})},
+                maxlen=self.orch.maxlen["commands"], approximate=True)
+            self._race_adjust(idx, lambda s: floor + (s - floor) / 2.0)
+            self._snapshot_dirty = True
+
+    def _set_soc(self, idx: np.ndarray, values: np.ndarray) -> None:
+        """Change these batteries' SoC outside a tick's physics (a crash empties them, a controller going offline
+        halves them): the SoC mirror and its tick fence, the battery hashes and the journal. The energy is lost, not
+        sold, so nothing is metered. A battery the run hasn't initialised yet gets the run's fresh state around the
+        new SoC, so whoever loads it next adopts exactly that."""
+        run = self.run
+        idx = np.asarray(idx, dtype=np.int32)
+        values = np.asarray(values, dtype=np.float64)
+        self.soc[idx] = values
+        self.soc_k[idx] = np.maximum(self.soc_k[idx], run.k if self._in_tick else run.k - 1)
+        fresh = ~run.initialized[idx]
+        run_id = run.run_id.encode()
+        writes = []
+        for g, v, new in zip(idx.tolist(), values.tolist(), fresh.tolist()):
+            if new:
+                writes.append(resp(b"HSET", self._bkey[g], F_SOC, repr(v), F_CID, b"", F_TICK, str(NO_TICK),
+                                   F_RUN, run_id))
+            else:
+                writes.append(resp(b"HSET", self._bkey[g], F_SOC, repr(v)))
+        run.initialized[idx] = True
+        self._send_raw(writes)
+        if self.journal_on:  # replay_journal applies it between the ticks it came between
+            self.journal_sets.append((run.k + (1 if self._in_tick else 0), idx.copy(), values.copy()))
+
+    def _race_adjust(self, idx: np.ndarray, fn: Callable[[np.ndarray], np.ndarray]) -> None:
+        """The race shadow gets the same charge change on the same batteries (docs/API.md: it mirrors the emptying and
+        the halving, so the race compares decisions only). The potential fleet never loses charge."""
+        run = self.run
+        if run is None or run.race is None:
+            return
+        by_city = {}
+        for loc, sl in self.loc_slice.items():
+            local = idx[(idx >= sl.start) & (idx < sl.stop)] - sl.start
+            if len(local):
+                by_city[loc] = local
+        run.race.adjust(by_city, fn)
 
     # --- runs ---------------------------------------------------------------------------------
 
@@ -927,6 +1259,7 @@ class Coordinator:
         self.kw[:] = 0.0
         self.tick_log = []
         self.journal = {}
+        self.journal_sets = []
         self.status_codes = bstatus.idle_codes(self.availability.offline)  # no tick yet: waiting or offline
         self.status_base = np.full(self.N, bstatus.WAITING, dtype=np.uint8)
         pipe = self.r.pipeline(transaction=False)
@@ -942,6 +1275,7 @@ class Coordinator:
             h.inflight.clear()
             h.pending_load = np.empty(0, dtype=np.int32)
             h.pending_init = np.empty(0, dtype=bool)
+            h.pending_halve = np.empty(0, dtype=np.int32)
             h.ready_run = None
             h.last_tick_ts = None
         for h in live:
@@ -1183,6 +1517,7 @@ class Coordinator:
 
     def loop_once(self) -> None:
         self._supervise()
+        self._between_ticks()  # at max speed the forced supervision runs inside ticks only
         run = self.run
         if run is not None and run.status == "running" and time.monotonic() >= run.next_tick_at:
             self.step()
@@ -1227,6 +1562,7 @@ class Coordinator:
 
     def step(self) -> dict | None:
         """One tick: decide, allocate, dispatch, barrier, account, detect failures, recover."""
+        self._between_ticks()  # a halving or a take-back that is due happens before this tick's allocation
         self._in_tick = True
         try:
             return self._step()
@@ -1550,34 +1886,40 @@ class Coordinator:
         h.dead_reason = reason
         self.r.set(self.keys.lease(h.worker_id), f"dead:{h.epoch}")  # fence the zombie before anyone adopts
         self._read_telemetry(None, None, None)  # book whatever it committed before the fence
+        crash = self._crash_empty(h, fenced=True)  # a crash empties its batteries: before the hand-over (docs/API.md)
         expired = sorted(h.inflight.items())
         h.inflight.clear()
-        cohort = np.sort(np.concatenate([h.owned, h.pending_load])).astype(np.int32)
+        cohort = np.unique(np.concatenate([h.owned, h.pending_load])).astype(np.int32)  # adopted-but-unloaded: once
         h.owned = np.empty(0, dtype=np.int32)
         h.pending_load = np.empty(0, dtype=np.int32)
         h.pending_init = np.empty(0, dtype=bool)
-        adopters = [x for x in self.workers if x.status == HEALTHY]
+        h.pending_halve = np.empty(0, dtype=np.int32)
+        adopters = [x for x in self.workers if x.status == HEALTHY and not self._awaiting_take_back(x)]
         self._reassign(cohort, adopters, h.worker_id)
         handover_ms = (time.perf_counter() - t0) * 1000.0
         run = self.run
         sim_ts = run.start_ts + (k if k is not None else run.k) * self.tick_s if run else None
         why = {"missed_deadlines": f" after missing {self.orch.miss_threshold} check-ins in a row",
                "heartbeat_expired": f" (no heartbeat for {self.orch.hb_ttl_s:g} seconds)",
-               "no_heartbeat_at_start": " while starting up"}.get(reason, "")
+               "no_heartbeat_at_start": " while starting up", "exited_at_start": " while starting up",
+               "process_exited": " (its process stopped)"}.get(reason, "")
         self._emit("worker_dead", "warn", f"Controller {h.worker_id + 1} stopped responding{why}.", sim_ts=sim_ts,
                    detail={"worker_id": h.worker_id, "controller": h.worker_id + 1, "pid": h.pid, "reason": reason,
                            "tick_index": k, "unconfirmed_ticks": [kk for kk, _ in expired], "exit_code": h.exit_code})
         if len(cohort):
             others = len(adopters)
             when = "under 1 ms" if handover_ms < 1 else f"{handover_ms:.0f} ms"
+            emptied = crash is not None and crash["batteries"] > 0
             if others:
                 msg = (f"Controller {h.worker_id + 1}'s {ctl.fmt_int(len(cohort))} batteries"
                        f"{self._in_cities(cohort)} were handed to the other "
-                       f"{others} controller{'s' if others != 1 else ''} in {when}.")
+                       f"{others} controller{'s' if others != 1 else ''} in {when}"
+                       f"{', emptied by the crash' if emptied else ''}.")
                 self._emit("worker_adopted", "good", msg, sim_ts=sim_ts, detail={
                     "worker_id": h.worker_id, "controller": h.worker_id + 1, "batteries": int(len(cohort)),
                     "adopted_by": [a.worker_id for a in adopters], "ms": round(handover_ms, 3),
-                    "by_location": self.layout.counts_by_location(cohort),
+                    "by_location": self.layout.counts_by_location(cohort), "emptied": emptied,
+                    "emptied_kwh": round(crash["emptied_kwh"], 3) if emptied else 0.0,
                     "declared_at_tick_index": k, "reassigned_for_tick_index": (k + 1) if k is not None else None})
         if run is not None and expired:
             entries = []
@@ -1635,7 +1977,7 @@ class Coordinator:
 
     def _reassign_orphans(self) -> None:
         orphans = np.flatnonzero(self.owner < 0).astype(np.int32)
-        adopters = [x for x in self.workers if x.status == HEALTHY]
+        adopters = [x for x in self.workers if x.status == HEALTHY and not self._awaiting_take_back(x)]
         if len(orphans) and adopters:
             self._reassign(orphans, adopters, None)
 
@@ -1760,7 +2102,7 @@ class Coordinator:
             "speed_tps": (run.settings["speed_tps"] if run else ctl.default_settings(self.cfg, self.raw, self.N)["speed_tps"]),
             "totals": self._totals(),
             "last_run": self.last_run,
-            "workers": [h.public(self.layout, self.soc, self.cap) for h in self.workers],
+            "workers": [h.public(self.layout, self.soc, self.cap, self.soc_min, self.soc_max) for h in self.workers],
             "availability": self.availability.summary(),
             "strategy_effective": run.strategy_name if run else None,
             "race": (run.race.public(run.revenue_usd, run.potential, run.shows_potential)
@@ -1840,12 +2182,23 @@ class Coordinator:
 
         soc = np.full(self.N, float(soc0))
         ticks = self.run.k if self.run else (max(self.journal) + 1 if self.journal else 0)
+        sets = sorted(self.journal_sets, key=lambda s: s[0])  # crash emptying, controller-offline halving
+
+        def apply_sets(before_k):
+            for kk, idx, values in sets:
+                if kk == before_k:
+                    soc[idx] = values
+
         for k in range(ticks):
+            apply_sets(k)
             sp = np.zeros(self.N)
             for idx, kw in self.journal.get(k, []):
                 sp[idx] = kw
             soc, _ = physics_step(soc, self.cap, self.power, self.eff, np.ones(self.N, dtype=bool), sp, self.dt_h,
                                   self.soc_min, self.soc_max)
+        for kk, idx, values in sets:  # after the last tick (e.g. a crash noticed once the run was done)
+            if kk >= ticks:
+                soc[idx] = values
         return soc
 
 
@@ -2003,8 +2356,13 @@ def _bench(args) -> int:
                 victim = co.workers[args.kill_worker]
                 os.kill(victim.pid, signal.SIGKILL)
                 killed.update(worker_id=victim.worker_id, pid=victim.pid, after_tick=rec["k"],
-                              cohort=victim.owned.copy(), by_location=co.layout.counts_by_location(victim.owned))
+                              cohort=victim.owned.copy(), by_location=co.layout.counts_by_location(victim.owned),
+                              usable_kwh=round(usable_kwh(co.soc[victim.owned], co.cap[victim.owned], co.soc_min), 1))
                 _log(f"SIGKILLed worker {victim.worker_id} (pid {victim.pid}) after tick {rec['k']}")
+            if args.restart_at is not None and killed and rec["k"] == args.restart_at and "restart" not in killed:
+                reply = co.handle_control({"cmd": "restart", "args": {"worker_id": args.kill_worker}})  # a user restart
+                killed["restart"] = {"after_tick": rec["k"], "reply": reply}
+                _log(f"restart of worker {args.kill_worker} requested after tick {rec['k']}: {reply}")
 
         co.tick_hooks.append(kill_hook)
         t0 = time.perf_counter()
@@ -2044,6 +2402,25 @@ def _bench(args) -> int:
             ka = killed["after_tick"]
             out["error_pct_after_kill"] = [f"tick {r['k']}: {r['error_pct']:.3f}% ({r['healthy_workers']} healthy)"
                                            for r in log if ka < r["k"] <= ka + 5]
+            # the feasible fleet target drops by what the emptied batteries could have delivered
+            out["feasible_kw_by_tick"] = {f"tick {r['k']}": round(sum(r["feasible_exact"].values()), 1)
+                                          for r in log if ka - 1 <= r["k"] <= ka + 5}
+            out["killed_usable_kwh"] = killed.get("usable_kwh")
+            adopted = next((e for e in co.events if e["kind"] == "worker_adopted"), None)
+            if adopted is not None:
+                out["handover"] = {k: adopted["detail"].get(k) for k in ("ms", "batteries", "emptied", "emptied_kwh",
+                                                                          "declared_at_tick_index")}
+            recovered = next((e for e in co.events if e["kind"] == "worker_recovered"), None)
+            if "restart" in killed:
+                out["restart"] = {"requested_after_tick": killed["restart"]["after_tick"],
+                                  "reply": killed["restart"]["reply"],
+                                  "recovered": None if recovered is None else {
+                                      k: recovered["detail"].get(k) for k in ("ms", "take_back_ms", "batteries",
+                                                                              "usable_charge", "taken_from")},
+                                  "message": None if recovered is None else recovered["message"]}
+                if recovered is not None:  # after the take-back every controller reports every tick again
+                    out["after_restart"] = [f"tick {r['k']}: {r['reported']}/{r['sent']} reported, "
+                                            f"{r['error_pct']:.3f}%" for r in log[-3:]]
             out["events"] = [f"{e['kind']}: {e['message']}" for e in co.events if e["kind"].startswith("worker_")]
             out["dead_letter"] = int(co.r.get(co.keys.dead_letter_count) or 0)
             out["controller_down_by_tick"] = {f"tick {k}": n for k, n in sorted(down_by_tick.items())}
@@ -2075,6 +2452,8 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--soc", type=float, default=0.5)
     bench.add_argument("--kill-at", type=int, default=None, help="SIGKILL a worker right after this tick index")
     bench.add_argument("--kill-worker", type=int, default=7)
+    bench.add_argument("--restart-at", type=int, default=None,
+                       help="a user restart of the killed worker right after this tick index (it takes its batteries back)")
     bench.add_argument("--timeout", type=float, default=600.0)
     args = ap.parse_args(argv)
     if args.cmd == "bench":

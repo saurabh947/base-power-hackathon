@@ -134,7 +134,8 @@ def read_pitch_results_json(year: int, out_dir=None) -> dict | None:
 # Every successful run of these strategies, with only what the AiGains object needs:
 # {"run_id", "strategy", "year", "label", "fleet": {"size", "by_location"}, "fleet_total_usd",
 #  "per_battery_avg_usd", "insights" (metrics.insights, None for runs stored before it existed),
-#  "is_pitch", "started_at", "finished_at"}. Skip markers are left out.
+#  "split" (metrics.split: real vs projected money; None for runs stored before it existed, all of them
+#  fully real years), "is_pitch", "started_at", "finished_at"}. Skip markers are left out.
 
 GAINS_STRATEGIES = ("bands", "forecast", "peak", "hindsight")
 
@@ -151,7 +152,7 @@ def slim_record(record: dict, *, is_pitch: bool) -> dict | None:
         "year": int(year) if year is not None else None, "label": record.get("label"),
         "fleet": {"size": fleet.get("size"), "by_location": fleet.get("by_location")},
         "fleet_total_usd": float(record["fleet_total_usd"]), "per_battery_avg_usd": float(record["per_battery_avg_usd"]),
-        "insights": metrics.get("insights"), "is_pitch": bool(is_pitch),
+        "insights": metrics.get("insights"), "split": metrics.get("split"), "is_pitch": bool(is_pitch),
         "started_at": record.get("started_at"), "finished_at": record.get("finished_at"),
     }
 
@@ -163,8 +164,8 @@ def load_gains_records(*, conn=None) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT run_id, strategy, params->>'year', params->>'label', params->'fleet'->'size', "
-            "params->'fleet'->'by_location', fleet_total_usd, per_battery_avg_usd, metrics->'insights', is_pitch, "
-            "started_at, finished_at FROM backtest_runs "
+            "params->'fleet'->'by_location', fleet_total_usd, per_battery_avg_usd, metrics->'insights', "
+            "metrics->'split', is_pitch, started_at, finished_at FROM backtest_runs "
             "WHERE strategy = ANY(%s) AND fleet_total_usd IS NOT NULL AND per_battery_avg_usd IS NOT NULL "
             "AND COALESCE(metrics->>'skipped', 'false') <> 'true'",
             (list(GAINS_STRATEGIES),),
@@ -176,8 +177,8 @@ def load_gains_records(*, conn=None) -> list[dict]:
         "run_id": str(run_id), "strategy": strategy, "year": int(year) if year is not None else None,
         "label": label, "fleet": {"size": size, "by_location": by_location},
         "fleet_total_usd": float(total), "per_battery_avg_usd": float(per_battery), "insights": insights,
-        "is_pitch": bool(is_pitch), "started_at": _iso(started), "finished_at": _iso(finished),
-    } for (run_id, strategy, year, label, size, by_location, total, per_battery, insights, is_pitch, started,
+        "split": split, "is_pitch": bool(is_pitch), "started_at": _iso(started), "finished_at": _iso(finished),
+    } for (run_id, strategy, year, label, size, by_location, total, per_battery, insights, split, is_pitch, started,
            finished) in rows]
 
 

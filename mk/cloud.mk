@@ -13,8 +13,8 @@ cloud-forecast:         ## build the forecast image and run the TimesFM job (YEA
 cloud-predict:          ## the AI's prediction for the rest of YEAR (2026) from real_until_utc (forecast image)
 	YEAR=$(or $(YEAR),2026) SKIP_BUILD=$(or $(SKIP_BUILD),0) scripts/cloud/jobs.sh predict
 
-cloud-backtest:         ## full-year pitch backtest into Cloud SQL (needs forecasts first)
-	scripts/cloud/jobs.sh backtest
+cloud-backtest:         ## full-year pitch backtest into Cloud SQL (needs forecasts first; YEAR=2026 also the prediction)
+	YEAR=$(or $(YEAR),2025) scripts/cloud/jobs.sh backtest
 
 cloud-migrate:          ## apply DB migrations in Cloud SQL (Cloud Run job)
 	gcloud run jobs execute fleet-sim-migrate --project appintellect --region us-east1 --wait

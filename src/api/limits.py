@@ -4,6 +4,7 @@ so global limits live in memory.
 - /run/start and /run/reset: one call per 5 s each (global).
 - /availability: 10 calls per second (global).
 - /chaos/kill: one call per 2 s (global). Crashing controllers is open to everyone.
+- /workers/{worker_id}/restart: one call per 2 s (global), like the kill.
 """
 from __future__ import annotations
 
@@ -69,7 +70,8 @@ class Limits:
         self.run_reset = SlidingWindow(1, float(cfg.get("run_reset_s", 5)), clock)
         self.availability = SlidingWindow(int(cfg.get("availability_per_s", 10)), 1.0, clock)
         self.chaos_kill = SlidingWindow(1, float(cfg.get("chaos_kill_s", 2)), clock)
+        self.worker_restart = SlidingWindow(1, float(cfg.get("worker_restart_s", 2)), clock)
 
     def reset(self) -> None:
-        for lim in (self.run_start, self.run_reset, self.availability, self.chaos_kill):
+        for lim in (self.run_start, self.run_reset, self.availability, self.chaos_kill, self.worker_restart):
             lim.reset()

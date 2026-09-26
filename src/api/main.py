@@ -3,10 +3,12 @@
 Run:  uvicorn src.api.main:app --port 8000      (src.launcher does this on $PORT)
 
 The API never touches batteries itself: it reads the coordinator's snapshot and streams
-from Redis and sends control requests (start, pause, availability, ...) over the control
+from Redis and sends control requests (start, pause, availability, restart, ...) over the control
 stream, waiting for the coordinator's reply. The one direct action is POST /chaos/kill,
 which SIGKILLs a worker process found in the worker registry. It is open to everyone and
 rate-limited to one kill per 2 s (docs/API.md); the guards keep 2 healthy controllers.
+A crashed controller comes back only when a user asks (POST /workers/{worker_id}/restart, the same
+rate limit) or on Reset.
 
 Env: REDIS_URL, FLEET_REDIS_PREFIX, CORS_ORIGINS (comma-separated), FLEET_FRAME_INTERVAL_S (tests),
 FLEET_CONTROL_TIMEOUT_S, FLEET_START_READY_TIMEOUT_S (how long POST /run/start waits for a restarting
@@ -137,7 +139,7 @@ STOPPED_MESSAGE = "The full-year re-run was stopped. The previous results are st
 def _emit_stopped(job_id: str) -> None:
     """backtest_done for a cancelled job, once per job (the cancel call, the job thread and a poll may all try)."""
     svc = importlib.import_module("src.backtest.service")
-    message = svc.stopped_message() if hasattr(svc, "stopped_message") else STOPPED_MESSAGE
+    message = svc.stopped_message(job_id) if hasattr(svc, "stopped_message") else STOPPED_MESSAGE
     backend().emit("backtest_done", "info", message, detail={"job_id": job_id, "status": "cancelled", "run_ids": []},
                    once_key=f"backtest:{job_id}")
 
@@ -404,6 +406,22 @@ async def chaos_kill(request: Request):
     return await _call(kill_worker, backend(), worker_id)
 
 
+@app.post("/workers/{worker_id}/restart")
+async def worker_restart(worker_id: str):
+    """Restart a crashed controller (open to everyone; docs/API.md): nothing restarts on its own. 200 {"worker_id",
+    "status": "starting"}; it takes its original batteries back once it is up, then worker_recovered goes out.
+    409 not_crashed if it isn't down, 404 unknown_worker. One restart per 2 s, globally, like the kill: a malformed
+    id is refused before it spends the budget; a refused restart (409/404) still spends it."""
+    try:
+        w = int(worker_id)
+    except ValueError:
+        raise ctl.ControlError(400, "invalid_worker", "worker_id must be a whole number.") from None
+    wait = state.limits.worker_restart.hit()
+    if wait is not None:
+        raise _limited(wait)
+    return await _call(_control, "restart", {"worker_id": w})
+
+
 # --- bridges to modules built in parallel --------------------------------------------------------
 
 
@@ -467,12 +485,24 @@ async def backtest_cancel(job_id: str):
     return {"status": result.get("status", "cancelled")}
 
 
+def _results_year(value: str | None) -> int | None:
+    """The `?year=` of the Results endpoints: None (the pitch year) or a whole number (400 invalid_year)."""
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        raise ctl.ControlError(400, "invalid_year", "year must be a whole number, like 2025 or 2026.") from None
+
+
 @app.get("/results/pitch")
-async def results_pitch():
+async def results_pitch(year: str | None = None):
+    """docs/API.md Results for `?year=` (default: the pitch year, 2025): each year has its own pitch set."""
+    wanted = _results_year(year)
     svc = _bridge("src.backtest.service")
     not_found = getattr(svc, "ResultsNotFound", LookupError)
     try:
-        result = await run_in_threadpool(svc.pitch_results)
+        result = await run_in_threadpool(svc.pitch_results, wanted)
     except not_found:
         result = None
     if not result:
@@ -481,12 +511,15 @@ async def results_pitch():
 
 
 @app.get("/results/ai-gains")
-async def results_ai_gains():
-    """docs/API.md AiGains: what the AI forecast adds over the simple rule, per year (the pitch year first)."""
+async def results_ai_gains(year: str | None = None):
+    """docs/API.md AiGains: what the AI forecast adds over the simple rule, per year: `?year=` (default: the pitch
+    year) first, then the other complete years."""
+    wanted = _results_year(year)
     svc = _bridge("src.backtest.service")
     not_found = getattr(svc, "ResultsNotFound", LookupError)
     try:
-        result = await run_in_threadpool(svc.ai_gains)
+        result = await run_in_threadpool(svc.ai_gains, wanted) if wanted is not None else \
+            await run_in_threadpool(svc.ai_gains)
     except not_found:
         result = None
     if not result or not result.get("years"):

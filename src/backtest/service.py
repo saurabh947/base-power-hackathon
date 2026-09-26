@@ -5,9 +5,11 @@ these functions:
     start_backtest(strategies, year) -> job_id
     get_job(job_id)                  -> {"status": "running" | "done" | "failed" | "cancelled", "run_ids": [...], "skipped": {...}, "error": None}
     cancel_job(job_id)               -> {"status": "cancelled"}
-    pitch_results(year=None)         -> the Results object
-    ai_gains()                       -> the AiGains object (what the AI forecast adds, per year)
-    stopped_message()                -> the backtest_done sentence for a cancelled job
+    pitch_results(year=None)         -> the Results object of that year's pitch set (default: the pitch year)
+    ai_gains(year=None)              -> the AiGains object (what the AI forecast adds; that year first)
+    stopped_message(job_id=None)     -> the backtest_done sentence for a cancelled job
+
+Every year has its own pitch set (is_pitch is per year): a job for 2026 replaces 2026's set only, never 2025's.
 
 A job runs `python -m src.backtest.runner --pitch --records-out FILE` in a subprocess (its own
 process group), so the replay's CPU work never holds the API process's GIL (the live coordinator
@@ -115,21 +117,32 @@ def cancel_job(job_id: str) -> dict:
     return {"status": "cancelled"}
 
 
-def stopped_message() -> str:
-    """The backtest_done sentence for a cancelled job (docs/UX.md tone)."""
+def stopped_message(job_id: str | None = None) -> str:
+    """The backtest_done sentence for a cancelled job (docs/UX.md tone), about that job's year."""
+    with _lock:
+        year = (_jobs.get(job_id) or {}).get("year") if job_id else None
     try:
-        pitch_results()
+        pitch_results(year)
     except ResultsNotFound:
+        if year is not None and year != _pitch_year():
+            return (f"The full-year {year} run was stopped before it finished, so there are no full-year results "
+                    f"for {year} yet.")
         return "The full-year run was stopped before it finished, so there are no full-year results yet."
     except Exception:
         pass
     return "The full-year re-run was stopped. The previous results are still shown."
 
 
-def pitch_results(year: int | None = None) -> dict:
-    """The Results object for the pitch year (config backtest.year by default).
+def _pitch_year() -> int:
+    from src.backtest.runner import backtest_settings
 
-    Reads the is_pitch rows of backtest_runs when a database is configured, else (or if the
+    return int(backtest_settings()["year"])
+
+
+def pitch_results(year: int | None = None) -> dict:
+    """The Results object of a year's pitch set (default: the pitch year, config backtest.year).
+
+    Reads the is_pitch rows of backtest_runs for that year when a database is configured, else (or if the
     database has none, or cannot be reached) data/results/pitch_<year>.json.
     """
     from src.backtest import store
@@ -152,14 +165,15 @@ def pitch_results(year: int | None = None) -> dict:
     raise ResultsNotFound(f"There are no full-year results for {year} yet.")
 
 
-def ai_gains() -> dict:
+def ai_gains(year: int | None = None) -> dict:
     """docs/API.md AiGains: what the AI forecast adds over the simple rule, per year, from stored runs.
 
-    The pitch year (config backtest.year) is its is_pitch set; every other year present is its latest
-    complete set of bands, forecast and peak on the same fleet (src.backtest.results.build_ai_gains has the
-    rules, including what is left out for runs stored before metrics.insights existed). Reads backtest_runs
-    when a database is configured, else (or if it fails or holds none) the JSON export in data/results/.
-    Raises ResultsNotFound when no year qualifies.
+    The requested year (default: the pitch year, config backtest.year) comes first, as its own is_pitch set; every
+    other year present follows with its pitch set if complete, else its latest complete set of bands, forecast and
+    peak, on the same fleet (src.backtest.results.build_ai_gains has the rules, including what is left out for runs
+    stored before metrics.insights existed). Money is the year's total; a year whose real prices end early (2026)
+    also splits it into real and projected. Reads backtest_runs when a database is configured, else (or if it
+    fails or holds none) the JSON export in data/results/. Raises ResultsNotFound when no year qualifies.
     """
     from src.backtest import store
     from src.backtest.results import build_ai_gains, config_fleet_signature
@@ -175,7 +189,7 @@ def ai_gains() -> dict:
             records = []
     if not records:
         records = store.load_gains_records_json()
-    gains = build_ai_gains(records, pitch_year=int(settings["year"]), settings=settings,
+    gains = build_ai_gains(records, pitch_year=int(settings["year"]), year=year, settings=settings,
                            default_signature=config_fleet_signature())
     if not gains["years"]:
         raise ResultsNotFound("There are no full-year results yet.")
