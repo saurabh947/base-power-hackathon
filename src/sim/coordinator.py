@@ -1082,8 +1082,9 @@ class Coordinator:
         infl = h.inflight.pop(kr, None)
         if infl is None:
             return  # a duplicate report of a tick already accounted for
-        if run.initialized is not None:
-            run.initialized[np.frombuffer(rep["idx"], dtype=np.int32)] = True
+        if run.initialized is not None:  # a battery the worker skipped reports NaN: not initialised by it
+            idx = np.frombuffer(rep["idx"], dtype=np.int32)
+            run.initialized[idx[np.isfinite(np.frombuffer(rep["soc"], dtype=np.float64))]] = True
         if got is not None and kr == k_now:
             got[w] = rep
         else:

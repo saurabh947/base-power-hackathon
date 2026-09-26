@@ -32,7 +32,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.api import presenter
 from src.api.backend import Backend, kill_worker
 from src.api.limits import Limits, retry_after
-from src.api.live import LiveCursor, forecasts, frame_message, snapshot_message
+from src.api.live import LiveCursor, _plain, frame_message, snapshot_message
 from src.config import REPO_ROOT, load_config, load_raw_config
 from src.sim import control as ctl
 
@@ -369,7 +369,7 @@ async def forecast(location: str, at_utc: str | None = None):
     result = await run_in_threadpool(provider.latest_forecast, location, at)
     if not result:
         raise ctl.ControlError(404, "no_forecast", "There's no forecast for that area and time yet.")
-    return result
+    return _plain(result)
 
 
 # --- WebSocket ---------------------------------------------------------------------------------------
@@ -397,7 +397,7 @@ async def live(ws: WebSocket):
             msg = await run_in_threadpool(snapshot_message, backend(), cursor)
         except Exception:
             msg = _fallback_snapshot()
-        await ws.send_text(json.dumps(msg))
+        await ws.send_text(_dumps(msg))
         interval = frame_interval_s()
         while not closed.is_set():
             try:
@@ -411,7 +411,7 @@ async def live(ws: WebSocket):
                 msg = {**_fallback_snapshot(), "type": "idle", "ticks": [], "sim_time_utc": None, "speed_tps": None}
                 for key in ("history", "settings", "forecast"):
                     msg.pop(key, None)
-            await ws.send_text(json.dumps(msg))
+            await ws.send_text(_dumps(msg))
     except Exception:
         pass
     finally:
@@ -420,6 +420,21 @@ async def live(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+
+
+def _json_default(value):
+    """Tolerate what modules built in parallel may hand us (datetimes, numpy scalars/arrays)."""
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _dumps(msg: dict) -> str:
+    return json.dumps(msg, default=_json_default)
 
 
 def _fallback_snapshot() -> dict:

@@ -120,7 +120,7 @@ class ForecastCache:
             except Exception:
                 f = None
             if f:
-                out[loc] = f
+                out[loc] = _plain(f)
         with self._lock:
             self._slot, self._value = slot, out
         if backend is not None:
@@ -134,9 +134,22 @@ class ForecastCache:
                         backend.emit("forecast_issued", "info", f"A new AI price forecast for the {area(loc)} is ready.",
                                      detail={"location": loc, "issued_utc": issued, "model": f.get("model")},
                                      once_key=f"forecast:{loc}:{issued}")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        print(f"[api] forecast_issued event not published: {exc!r}", flush=True)
         return out
+
+
+def _plain(value):
+    """JSON-ready copy of a provider result: datetimes become '...Z' strings, numpy becomes lists."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
 
 
 forecasts = ForecastCache()

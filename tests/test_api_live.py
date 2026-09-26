@@ -124,6 +124,40 @@ def test_websocket_messages_match_the_contract(live):
         assert client.get("/health").json()["status"] == "running"
 
 
+def test_forecasts_ride_along_only_when_new(live, monkeypatch):
+    import sys
+    import types
+
+    from src.api import live as live_mod
+
+    client, co = live
+    provider = types.ModuleType("src.forecast.provider")
+    calls = []
+
+    def latest_forecast(location, at_utc):  # synthetic test double: one forecast per sim hour
+        calls.append((location, at_utc))
+        issued = at_utc.replace(minute=0, second=0, microsecond=0)
+        return {"location": location, "series": "rt_price", "model": "timesfm-3.0", "issued_utc": issued,
+                "step_minutes": 15, "points": [{"ts_utc": issued, "p10": 1.0, "p50": 2.0, "p90": 3.0}]}
+
+    provider.latest_forecast = latest_forecast
+    monkeypatch.setitem(sys.modules, "src.forecast.provider", provider)
+    monkeypatch.setattr(live_mod, "forecasts", live_mod.ForecastCache())
+    client.post("/run/start", json={"speed_tps": 10, "strategy": "peak"})
+    assert _wait(lambda: co.run is not None and co.run.k >= 2)
+    with client.websocket_connect("/live") as ws:
+        snap = ws.receive_json()
+        assert set(snap["forecast"]) == {"LZ_HOUSTON", "LZ_NORTH"}
+        assert snap["forecast"]["LZ_NORTH"]["issued_utc"].endswith("Z")  # datetimes serialised as *_utc strings
+        with_forecast = []
+        for _ in range(12):
+            f = ws.receive_json()
+            if "forecast" in f:
+                with_forecast.append(f["forecast"]["LZ_HOUSTON"]["issued_utc"])
+        assert with_forecast and len(set(with_forecast)) == len(with_forecast)  # only when a new one was issued
+    assert _wait(lambda: any(e["kind"] == "forecast_issued" for e in client.get("/state").json()["events"]))
+
+
 def test_run_controls(live):
     client, co = live
     assert client.post("/run/pause").status_code == 409  # nothing to pause yet
