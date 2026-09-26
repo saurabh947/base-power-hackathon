@@ -402,6 +402,8 @@ def test_a_user_restart_brings_a_crashed_controller_back(live):
     again = client.post("/workers/1/restart")  # one restart per 2 s, globally, like the kill
     assert again.status_code == 429 and again.json()["error"] == "rate_limited" and again.headers["Retry-After"]
     assert _wait(lambda: any(e["kind"] == "worker_recovered" for e in co.events), timeout=15)
+    # the event stream is written at once; the workers list rides the next published snapshot
+    assert _wait(lambda: client.get("/state").json()["workers"][1]["status"] == "healthy", timeout=5)
     snap = client.get("/state").json()
     back = snap["workers"][1]
     home = np.flatnonzero(co.home == 1)
