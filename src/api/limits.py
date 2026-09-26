@@ -3,8 +3,7 @@ so global limits live in memory.
 
 - /run/start and /run/reset: one call per 5 s each (global).
 - /availability: 10 calls per second (global).
-- Wrong presenter passcodes: 5 per minute per IP; after that the IP is blocked until
-  the window frees up, even with the right passcode.
+- /chaos/kill: one call per 2 s (global). Crashing controllers is open to everyone.
 """
 from __future__ import annotations
 
@@ -69,8 +68,8 @@ class Limits:
         self.run_start = SlidingWindow(1, float(cfg.get("run_start_s", 5)), clock)
         self.run_reset = SlidingWindow(1, float(cfg.get("run_reset_s", 5)), clock)
         self.availability = SlidingWindow(int(cfg.get("availability_per_s", 10)), 1.0, clock)
-        self.wrong_passcode = SlidingWindow(int(cfg.get("wrong_passcode_per_min", 5)), 60.0, clock)
+        self.chaos_kill = SlidingWindow(1, float(cfg.get("chaos_kill_s", 2)), clock)
 
     def reset(self) -> None:
-        for lim in (self.run_start, self.run_reset, self.availability, self.wrong_passcode):
+        for lim in (self.run_start, self.run_reset, self.availability, self.chaos_kill):
             lim.reset()

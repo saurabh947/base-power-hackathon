@@ -151,6 +151,8 @@ class ForecastCache:
                 issued = f.get("issued_utc")
                 if issued and (loc, issued) not in self._announced:
                     self._announced.add((loc, issued))
+                    if _virtual(provider, issued):  # a slice of the AI's prediction, not a new forecast: no event
+                        continue
                     fresh.setdefault(issued, []).append(loc)
             for issued, locs in fresh.items():
                 from src.sim import geo
@@ -166,6 +168,18 @@ class ForecastCache:
                 except Exception as exc:
                     print(f"[api] forecast_issued event not published: {exc!r}", flush=True)
         return out
+
+
+def _virtual(provider, issued_utc: str) -> bool:
+    """Whether a forecast issued then is virtual: after a year's real_until_utc every forecast is a slice of the
+    AI's stored prediction (src/forecast/provider.py), so the hourly ones get no forecast_issued event."""
+    check = getattr(provider, "virtual_cutoff", None)
+    if check is None:
+        return False
+    try:
+        return check(datetime.fromisoformat(str(issued_utc).replace("Z", "+00:00"))) is not None
+    except Exception:
+        return False
 
 
 def _plain(value):

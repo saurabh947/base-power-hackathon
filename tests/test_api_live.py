@@ -1,5 +1,6 @@
 """The API against a real coordinator + worker processes (small fleet): WebSocket message shapes
-exactly as docs/API.md, availability scopes, battery lookup, presenter-only chaos kill, run control."""
+exactly as docs/API.md, availability scopes, battery lookup, the public chaos kill and its guards, run control,
+and battery_status within one frame of a change, while paused too."""
 import base64
 import math
 import threading
@@ -19,7 +20,6 @@ from src.sim.coordinator import Coordinator
 from src.sim.redis_layout import reachable, redis_url
 
 pytestmark = pytest.mark.redis
-PASS = "presenter-test-passcode"
 LOCS = list(load_config().fleet.locations)
 
 SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "settings", "history", "totals", "workers",
@@ -27,11 +27,13 @@ SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "setti
 IDLE_KEYS = {"type", "status", "run_id", "last_run"}
 FRAME_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "ticks", "totals", "workers", "failed_commands",
               "availability", "events", "battery_status", "race"}
-RACE_KEYS = {"strategy", "label", "revenue_usd", "by_location", "charge_level", "live_minus_race_usd"}
+RACE_KEYS = {"strategy", "label", "revenue_usd", "by_location", "charge_level", "live_minus_race_usd", "potential",
+             "shows_potential"}
+POTENTIAL_KEYS = {"label", "revenue_usd", "by_location", "shortfall_usd"}
 TOTALS_KEYS = {"revenue_usd", "sold_kwh", "bought_kwh", "ticks", "by_location"}
 TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_kw", "actual_kw", "error_pct",
-             "revenue_usd", "charge_level", "healthy_workers"}
-SETTINGS_KEYS = {"preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
+             "revenue_usd", "charge_level", "healthy_workers", "predicted"}
+SETTINGS_KEYS = {"year", "preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
                  "capacity_kwh_range", "locations"}
 WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location"}
 EVENT_KEYS = {"id", "wall_utc", "sim_utc", "kind", "severity", "message", "detail"}
@@ -46,8 +48,6 @@ def live(monkeypatch):
     monkeypatch.setenv("FLEET_FRAME_INTERVAL_S", "0.25")
     monkeypatch.setenv("FLEET_IDLE_INTERVAL_S", "1.0")
     monkeypatch.setenv("FLEET_CONTROL_TIMEOUT_S", "4")
-    monkeypatch.setenv("PRESENTER_PASSCODE", PASS)
-    monkeypatch.setenv("PRESENTER_PASSCODE_FILE", "/nonexistent/passcode")
     co = Coordinator(url=url, prefix=prefix, fleet_size=300, workers=3)
     co.boot()
     thread = threading.Thread(target=co.serve_forever, daemon=True)
@@ -110,6 +110,10 @@ def _assert_common(msg):
         assert all(set(v) == {"revenue_usd", "charge_level", "action"} for v in race["by_location"].values())
         assert race["live_minus_race_usd"] == pytest.approx(msg["totals"]["revenue_usd"] - race["revenue_usd"],
                                                             abs=1e-5)
+        pot = race["potential"]  # the live strategy with every battery online (docs/API.md race.potential)
+        assert set(pot) == POTENTIAL_KEYS and list(pot["by_location"]) == LOCS and isinstance(race["shows_potential"], bool)
+        assert all(set(v) == {"revenue_usd"} for v in pot["by_location"].values())
+        assert pot["shortfall_usd"] == pytest.approx(pot["revenue_usd"] - msg["totals"]["revenue_usd"], abs=1e-5)
 
 
 def _assert_tick(t):
@@ -121,6 +125,7 @@ def _assert_tick(t):
         assert set(t[key]) == set(LOCS) | {"fleet"}
     assert set(t["action"].values()) <= {"charge", "sell", "hold"}
     assert isinstance(t["error_pct"], float) and isinstance(t["healthy_workers"], int)
+    assert t["predicted"] is False  # 2025 replays are real prices all the way
 
 
 def test_websocket_messages_match_the_contract(live):
@@ -301,24 +306,29 @@ def test_battery_lookup(live):
     assert client.get("/settings").json()["defaults"]["fleet_size"] == 300  # the fleet that is actually running
 
 
-def test_presenter_kill_flow(live):
+def test_public_kill_flow(live):
     client, co = live
     client.post("/run/start", json={"speed_tps": 10, "strategy": "peak", "start_charge_level": 0.9})
     assert _wait(lambda: co.run is not None and co.status == "running")
-    assert client.post("/chaos/kill?worker_id=1").status_code == 403
-    hdr = {"X-Presenter-Passcode": PASS}
-    r = client.post("/chaos/kill?worker_id=1", headers=hdr)
+
+    def kill(query=""):
+        main.state.limits.chaos_kill.reset()  # one kill per 2 s: the guards are what's under test here
+        return client.post(f"/chaos/kill{query}")
+
+    r = client.post("/chaos/kill?worker_id=1")  # anyone may crash a controller: no passcode
     assert r.status_code == 200 and set(r.json()) == {"worker_id", "pid", "killed_at_utc"}
     assert r.json()["worker_id"] == 1 and r.json()["pid"] == co.workers[1].pid
+    r = client.post("/chaos/kill?worker_id=2")  # a second crash within 2 s is refused, whoever asks
+    assert r.status_code == 429 and r.json()["error"] == "rate_limited" and r.headers["Retry-After"] in ("1", "2")
     # before the coordinator even notices, the kill already counts: no double kill, no dropping below 2
-    assert client.post("/chaos/kill?worker_id=1", headers=hdr).json()["error"] == "already_dead"
-    assert client.post("/chaos/kill?worker_id=2", headers=hdr).json()["error"] == "too_few_healthy"
+    assert kill("?worker_id=1").json()["error"] == "already_dead"
+    assert kill("?worker_id=2").json()["error"] == "too_few_healthy"
     assert _wait(lambda: co.workers[1].status == "dead", timeout=10)
-    r = client.post("/chaos/kill?worker_id=1", headers=hdr)
+    r = kill("?worker_id=1")
     assert r.status_code == 409 and r.json()["error"] == "already_dead"
-    r = client.post("/chaos/kill", headers=hdr)  # random healthy one: would leave 1 healthy
+    r = kill()  # random healthy one: would leave 1 healthy
     assert r.status_code == 409 and r.json()["error"] == "too_few_healthy"
-    r = client.post("/chaos/kill?worker_id=42", headers=hdr)
+    r = kill("?worker_id=42")
     assert r.status_code == 404
     snap = client.get("/state").json()
     assert [w["status"] for w in snap["workers"]] == ["healthy", "dead", "healthy"]

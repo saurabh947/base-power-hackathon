@@ -30,12 +30,15 @@ STRATEGY_LABELS = {
     "peak": ("Evening peak", "Charges from 10 am to 3 pm and sells from 6 pm to 9 pm, every day."),
 }
 SPEEDS = (1, 2, 5, 10)
-EDITABLE = ("preset", "speed_tps", "strategy", "start_charge_level")
+EDITABLE = ("year", "preset", "speed_tps", "strategy", "start_charge_level")
 EVENT_KINDS = (
     "run_started", "run_paused", "run_resumed", "run_finished", "speed_changed", "run_reset", "worker_suspect",
     "worker_dead", "worker_adopted", "availability_changed", "price_spike", "action_changed", "forecast_issued",
-    "backtest_done", "race_update",
+    "backtest_done", "race_update", "prediction_started",
 )
+PRESET_KEYS = ("id", "year", "label", "date_local", "start_utc", "start_local", "description")
+EVENING_BEFORE_REAL_UNTIL = "evening_before_real_until"  # a computed preset start (config presets.items[].start)
+PREDICTION_STARTED_MESSAGE = "From here on, prices are the AI's prediction (TimesFM-3), not real ERCOT data."
 SEVERITIES = ("info", "good", "warn")
 
 
@@ -156,21 +159,70 @@ def action_message(actions: Mapping[str, str]) -> str:
 # --- settings ----------------------------------------------------------------------------------
 
 
-def presets(raw: Mapping) -> list[dict]:
-    """Presets from config.yaml, with start_local added (docs/API.md Preset shape)."""
+def _preset_items(raw: Mapping) -> list[dict]:
+    return [dict(p) for p in (raw.get("presets") or {}).get("items") or []]
+
+
+def _preset_year(item: Mapping) -> int:
+    """A preset's year: its `year`, else the Central-time year of its start."""
+    if item.get("year") is not None:
+        return int(item["year"])
+    from src.data.years import local_year
+
+    return local_year(parse_utc(item["start_utc"]))
+
+
+def presets(raw: Mapping, *, infos: Mapping | None = None) -> list[dict]:
+    """GET /settings presets (docs/API.md Preset: id, year, label, date_local, start_utc, start_local, description).
+
+    Only years visitors can pick (config years.items) that have real prices for every city are listed. A preset
+    whose start is `evening_before_real_until` gets 6 pm Central on the evening before its year's real_until_utc,
+    and is left out when that year is real all year. infos: {year: src.data.years.YearInfo} (default: looked up,
+    cached)."""
+    from src.data import years as yrs
+
+    configured = set(yrs.configured_years(raw))
     out = []
-    for p in (raw.get("presets") or {}).get("items") or []:
-        item = dict(p)
-        try:
-            item["start_local"] = to_local_iso(parse_utc(item["start_utc"]))
-        except (KeyError, ValueError):
-            item["start_local"] = None
-        out.append({k: item.get(k) for k in ("id", "label", "date_local", "start_utc", "start_local", "description")})
+    for item in _preset_items(raw):
+        year = _preset_year(item)
+        if year not in configured:
+            continue
+        info = (infos or {}).get(year) if infos is not None else yrs.info(year)
+        if info is None or not info.available:
+            continue
+        if item.get("start") == EVENING_BEFORE_REAL_UNTIL:
+            if info.real_until_utc is None:
+                continue
+            start = yrs.evening_before(info.real_until_utc)
+            item["start_utc"] = to_utc_iso(int(start.timestamp()))
+            item["date_local"] = start.astimezone(CHICAGO).date().isoformat()
+        out.append(_preset_public(item, year))
     return out
 
 
+def _preset_public(item: Mapping, year: int) -> dict:
+    item = dict(item, year=year)
+    try:
+        item["start_local"] = to_local_iso(parse_utc(item["start_utc"]))
+    except (KeyError, ValueError):
+        item["start_local"] = None
+    return {k: item.get(k) for k in PRESET_KEYS}
+
+
+def fixed_presets(raw: Mapping) -> list[dict]:
+    """The presets with a fixed start, without reading any price data (the fallback when it can't be read)."""
+    return [_preset_public(p, _preset_year(p)) for p in _preset_items(raw) if p.get("start_utc")]
+
+
 def default_preset_id(raw: Mapping) -> str:
-    return (raw.get("presets") or {}).get("default") or presets(raw)[0]["id"]
+    return (raw.get("presets") or {}).get("default") or _preset_items(raw)[0]["id"]
+
+
+def default_preset_for_year(raw: Mapping, year: int, listed: list[dict]) -> dict | None:
+    """What a Start with only a year replays: config presets.default_by_year, else that year's first preset."""
+    mine = [p for p in listed if p["year"] == year]
+    wanted = ((raw.get("presets") or {}).get("default_by_year") or {}).get(year)
+    return next((p for p in mine if p["id"] == wanted), mine[0] if mine else None)
 
 
 def api_section(raw: Mapping) -> dict:
@@ -178,10 +230,12 @@ def api_section(raw: Mapping) -> dict:
 
 
 def default_settings(cfg, raw: Mapping, fleet_size: int | None = None) -> dict:
+    """docs/API.md Settings with the defaults. The default preset is a fixed one, so this never reads prices."""
     api = api_section(raw)
     preset_id = default_preset_id(raw)
-    preset = next(p for p in presets(raw) if p["id"] == preset_id)
+    preset = next(p for p in _preset_items(raw) if p["id"] == preset_id)
     return {
+        "year": _preset_year(preset),
         "preset": preset_id,
         "start_utc": preset["start_utc"],
         "speed_tps": api.get("default_speed_tps", 2),
@@ -192,6 +246,22 @@ def default_settings(cfg, raw: Mapping, fleet_size: int | None = None) -> dict:
         "capacity_kwh_range": list(cfg.battery.capacity_kwh),
         "locations": dict(cfg.fleet.locations),
     }
+
+
+def parse_year(value, raw: Mapping, listed: list[dict]) -> int:
+    """A visitor's year: one of config years.items that has real prices loaded (400 invalid_year otherwise)."""
+    from src.data import years as yrs
+
+    available = sorted({p["year"] for p in listed})
+    choices = " or ".join(str(y) for y in available) or "none yet"
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not float(value).is_integer():
+        raise ControlError(400, "invalid_year", f"Year must be a whole number: {choices}.")
+    year = int(value)
+    if year not in yrs.configured_years(raw):
+        raise ControlError(400, "invalid_year", f"There's no {year} replay. Pick {choices}.")
+    if year not in available:
+        raise ControlError(400, "invalid_year", f"The {year} prices aren't loaded yet. Pick {choices}.")
+    return year
 
 
 def parse_speed(value, *, allow_max: bool = False):
@@ -210,18 +280,36 @@ def parse_speed(value, *, allow_max: bool = False):
 
 
 def resolve_settings(partial: Mapping | None, cfg, raw: Mapping, *, fleet_size: int | None = None,
-                     allow_max: bool = False, allow_internal: bool = False) -> dict:
+                     allow_max: bool = False, allow_internal: bool = False, infos: Mapping | None = None) -> dict:
     """Defaults overlaid with the editable keys of `partial`; other keys are ignored.
 
-    allow_internal also accepts start_utc (tests and the parity helper replay any day).
+    year and preset go together: a preset sets its own year, a year alone replays that year's default preset
+    (config presets.default_by_year), and a preset from another year than the one asked for is refused.
+    allow_internal also accepts start_utc (tests and the parity helper replay any day); its year is the start's.
+    infos: {year: YearInfo} for presets() (default: looked up).
     """
     partial = dict(partial or {})
     settings = default_settings(cfg, raw, fleet_size)
-    if "preset" in partial and partial["preset"] is not None:
-        preset = next((p for p in presets(raw) if p["id"] == partial["preset"]), None)
-        if preset is None:
-            known = ", ".join(p["id"] for p in presets(raw))
-            raise ControlError(400, "invalid_preset", f"There is no replay called {partial['preset']!r}. Try one of: {known}.")
+    year_given = partial.get("year") is not None
+    preset_given = partial.get("preset") is not None
+    if year_given or preset_given:
+        listed = presets(raw, infos=infos)
+        year = parse_year(partial["year"], raw, listed) if year_given else None
+        if preset_given:
+            preset = next((p for p in listed if p["id"] == partial["preset"]), None)
+            if preset is None:
+                known = ", ".join(p["id"] for p in listed if year is None or p["year"] == year)
+                raise ControlError(400, "invalid_preset",
+                                   f"There is no replay called {partial['preset']!r}. Try one of: {known}.")
+            if year is not None and preset["year"] != year:
+                known = ", ".join(p["id"] for p in listed if p["year"] == year)
+                raise ControlError(400, "invalid_preset", f"The replay {preset['id']!r} is in {preset['year']}, not "
+                                   f"{year}. Pick a {year} replay: {known}.")
+        else:
+            preset = default_preset_for_year(raw, year, listed)
+            if preset is None:
+                raise ControlError(400, "invalid_year", f"There are no {year} replays yet.")
+        settings["year"] = preset["year"]
         settings["preset"] = preset["id"]
         settings["start_utc"] = preset["start_utc"]
     if "speed_tps" in partial and partial["speed_tps"] is not None:
@@ -239,11 +327,15 @@ def resolve_settings(partial: Mapping | None, cfg, raw: Mapping, *, fleet_size: 
         settings["start_charge_level"] = float(value)
     if allow_internal and partial.get("start_utc"):
         try:
-            parse_utc(partial["start_utc"])
+            start = parse_utc(partial["start_utc"])
         except ValueError:
             raise ControlError(400, "invalid_start", "start_utc must be an ISO-8601 time.") from None
+        from src.data.years import local_year
+
         settings["start_utc"] = partial["start_utc"]
         settings["preset"] = partial.get("preset") or "custom"
+        if not year_given:
+            settings["year"] = local_year(start)
     return settings
 
 

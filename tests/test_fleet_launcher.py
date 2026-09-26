@@ -53,7 +53,7 @@ def stack():
     port = _free_port()
     prefix = f"test:launch:{uuid.uuid4().hex[:8]}:"
     env = {**os.environ, "REDIS_URL": url, "FLEET_REDIS_PREFIX": prefix, "PORT": str(port), "FLEET_SIZE": "200",
-           "FLEET_WORKERS": "3", "START_REDIS": "0", "PRESENTER_PASSCODE_FILE": "/nonexistent"}
+           "FLEET_WORKERS": "3", "START_REDIS": "0"}
     for var in ("DATABASE_URL", "DB_HOST"):
         env.pop(var, None)
     proc = subprocess.Popen([sys.executable, "-m", "src.launcher"], cwd=str(REPO_ROOT), env=env,

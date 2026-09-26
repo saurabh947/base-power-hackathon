@@ -47,6 +47,5 @@ fleet-parity:
 	  tests/test_fleet_strategy_parity.py -v -s
 
 # The whole backend (coordinator + 20 workers + API on :$(FLEET_API_PORT)) against the fleet Redis.
-# Presenter mode needs PRESENTER_PASSCODE (dev) or a passcode file at PRESENTER_PASSCODE_FILE.
 fleet-serve:
 	REDIS_URL=$(FLEET_REDIS_URL) PORT=$(FLEET_API_PORT) $(UV) run python -m src.launcher

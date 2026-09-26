@@ -6,7 +6,13 @@
                                [--covariates none|da] [--cache-dir DIR] [--no-resume] [--dry-run]
 
 Every `every_minutes` (config: hourly) from local midnight on Jan 1 of --year
-to the next Jan 1, it issues one forecast per location and series:
+to the next Jan 1, it issues one forecast per location and series. For a year
+whose real prices end early (the current year, published year-to-date:
+src.data.years.real_until) it stops at real_until_utc: after it a forecast
+would only see stale context, and the replay uses virtual forecasts sliced from
+the AI's prediction instead (src/forecast/predict.py). Likewise an issue time
+past the end of a series' own real data (e.g. load published up to an earlier
+day) is skipped, never forecast from stale context.
   rt_price  15-min steps, next 24 h (96 points), p10/p50/p90, $/MWh
   demand    hourly steps, next 48 h (48 points), p10/p50/p90, MW (location 'ERCOT')
 A forecast issued at T sees only intervals that ended at or before T
@@ -82,8 +88,22 @@ def make_plan(args: argparse.Namespace, settings: ForecastSettings) -> Plan:
         lo = start_day + timedelta(days=days * task_index // task_count)
         hi = start_day + timedelta(days=days * (task_index + 1) // task_count)
         start, end = local_midnight(lo, tz), local_midnight(hi, tz)
+    until = real_until(args.year)
+    if until is not None:  # the current year: forecasts only while their context is real (issue times < until)
+        end = min(end, pd.Timestamp(until).tz_convert("UTC"))
+        start = min(start, end)
+        log.info("%d: real prices end at %s; forecasts are issued up to there only", args.year, end.isoformat())
     out = args.out or ("db" if store.database_configured() else "parquet")
     return Plan(settings, tuple(args.series), tuple(args.locations or settings.locations), start, end, out)
+
+
+def real_until(year: int):
+    """The year's real_until_utc from the data this job reads (src.data.series: Postgres when a database is
+    configured, else the snapshot); None when the year is real all year, or has no data."""
+    from src.data import series, years
+
+    source = "postgres" if series.backend() == "postgres" else "snapshot"
+    return years.info(year, locations=years.fleet_locations(), source=source, refresh=True).real_until_utc
 
 
 def apply_overrides(settings: ForecastSettings, args: argparse.Namespace) -> ForecastSettings:
@@ -162,27 +182,32 @@ def run(plan: Plan, *, resume: bool = True, model=None) -> dict:
     data = load_inputs(plan)
     sink = store.DbSink() if plan.out == "db" else store.ParquetSink(s.cache_dir)
     todo: dict[tuple[str, str], list[pd.Timestamp]] = {}
-    skipped_existing = skipped_short = 0
+    skipped_existing = skipped_short = skipped_stale = 0
     for name, location in plan.targets():
         cfg = s.series(name)
         grid = data.grids.get((name, location))
         if grid is None:
             continue
         done = sink.existing(s.model, name, location, plan.start, plan.end) if resume else set()
+        data_end = grid.ts(len(grid.values))  # the end of the series' last real interval
         keep = []
         for t in plan.issue_times(cfg):
             if t in done:
                 skipped_existing += 1
+            elif t > data_end:  # nothing new since data_end: the context would be stale
+                skipped_stale += 1
             elif np.isfinite(grid.context(t, cfg.context_steps)).sum() < cfg.min_context_steps:
                 skipped_short += 1
             else:
                 keep.append(t)
         todo[(name, location)] = keep
     total = sum(len(v) for v in todo.values())
-    log.info("plan: %s, %s .. %s, %d forecasts to make (%d already stored, %d with too little history), out=%s",
-             s.model, plan.start.isoformat(), plan.end.isoformat(), total, skipped_existing, skipped_short, plan.out)
+    log.info("plan: %s, %s .. %s, %d forecasts to make (%d already stored, %d with too little history, %d past the "
+             "end of their real data), out=%s", s.model, plan.start.isoformat(), plan.end.isoformat(), total,
+             skipped_existing, skipped_short, skipped_stale, plan.out)
     if total == 0:
-        return {"forecasts": 0, "skipped_existing": skipped_existing, "skipped_short": skipped_short, "seconds": 0.0}
+        return {"forecasts": 0, "skipped_existing": skipped_existing, "skipped_short": skipped_short,
+                "skipped_stale": skipped_stale, "seconds": 0.0}
 
     if model is None:
         from src.forecast.model import configure_torch, load_forecaster
@@ -222,7 +247,8 @@ def run(plan: Plan, *, resume: bool = True, model=None) -> dict:
     if isinstance(sink, store.DbSink):
         sink.close()
     return {"forecasts": made, "skipped_existing": skipped_existing, "skipped_short": skipped_short,
-            "seconds": round(seconds, 1), "per_second": round(made / seconds, 2) if seconds else None}
+            "skipped_stale": skipped_stale, "seconds": round(seconds, 1),
+            "per_second": round(made / seconds, 2) if seconds else None}
 
 
 def chunk_days(plan: Plan) -> int:

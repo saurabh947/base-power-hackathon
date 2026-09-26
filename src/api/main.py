@@ -5,12 +5,12 @@ Run:  uvicorn src.api.main:app --port 8000      (src.launcher does this on $PORT
 The API never touches batteries itself: it reads the coordinator's snapshot and streams
 from Redis and sends control requests (start, pause, availability, ...) over the control
 stream, waiting for the coordinator's reply. The one direct action is POST /chaos/kill,
-which SIGKILLs a worker process found in the worker registry (presenter only).
+which SIGKILLs a worker process found in the worker registry. It is open to everyone and
+rate-limited to one kill per 2 s (docs/API.md); the guards keep 2 healthy controllers.
 
-Env: REDIS_URL, FLEET_REDIS_PREFIX, CORS_ORIGINS (comma-separated), PRESENTER_PASSCODE_FILE /
-PRESENTER_PASSCODE, FLEET_FRAME_INTERVAL_S (tests), FLEET_CONTROL_TIMEOUT_S,
-FLEET_START_READY_TIMEOUT_S (how long POST /run/start waits for a restarting simulator, default 15),
-FLEET_ALLOW_MAX_SPEED=1 (tests/bench only), FLEET_PARENT_PID (set by the launcher).
+Env: REDIS_URL, FLEET_REDIS_PREFIX, CORS_ORIGINS (comma-separated), FLEET_FRAME_INTERVAL_S (tests),
+FLEET_CONTROL_TIMEOUT_S, FLEET_START_READY_TIMEOUT_S (how long POST /run/start waits for a restarting
+simulator, default 15), FLEET_ALLOW_MAX_SPEED=1 (tests/bench only), FLEET_PARENT_PID (set by the launcher).
 """
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.api import presenter
 from src.api.backend import Backend, idle_battery_status, kill_worker
 from src.api.limits import Limits, retry_after
 from src.api.live import LiveCursor, _plain, frame_message, idle_message, snapshot_message
@@ -174,7 +173,7 @@ app.add_middleware(
     allow_origins=sorted(set(_origins + ["http://localhost:5173"])),
     allow_origin_regex=r"https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.vercel\.app",
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Presenter-Passcode"],
+    allow_headers=["Content-Type"],
     expose_headers=["Retry-After"],
     max_age=600,
 )
@@ -223,10 +222,6 @@ async def _body(request: Request) -> dict:
     return data
 
 
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
-
-
 async def _call(fn, *args, **kwargs):
     try:
         return await run_in_threadpool(fn, *args, **kwargs)
@@ -262,14 +257,28 @@ def _running_fleet_size() -> int | None:
         return None
 
 
+def _years_and_presets() -> tuple[list[dict], list[dict]]:
+    """docs/API.md GET /settings `years` and `presets`: where each year's real prices end comes from the price
+    data (src/data/years.py, cached for a minute), so this runs in the threadpool."""
+    from src.data import years
+
+    try:
+        return years.public_years(RAW), ctl.presets(RAW)
+    except Exception as exc:  # the price database is unreachable: the fixed presets still let a Start page render
+        print(f"[api] years/presets lookup failed: {exc!r}", file=sys.stderr, flush=True)
+        return [], ctl.fixed_presets(RAW)
+
+
 @app.get("/settings")
 async def settings():
     fleet_size = await run_in_threadpool(_running_fleet_size)
+    year_list, preset_list = await run_in_threadpool(_years_and_presets)
     return {
         "defaults": ctl.default_settings(CFG, RAW, fleet_size),
         "editable": list(ctl.EDITABLE),
-        "presets": ctl.presets(RAW),
+        "presets": preset_list,
         **ctl.choices(RAW),
+        "years": year_list,
     }
 
 
@@ -308,7 +317,8 @@ async def _wait_until_ready(timeout_s: float) -> None:
 async def run_start(request: Request):
     body = await _body(request)
     editable = {k: body[k] for k in ctl.EDITABLE if k in body}
-    ctl.resolve_settings(editable, CFG, RAW, allow_max=allow_max_speed())  # 400 before spending the rate limit
+    # 400 before spending the rate limit (a year or preset reads where real prices end: in the threadpool)
+    await _call(ctl.resolve_settings, editable, CFG, RAW, allow_max=allow_max_speed())
     wait = state.limits.run_start.hit()
     if wait is not None:
         raise _limited(wait)
@@ -377,28 +387,10 @@ async def fleet_layout(request: Request):
     return Response(content=body, media_type="application/json", headers=headers)
 
 
-def _require_presenter(request: Request) -> None:
-    expected = presenter.configured_passcode()
-    if expected is None:
-        raise ctl.ControlError(503, "presenter_passcode_not_set", "Presenter mode isn't set up on this server yet.")
-    ip = _client_ip(request)
-    wait = state.limits.wrong_passcode.blocked(ip)
-    if wait is not None:
-        raise _limited(wait)
-    if not presenter.matches(request.headers.get("x-presenter-passcode"), expected):
-        state.limits.wrong_passcode.record(ip)
-        raise ctl.ControlError(403, "forbidden", "That presenter passcode isn't right.")
-
-
-@app.post("/presenter/check")
-async def presenter_check(request: Request):
-    _require_presenter(request)
-    return {"ok": True}
-
-
 @app.post("/chaos/kill")
 async def chaos_kill(request: Request):
-    _require_presenter(request)
+    """Crash a controller (open to everyone). One kill per 2 s, globally: every visitor shares one fleet.
+    A malformed worker_id is refused before it spends the budget; a refused kill (409/404) still spends it."""
     raw = request.query_params.get("worker_id")
     worker_id = None
     if raw not in (None, ""):
@@ -406,6 +398,9 @@ async def chaos_kill(request: Request):
             worker_id = int(raw)
         except ValueError:
             raise ctl.ControlError(400, "invalid_worker", "worker_id must be a whole number.") from None
+    wait = state.limits.chaos_kill.hit()
+    if wait is not None:
+        raise _limited(wait)
     return await _call(kill_worker, backend(), worker_id)
 
 

@@ -173,7 +173,9 @@ def make_forecast_strategy(
         batteries = generate_batteries(cfg.fleet.size, cfg.battery, cfg.seed)
     duration = fleet_duration_h([b.capacity_kwh for b in batteries], [b.power_kw for b in batteries])
     if books is None:
-        books = {loc: ForecastBook.load(loc, settings.strategy.series) for loc in (locations or settings.locations)}
+        # virtual=True: after a year's real_until_utc the book holds hourly slices of the AI's prediction
+        books = {loc: ForecastBook.load(loc, settings.strategy.series, virtual=True)
+                 for loc in (locations or settings.locations)}
     st = settings.strategy
     return ForecastStrategy(
         books,
