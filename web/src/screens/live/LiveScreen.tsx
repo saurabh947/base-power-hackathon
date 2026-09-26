@@ -3,14 +3,17 @@ import { Link } from '../../components/Link.tsx';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { holdLiveFeed, reconnectNow, useConnection, useLive } from '../../live/liveStore.ts';
 import { fmtClock, fmtDuration, fmtEnergy, fmtUsd } from '../../lib/format.ts';
+import { onSelectionChange } from '../../map/selection.ts';
 import { useBackend } from '../../state/backend.ts';
 import { AvailabilityDrawer } from './AvailabilityDrawer.tsx';
 import { ControllersCard } from './ControllersCard.tsx';
 import { EventsFeed } from './EventsFeed.tsx';
+import { LiveMap } from './map/LiveMap.tsx';
 import { MoneyCard } from './MoneyCard.tsx';
 import { PowerCard } from './PowerCard.tsx';
 import { PriceCard } from './PriceCard.tsx';
 import { TopBar } from './TopBar.tsx';
+import { setView, useView } from './viewStore.ts';
 
 /** One notice at most, for the state of the run or of the connection. */
 function StateNotice() {
@@ -67,6 +70,14 @@ function StateNotice() {
   return null;
 }
 
+/** Whether StateNotice has anything to say (so the map can leave its notice area empty). */
+function useHasNotice(): boolean {
+  const received = useLive((s) => s.received);
+  const status = useLive((s) => s.status);
+  const mode = useConnection((s) => s.mode);
+  return mode === 'offline' || !received || status === 'idle' || status === 'starting' || status === 'finished';
+}
+
 /** "Replay finished": the run reached the end of the loaded prices (event run_finished). */
 function FinishedNotice() {
   const totals = useLive((s) => s.totals);
@@ -106,15 +117,11 @@ function LastRunLine() {
   );
 }
 
-export function LiveScreen() {
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  useEffect(() => holdLiveFeed(), []);
-  const openDrawer = useCallback(() => setDrawerOpen(true), []);
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-
+/** The detailed layout behind "Show charts": everything from before the map, nothing lost. */
+function ChartsView({ onOpenAvailability, onShowMap }: { onOpenAvailability: () => void; onShowMap: () => void }) {
   return (
     <>
-      <TopBar onOpenAvailability={openDrawer} />
+      <TopBar onOpenAvailability={onOpenAvailability} onShowMap={onShowMap} />
       <div className="page">
         <h1 className="sr-only">Live simulation</h1>
         <div className="live-state">
@@ -132,6 +139,34 @@ export function LiveScreen() {
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+export function LiveScreen() {
+  const mode = useView((v) => v.mode);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const hasNotice = useHasNotice();
+  useEffect(() => holdLiveFeed(), []);
+  // A city picked on the map becomes the price chart's area in the detailed layout.
+  useEffect(() => {
+    onSelectionChange((location) => {
+      if (location) setView({ area: location });
+    });
+    return () => onSelectionChange(null);
+  }, []);
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const showCharts = useCallback(() => setView({ mode: 'charts' }), []);
+  const showMap = useCallback(() => setView({ mode: 'map' }), []);
+
+  return (
+    <>
+      {mode === 'map' ? (
+        <LiveMap onOpenAvailability={openDrawer} onShowCharts={showCharts} notice={hasNotice ? <StateNotice /> : null} />
+      ) : (
+        <ChartsView onOpenAvailability={openDrawer} onShowMap={showMap} />
+      )}
       <AvailabilityDrawer open={drawerOpen} onClose={closeDrawer} />
     </>
   );

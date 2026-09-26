@@ -896,7 +896,7 @@ export class MockSim {
     const revenue = perLoc(() => 0);
     const level = perLoc(() => 0);
     const started: { loc: Loc; action: TickAction; price: number }[] = [];
-    const stopped: { loc: Loc; action: TickAction }[] = [];
+    const stopped: { loc: Loc; action: TickAction; offline: boolean }[] = [];
     const spikes: { loc: Loc; price: number }[] = [];
 
     // A controller that is not responding sends no orders: its batteries miss them (the gap),
@@ -927,7 +927,11 @@ export class MockSim {
         }
       }
       if (want !== 'hold' && headroom < 1) {
-        if (this.lastAction[loc] === want) stopped.push({ loc, action: want });
+        if (this.lastAction[loc] === want) {
+          let online = 0;
+          for (let n = 0; n < count; n++) if (this.isAvailable(base + n)) online++;
+          stopped.push({ loc, action: want, offline: online === 0 });
+        }
         want = 'hold';
       }
       action[loc] = want;
@@ -1023,7 +1027,10 @@ export class MockSim {
   }
 
   /** One event per new action, naming every city that switched at this step. */
-  private noteActions(started: { loc: Loc; action: TickAction; price: number }[], stopped: { loc: Loc; action: TickAction }[]): void {
+  private noteActions(
+    started: { loc: Loc; action: TickAction; price: number }[],
+    stopped: { loc: Loc; action: TickAction; offline: boolean }[],
+  ): void {
     for (const act of ['sell', 'charge'] as const) {
       const group = started.filter((s) => s.action === act);
       if (!group.length) continue;
@@ -1038,16 +1045,17 @@ export class MockSim {
       }
     }
     for (const act of ['sell', 'charge'] as const) {
-      const group = stopped.filter((s) => s.action === act);
-      if (!group.length) continue;
-      const locs = group.map((s) => s.loc);
-      const where = group.length === 1 ? `${CITY_NAMES[locs[0]]}-area batteries` : `Batteries in ${cityList(locs)}`;
-      this.emit(
-        'action_changed',
-        'info',
-        act === 'sell' ? `${where} stopped selling: they are down to their 20% safety reserve.` : `${where} stopped charging: they are full.`,
-        { locations: locs, action: 'hold' },
-      );
+      for (const offline of [false, true]) {
+        const group = stopped.filter((s) => s.action === act && s.offline === offline);
+        if (!group.length) continue;
+        const locs = group.map((s) => s.loc);
+        const where = group.length === 1 ? `${CITY_NAMES[locs[0]]}-area batteries` : `Batteries in ${cityList(locs)}`;
+        const why = offline ? 'they are all offline' : act === 'sell' ? 'they are down to their 20% safety reserve' : 'they are full';
+        this.emit('action_changed', 'info', `${where} stopped ${act === 'sell' ? 'selling' : 'charging'}: ${why}.`, {
+          locations: locs,
+          action: 'hold',
+        });
+      }
     }
   }
 

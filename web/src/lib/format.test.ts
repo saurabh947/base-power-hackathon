@@ -19,6 +19,7 @@ import {
   fmtPresetLabel,
   fmtPrice,
   fmtPriceKwh,
+  fmtPriceKwhShort,
   fmtPriceMwh,
   fmtRange,
   fmtSpeed,
@@ -44,6 +45,12 @@ describe('prices carry a unit and a per-kWh translation', () => {
     expect(fmtPrice(2250.15)).toBe('$2,250/MWh ($2.25 per kWh)');
     expect(fmtPriceMwh(99.99)).toBe('$99.99/MWh');
     expect(fmtPriceKwh(1000)).toBe('$1.00 per kWh');
+  });
+
+  it('has a short per-kWh form for tight spaces', () => {
+    expect(fmtPriceKwhShort(120)).toBe('12¢/kWh');
+    expect(fmtPriceKwhShort(1757.28)).toBe('$1.76/kWh');
+    expect(fmtPriceKwhShort(Number.NaN)).toBe('–');
   });
 
   it('shows negative prices with a real minus sign', () => {

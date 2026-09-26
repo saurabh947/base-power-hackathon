@@ -3,37 +3,56 @@
 A stand-in for the fleet-sim backend so the website can be built and tested before, and without, the real
 one. It implements the REST endpoints and the WebSocket `/live` messages from [`docs/API.md`](../../docs/API.md),
 including the pinned details: `worker_id` 0–19 shown as "Controller N+1", battery ids `b00000`–`b19999`, the
-`GET /settings` item shapes, the idle message every 5 s, `run_finished`, and the worker event details.
+`GET /settings` item shapes, the idle message every 5 s, `run_finished`, the worker event details, and the live
+map fields: `GET /fleet/layout`, `battery_status`, `totals.by_location`, `workers[].by_location` and battery
+`city`/`lonlat`.
 
 ## What is real and what is simulated
 
 | | |
 |---|---|
-| **Real** | Electricity prices: ERCOT real-time settlement point prices for load zones LZ_HOUSTON and LZ_NORTH, 15-minute intervals, for every replay preset's local date and the day after (`data/ercot_rt_lz_preset_days_2025.json`, 192 rows per area per preset). |
-| **Simulated** | Everything else: the 20,000 batteries and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, failed commands, availability, forecasts (not TimesFM), events, and every number on the Results screen. None of it is a real result. |
+| **Real** | Electricity prices: ERCOT real-time settlement point prices for the four Texas Triangle load zones (LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN), 15-minute intervals, for every replay preset's local date and the day after (`data/ercot_rt_lz_preset_days_2025.json`, 192 rows per preset). |
+| **Simulated** | Everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, failed commands, availability, forecasts (not TimesFM), events, and every number on the Results screen. None of it is a real result. |
 
 The site shows a "Practice data" banner whenever it is connected to this mock (its `GET /health` version starts
 with `mock`), the mock's forecasts are labelled `mock (simulated, not TimesFM)`, and its full-year results list
 "SIMULATED" as their first assumption.
 
-The presets mirror `config.yaml` (`presets.items`):
+The presets mirror `config.yaml` (`presets.items`; `summer_spike` is the default, as there):
 
 | Preset | Replay starts (Houston time) | Real prices loaded |
 |---|---|---|
-| `spike_evening` (default) | May 16, 2025, 4 pm | May 16–17 |
+| `spike_evening` | May 16, 2025, 4 pm | May 16–17 |
 | `morning_spike` | Apr 7, 2025, 3 am | Apr 7–8 |
-| `summer_spike` | Jul 11, 2025, 6 pm | Jul 11–12 |
+| `summer_spike` (default) | Jul 11, 2025, 6 pm | Jul 11–12 |
 | `ordinary_day` | Jun 28, 2025, midnight | Jun 28–29 |
 
 The price fixture is exported from the committed snapshot `data/snapshot/ercot_rt_2025_hubs.parquet` (ERCOT MIS
-report 13061, see `data/snapshot/README.md`), reading the presets from `config.yaml`. To regenerate it after the
-presets change, from the repo root after `make setup`:
+report 13061, see `data/snapshot/README.md`), reading the presets and the load zones (`fleet.locations`) from
+`config.yaml`. To regenerate it after either changes, from the repo root after `make setup`:
 
 ```sh
 uv run python web/mock/export_prices.py      # or: make web-prices
 ```
 
 A preset without loaded prices answers **501** `not_in_mock` on `POST /run/start`.
+
+## The fleet
+
+- **Cities**, in battery id blocks (config order, same split as `src/sim/fleet.location_counts`): Houston
+  `b00000`–`b06999` (7,000), Dallas–Fort Worth `b07000`–`b14999` (8,000), San Antonio `b15000`–`b17599` (2,600),
+  Austin `b17600`–`b19999` (2,400).
+- **Controllers**: like the backend's `FleetLayout.default_owners`, every city is split into 20 contiguous chunks,
+  so each controller starts with a share of every city (350 Houston + 400 Dallas–Fort Worth + 130 San Antonio +
+  120 Austin), reported in `workers[].by_location`.
+- **Positions** (`GET /fleet/layout`, `layout.ts`): seeded Gaussian blobs around real places in each metro
+  (downtowns, suburbs, satellite cities), kept inside the Texas outline, rounded to 0.001° like the API. The same
+  fleet always gets the same map.
+- **`battery_status`** in every snapshot and frame: 0 offline, 1 waiting, 2 selling, 3 charging (from each
+  battery's last setpoint), 4 while its controller is not responding. A battery that was down at any tick since
+  the previous frame is sent as 4 in that frame even if it was handed over before the frame went out (at 2+ ticks
+  a second, detection and hand-over often fall inside one frame), so the map's crash flash always shows.
+- **Money per city**: `totals.by_location` holds revenue and energy per load zone; they add up to the totals.
 
 ## Never shipped
 
@@ -64,12 +83,13 @@ Knobs (environment variables, for either mode):
   every 5 s; `last_run` holds the id and totals of the run that was reset or replaced.
 - Rate limits match docs/API.md: start and reset share one call per 5 s, availability 10 per second, wrong
   passcodes 5 per minute; limited calls answer 429 with `retry_after_s` and `Retry-After`.
-- A crashed controller misses one 5-minute step ("not responding": its batteries miss their orders, and those
-  orders become failed commands), then is marked crashed and its batteries are handed round-robin to the healthy
-  ones. Worker events carry `detail.worker_id` and `detail.controller`; `worker_adopted` adds `adopted_by` and
-  `ms`. While paused, detection uses wall-clock heartbeats instead (2 s, then 6 s).
-- Batteries `b00000`–`b09999` are in the Houston area and `b10000`–`b19999` in Dallas–Fort Worth; worker N starts
-  with batteries N×1000 to N×1000+999.
+- A crashed controller misses one 5-minute step ("not responding": its batteries miss their orders, those orders
+  become failed commands, and they show as code 4), then is marked crashed and its batteries are handed
+  round-robin to the healthy ones. Worker events carry `detail.worker_id` and `detail.controller`;
+  `worker_adopted` adds `adopted_by` and `ms`. While paused, detection uses wall-clock heartbeats instead (2 s,
+  then 6 s), which is the easiest way to watch the flash: pause, crash a controller, wait.
+- Cities that switch action at the same step share one event ("Batteries in all four cities started selling at
+  about $1,757/MWh"), and so do price spikes.
 - `POST /backtest` while a job runs returns that job's id; job status includes `skipped` (always empty here).
 
 ## Files
@@ -77,8 +97,9 @@ Knobs (environment variables, for either mode):
 | File | Purpose |
 |---|---|
 | `sim.ts` | The simulated run (pure; unit-tested in `sim.test.ts`) |
+| `layout.ts` | Simulated battery positions for `GET /fleet/layout` |
 | `api.ts` | HTTP routes, errors, rate limits, WebSocket broadcast, CORS |
 | `server.ts` | Standalone Node server (`npm run mock`) |
 | `vitePlugin.ts` | Mounts the same API inside the Vite dev server |
-| `export_prices.py` | Writes the real-price fixture from `data/snapshot` for every preset in `config.yaml` |
+| `export_prices.py` | Writes the real-price fixture from `data/snapshot` for every preset and load zone in `config.yaml` |
 | `data/` | The real-price fixture, with its source note inside |

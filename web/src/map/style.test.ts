@@ -55,9 +55,9 @@ describe('dot looks (docs/UX.md, Live map)', () => {
     expect(quarter.glow[0]).toBeCloseTo(0.75, 5);
   });
 
-  it('a dot with batteries whose controller is down goes dark, more so the more of them', () => {
+  it('a dot with batteries whose controller is down darkens in proportion (the specks carry the flash)', () => {
     expect(darkness(0, 40)).toBe(0);
-    expect(darkness(1, 40)).toBeGreaterThanOrEqual(0.5);
+    expect(darkness(2, 40)).toBeCloseTo(0.05, 10);
     expect(darkness(40, 40)).toBe(1);
     expect(darkness(20, 40)).toBeGreaterThan(darkness(4, 40));
     const flashing = look([0, 0, 30, 0, 10]);

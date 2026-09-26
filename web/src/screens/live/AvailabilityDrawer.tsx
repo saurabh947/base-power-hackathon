@@ -1,13 +1,14 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { api } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
-import { LOCATIONS, type AvailabilityRequest, type AvailabilityResponse, type BatteryInfo } from '../../api/types.ts';
+import type { AvailabilityRequest, AvailabilityResponse, BatteryInfo } from '../../api/types.ts';
 import { Dialog } from '../../components/Dialog.tsx';
 import { Icon } from '../../components/Icon.tsx';
 import { ErrorNotice } from '../../components/Notice.tsx';
 import { HowItWorks } from '../../components/Panel.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
 import { useLive } from '../../live/liveStore.ts';
+import { byBatteries, useCities } from '../../lib/cities.ts';
 import {
   areaOfBattery,
   batteryId as batteryIdOf,
@@ -263,7 +264,16 @@ function FindBattery() {
           <strong>Battery {battery.battery_id}</strong>
           <dl>
             <dt>Area</dt>
-            <dd>{areaName(battery.location)}</dd>
+            <dd>
+              {battery.city ? `${battery.city} area` : areaName(battery.location)}
+              <TechOnly>
+                <span className="tech">
+                  {' '}
+                  ({battery.location}
+                  {battery.lonlat ? `, ${battery.lonlat[0].toFixed(3)}, ${battery.lonlat[1].toFixed(3)}` : ''})
+                </span>
+              </TechOnly>
+            </dd>
             <dt>Controller</dt>
             <dd>{controllerName(battery.worker_id)}</dd>
             <dt>Size</dt>
@@ -290,6 +300,7 @@ function FindBattery() {
 
 export function AvailabilityDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const availability = useLive((s) => s.availability);
+  const cities = useCities();
   // Bumped by "Bring every battery back online" so the sliders remount at 0%; cleared when the drawer closes.
   const [allBackCount, setAllBackCount] = useState(0);
   const allBack = async () => {
@@ -322,8 +333,8 @@ export function AvailabilityDrawer({ open, onClose }: { open: boolean; onClose: 
 
       <section className="drawer-section" key={allBackCount}>
         <h3>By area</h3>
-        {LOCATIONS.map((l) => (
-          <AreaSlider key={l} location={l} startAtZero={allBackCount > 0} />
+        {byBatteries(cities).map((c) => (
+          <AreaSlider key={c.location} location={c.location} startAtZero={allBackCount > 0} />
         ))}
       </section>
 

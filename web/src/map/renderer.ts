@@ -4,10 +4,17 @@
 // or a hand-over "re-light" is playing; then a requestAnimationFrame loop runs
 // until everything has settled. prefers-reduced-motion: no glows, no pulses,
 // no transitions.
+//
+// Controller down (code 4): each affected battery is drawn as a dark speck at
+// its own position, pulsing, on top of its dot (a controller's batteries are
+// spread over every city, so darkening whole dots would dim the entire map for
+// a 5% event); each dot also darkens in proportion. When the other controllers
+// take the batteries over, the specks go and each spot briefly lights up green.
 
 import { aggregateCodes, buildCells, dotRadius, nearestCell, spacingFor, type Cells } from './cells.ts';
 import { fitBBox, toScreenX, toScreenY, type Padding, type Viewport } from './geometry.ts';
 import { NO_CITY, type MapLayout } from './layout.ts';
+import { DOWN, WAITING } from './status.ts';
 import { allocTargets, computeTargets, PALETTE, type DotTargets } from './style.ts';
 import { TEXAS_BBOX, TEXAS_OUTLINE } from './texasOutline.ts';
 
@@ -27,6 +34,8 @@ export interface CityBox {
 export interface RenderStats {
   /** Dots on screen. */
   dots: number;
+  /** Batteries shown as "controller down" right now. */
+  specks: number;
   /** Last paint, and the slowest of the last 120. */
   paintMs: number;
   maxPaintMs: number;
@@ -39,11 +48,12 @@ export interface RenderStats {
 }
 
 const TAU_LOOK_MS = 160;
-const TAU_DARK_RISE_MS = 60;
-const TAU_DARK_FALL_MS = 300;
-const PULSE_MS = 720;
-const POP_MS = 900;
+const PULSE_MS = 700;
+const RELIGHT_MS = 900;
 const GLOW_SPRITE = 64;
+/** How strong the selling glow is: enough to read as "lit up", not so much that dense cores wash out. */
+const GLOW_ALPHA = 0.26;
+const TWO_PI = Math.PI * 2;
 
 function makeGlowSprite(): HTMLCanvasElement | null {
   if (typeof document === 'undefined') return null;
@@ -77,9 +87,12 @@ function approach(current: number, target: number, dtMs: number, tauMs: number):
   return target + (current - target) * Math.exp(-dtMs / tauMs);
 }
 
+const NO_BATTERIES = new Int32Array(0);
+
 export class MapRenderer {
   readonly stats: RenderStats = {
     dots: 0,
+    specks: 0,
     paintMs: 0,
     maxPaintMs: 0,
     updateMs: 0,
@@ -95,15 +108,22 @@ export class MapRenderer {
   private height = 0;
   private dpr = 1;
   private padding: Padding = { top: 16, right: 16, bottom: 16, left: 16 };
+  private alignX = 0.5;
   private viewport: Viewport | null = null;
   private layout: MapLayout | null = null;
   private cells: Cells | null = null;
+  /** Every battery's position on screen, CSS px. */
+  private sx = new Float32Array(0);
+  private sy = new Float32Array(0);
   private boxes: CityBox[] = [];
   private codes: Uint8Array | null = null;
   private counts: Uint32Array | null = null;
   private target: DotTargets = allocTargets(0);
   private current: DotTargets = allocTargets(0);
-  private popStart = new Float64Array(0);
+  /** Batteries whose controller is down now, and those just handed over (lighting back up). */
+  private down: Int32Array = NO_BATTERIES;
+  private relit: Int32Array = NO_BATTERIES;
+  private relitStartMs = Number.NEGATIVE_INFINITY;
   private selected: number | null = null;
   private reduced = false;
   private raf = 0;
@@ -146,24 +166,27 @@ export class MapRenderer {
     this.update(true);
   }
 
-  resize(width: number, height: number, dpr: number, padding: Padding): void {
+  /** Fit Texas into `width` × `height` CSS px minus `padding`; `alignX` splits spare width (see fitBBox). */
+  resize(width: number, height: number, dpr: number, padding: Padding, alignX = 0.5): void {
     const same =
       width === this.width &&
       height === this.height &&
       dpr === this.dpr &&
+      alignX === this.alignX &&
       JSON.stringify(padding) === JSON.stringify(this.padding);
     if (same) return;
     this.width = width;
     this.height = height;
     this.dpr = dpr;
     this.padding = padding;
+    this.alignX = alignX;
     for (const canvas of [this.base, this.dots]) {
       canvas.width = Math.max(1, Math.round(width * dpr));
       canvas.height = Math.max(1, Math.round(height * dpr));
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
     }
-    this.viewport = fitBBox(TEXAS_BBOX, width, height, padding);
+    this.viewport = fitBBox(TEXAS_BBOX, width, height, padding, alignX);
     this.paintBase();
     this.rebuild();
   }
@@ -206,19 +229,23 @@ export class MapRenderer {
       sy[i] = toScreenY(vp, layout.y[i]);
     }
     const cells = buildCells(sx, sy, layout.cityOf, spacingFor(vp.height), layout.cities.length);
+    this.sx = sx;
+    this.sy = sy;
     this.cells = cells;
     this.counts = null;
     this.target = allocTargets(cells.count);
     this.current = allocTargets(cells.count);
-    this.popStart = new Float64Array(cells.count).fill(Number.NaN);
+    this.relit = NO_BATTERIES;
     this.boxes = this.computeBoxes(cells, layout.cities.length);
     this.stats.dots = cells.count;
     this.stats.buildMs = performance.now() - t0;
     this.update(false);
   }
 
+  /** Each city's box, from its clearly visible dots (faint outliers would push its label away). */
   private computeBoxes(cells: Cells, cityCount: number): CityBox[] {
     const boxes: CityBox[] = [];
+    const visible = Math.max(2, cells.refN * 0.1);
     for (let k = 0; k < cityCount; k++) {
       let left = Infinity;
       let top = Infinity;
@@ -228,7 +255,7 @@ export class MapRenderer {
       let cx = 0;
       let cy = 0;
       for (let c = 0; c < cells.count; c++) {
-        if (cells.city[c] !== k) continue;
+        if (cells.city[c] !== k || cells.n[c] < visible) continue;
         const r = Math.max(1, dotRadius(cells.n[c], cells));
         left = Math.min(left, cells.x[c] - r);
         right = Math.max(right, cells.x[c] + r);
@@ -250,32 +277,37 @@ export class MapRenderer {
     const cells = this.cells;
     if (!cells) return;
     const t0 = performance.now();
-    const codes = this.codes && this.codes.length === cells.cellOf.length ? this.codes : this.defaultCodes(cells);
+    const size = cells.cellOf.length;
+    const codes = this.codes && this.codes.length === size ? this.codes : new Uint8Array(size).fill(WAITING);
     this.counts = aggregateCodes(cells, codes, this.counts ?? undefined);
-    const prevDark = this.target.dark.slice();
     computeTargets(cells, this.counts, { selected: this.selected, reducedMotion: this.reduced }, this.target);
+
+    // Which batteries are down now, and which just came back.
+    const wasDown = this.down;
+    let downCount = 0;
+    for (let i = 0; i < size; i++) if (codes[i] === DOWN) downCount++;
+    const down = downCount ? new Int32Array(downCount) : NO_BATTERIES;
+    for (let i = 0, k = 0; i < size && k < downCount; i++) if (codes[i] === DOWN) down[k++] = i;
     const now = performance.now();
+    if (!this.reduced && animate && wasDown.length) {
+      const back = Array.from(wasDown).filter((i) => codes[i] !== DOWN);
+      if (back.length) {
+        this.relit = Int32Array.from(back);
+        this.relitStartMs = now;
+      }
+    }
+    if (downCount && !wasDown.length) this.pulseStartMs = now;
+    this.down = down;
+    this.stats.specks = downCount;
     this.stats.updateMs = now - t0;
 
     if (!animate || this.reduced) {
       for (const key of Object.keys(this.target) as (keyof DotTargets)[]) this.current[key].set(this.target[key]);
-      this.popStart.fill(Number.NaN);
+      this.relit = NO_BATTERIES;
       this.paintDots(now);
       return;
     }
-    let anyDark = false;
-    for (let c = 0; c < cells.count; c++) {
-      // Handed over: the dot comes back with a short bright ring.
-      if (prevDark[c] > 0.2 && this.target.dark[c] === 0) this.popStart[c] = now;
-      if (this.target.dark[c] > 0) anyDark = true;
-    }
-    if (anyDark && !this.stats.animating) this.pulseStartMs = now;
     this.startLoop();
-  }
-
-  private defaultCodes(cells: Cells): Uint8Array {
-    // No battery_status yet: every battery online and waiting (what the server sends with no run).
-    return new Uint8Array(cells.cellOf.length).fill(1);
   }
 
   private startLoop(): void {
@@ -294,13 +326,13 @@ export class MapRenderer {
     this.raf = requestAnimationFrame(loop);
   }
 
-  /** Advance every dot towards its target; true while anything still moves, pulses or pops. */
+  /** Advance every dot towards its target; true while anything still moves, pulses or lights up. */
   private step(dtMs: number, now: number): boolean {
     const cells = this.cells;
     if (!cells) return false;
     const t = this.target;
     const c = this.current;
-    let moving = false;
+    let moving = this.down.length > 0 || (this.relit.length > 0 && now - this.relitStartMs < RELIGHT_MS);
     for (let i = 0; i < cells.count; i++) {
       c.red[i] = approach(c.red[i], t.red[i], dtMs, TAU_LOOK_MS);
       c.green[i] = approach(c.green[i], t.green[i], dtMs, TAU_LOOK_MS);
@@ -309,7 +341,7 @@ export class MapRenderer {
       c.glow[i] = approach(c.glow[i], t.glow[i], dtMs, TAU_LOOK_MS);
       c.ring[i] = approach(c.ring[i], t.ring[i], dtMs, TAU_LOOK_MS);
       c.radius[i] = approach(c.radius[i], t.radius[i], dtMs, TAU_LOOK_MS);
-      c.dark[i] = approach(c.dark[i], t.dark[i], dtMs, t.dark[i] > c.dark[i] ? TAU_DARK_RISE_MS : TAU_DARK_FALL_MS);
+      c.dark[i] = approach(c.dark[i], t.dark[i], dtMs, TAU_LOOK_MS);
       if (
         !moving &&
         (Math.abs(c.red[i] - t.red[i]) > 0.5 ||
@@ -319,15 +351,14 @@ export class MapRenderer {
           Math.abs(c.glow[i] - t.glow[i]) > 0.004 ||
           Math.abs(c.ring[i] - t.ring[i]) > 0.004 ||
           Math.abs(c.radius[i] - t.radius[i]) > 0.02 ||
-          Math.abs(c.dark[i] - t.dark[i]) > 0.004 ||
-          t.dark[i] > 0 ||
-          now - this.popStart[i] < POP_MS)
+          Math.abs(c.dark[i] - t.dark[i]) > 0.004)
       ) {
         moving = true;
       }
     }
     if (!moving) {
       for (const key of Object.keys(t) as (keyof DotTargets)[]) c[key].set(t[key]);
+      this.relit = NO_BATTERIES;
     }
     return moving;
   }
@@ -372,7 +403,6 @@ export class MapRenderer {
     const cells = this.cells;
     if (!cells) return;
     const c = this.current;
-    const TWO_PI = Math.PI * 2;
 
     // Soft glow under selling dots, added light on the dark page.
     if (!this.reduced && this.glow) {
@@ -380,8 +410,8 @@ export class MapRenderer {
       for (let i = 0; i < cells.count; i++) {
         const a = c.glow[i] * c.alpha[i] * (1 - c.dark[i]);
         if (a < 0.02) continue;
-        const R = c.radius[i] * 3.2 + 3;
-        ctx.globalAlpha = Math.min(1, a * 0.5);
+        const R = c.radius[i] * 2.6 + 2;
+        ctx.globalAlpha = Math.min(1, a * GLOW_ALPHA);
         ctx.drawImage(this.glow, cells.x[i] - R, cells.y[i] - R, 2 * R, 2 * R);
       }
       ctx.globalCompositeOperation = 'source-over';
@@ -410,32 +440,45 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    // Controller down: the dot goes dark (pulsing while it waits), then comes back.
-    const pulse = this.reduced ? 1 : 0.8 + 0.2 * Math.cos((TWO_PI * (now - this.pulseStartMs)) / PULSE_MS);
+    // Controller down: dots darken in proportion...
     const [dr, dg, db] = PALETTE.down;
     ctx.fillStyle = rgb(dr, dg, db);
     for (let i = 0; i < cells.count; i++) {
       if (c.dark[i] < 0.01) continue;
-      ctx.globalAlpha = Math.min(1, c.dark[i] * (this.target.dark[i] > 0 ? pulse : 1)) * Math.max(0.5, c.alpha[i]);
+      ctx.globalAlpha = Math.min(1, c.dark[i]) * Math.max(0.5, c.alpha[i]);
       ctx.beginPath();
       ctx.arc(cells.x[i], cells.y[i], c.radius[i] + 0.5, 0, TWO_PI);
       ctx.fill();
     }
 
-    // Handed over: a bright ring grows out of the dot and fades.
-    if (!this.reduced) {
-      const [gr, gg, gb] = PALETTE.selling;
-      ctx.strokeStyle = rgb(gr, gg, gb);
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < cells.count; i++) {
-        const age = now - this.popStart[i];
-        if (!(age >= 0 && age < POP_MS)) continue;
-        const p = age / POP_MS;
-        ctx.globalAlpha = 0.9 * (1 - p) * Math.max(0.4, c.alpha[i]);
-        ctx.beginPath();
-        ctx.arc(cells.x[i], cells.y[i], c.radius[i] + 1 + 7 * (1 - (1 - p) ** 3), 0, TWO_PI);
-        ctx.stroke();
+    // ...and each affected battery is a dark speck where it sits, pulsing until it is handed over.
+    if (this.down.length) {
+      const r = Math.max(1.3, cells.spacing * 0.24);
+      ctx.globalAlpha = this.reduced ? 0.95 : 0.72 + 0.28 * Math.cos((TWO_PI * (now - this.pulseStartMs)) / PULSE_MS);
+      ctx.beginPath();
+      for (const i of this.down) {
+        const x = this.sx[i];
+        const y = this.sy[i];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, TWO_PI);
       }
+      ctx.fill();
+    }
+
+    // Handed over: every battery that came back lights up for a moment.
+    const age = now - this.relitStartMs;
+    if (!this.reduced && this.glow && this.relit.length && age >= 0 && age < RELIGHT_MS) {
+      const p = age / RELIGHT_MS;
+      const R = cells.spacing * (0.7 + 0.9 * p);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.55 * (1 - p) ** 2;
+      for (const i of this.relit) {
+        const x = this.sx[i];
+        const y = this.sy[i];
+        if (Number.isFinite(x) && Number.isFinite(y)) ctx.drawImage(this.glow, x - R, y - R, 2 * R, 2 * R);
+      }
+      ctx.globalCompositeOperation = 'source-over';
     }
     ctx.globalAlpha = 1;
 

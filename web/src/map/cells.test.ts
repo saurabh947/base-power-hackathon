@@ -100,9 +100,9 @@ describe('buildCells', () => {
     expect(nearestCell(cells, 250, 60)).toBe(-1);
   });
 
-  it('uses finer cells on smaller maps, within 4-10 px', () => {
+  it('scales cells with the map, within 4-9 px', () => {
     expect(spacingFor(300)).toBe(4);
-    expect(spacingFor(700)).toBeCloseTo(5.6, 5);
-    expect(spacingFor(5000)).toBe(10);
+    expect(spacingFor(700)).toBeCloseTo(5, 5);
+    expect(spacingFor(5000)).toBe(9);
   });
 });

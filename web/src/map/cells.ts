@@ -148,9 +148,9 @@ export function aggregateCodes(cells: Cells, codes: Uint8Array, out?: Uint32Arra
   return counts;
 }
 
-/** The cell spacing for a map this many CSS pixels tall: finer on big screens, never below 4 px. */
+/** The cell spacing for a map this many CSS pixels tall: about 140 cells from top to bottom, 4-9 px. */
 export function spacingFor(mapHeight: number): number {
-  return Math.max(4, Math.min(10, mapHeight / 125));
+  return Math.max(4, Math.min(9, mapHeight / 140));
 }
 
 /** Dot radius for `n` batteries: area proportional to n, with the reference cell nearly filling its hex. */

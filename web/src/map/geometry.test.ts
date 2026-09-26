@@ -50,4 +50,11 @@ describe('fitBBox', () => {
     expect(toScreenY(vp, 100)).toBeCloseTo(60, 6); // the north edge is at the top
     expect(toScreenY(vp, 0)).toBeCloseTo(540, 6);
   });
+
+  it('can leave more of the spare width on one side', () => {
+    const box = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    const pad = { top: 0, right: 0, bottom: 0, left: 0 };
+    expect(fitBBox(box, 1000, 500, pad).left).toBeCloseTo(250, 6);
+    expect(fitBBox(box, 1000, 500, pad, 0.4).left).toBeCloseTo(200, 6);
+  });
 });

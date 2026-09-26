@@ -7,8 +7,10 @@
 //   4 down      the dot flashes dark, then returns to green when it is handed over
 //
 // A cell mixes its batteries' looks by count: 30% offline makes a dot 30% of the
-// way to gray. A cell with any battery whose controller is down flashes dark;
-// the more of them, the darker. Pure, so it is unit tested.
+// way to gray, and 30% whose controller is down makes it 30% dark. The flash
+// itself is drawn per battery by the renderer (a dark speck on each one), so a
+// crashed controller's batteries show exactly where they are. Pure, so it is
+// unit tested.
 
 import { dotRadius, type Cells } from './cells.ts';
 import { CHARGING, CODES, DOWN, OFFLINE, SELLING, WAITING } from './status.ts';
@@ -19,7 +21,7 @@ export const PALETTE = {
   waiting: [64, 168, 104] as Rgb,
   selling: [128, 255, 166] as Rgb,
   charging: [84, 204, 128] as Rgb,
-  offline: [88, 94, 101] as Rgb,
+  offline: [112, 118, 126] as Rgb,
   down: [9, 11, 13] as Rgb,
   ring: [222, 255, 232] as Rgb,
   glow: [96, 255, 150] as Rgb,
@@ -55,10 +57,10 @@ export function allocTargets(count: number): DotTargets {
   };
 }
 
-/** How dark a dot gets when `down` of its `n` batteries lost their controller (0 when none). */
+/** How dark a dot gets when `down` of its `n` batteries lost their controller: in proportion. */
 export function darkness(down: number, n: number): number {
   if (down <= 0 || n <= 0) return 0;
-  return Math.min(1, 0.5 + 0.5 * Math.sqrt(down / n));
+  return Math.min(1, down / n);
 }
 
 export interface StyleOptions {

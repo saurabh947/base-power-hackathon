@@ -176,6 +176,12 @@ export function fmtPriceKwh(usdPerMwh: number): string {
   return `${sign}${digits}¢ per kWh`;
 }
 
+/** The per-kWh translation for tight spaces: "12¢/kWh", "$1.76/kWh". */
+export function fmtPriceKwhShort(usdPerMwh: number): string {
+  if (!finite(usdPerMwh)) return '–';
+  return fmtPriceKwh(usdPerMwh).replace(' per kWh', '/kWh');
+}
+
 /** "$120/MWh (12¢ per kWh)" */
 export function fmtPrice(usdPerMwh: number): string {
   if (!finite(usdPerMwh)) return '–';

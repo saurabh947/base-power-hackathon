@@ -176,8 +176,12 @@ export interface Padding {
   left: number;
 }
 
-/** The largest uniform scale that fits `bbox` inside `width` × `height` minus `padding`, centred. */
-export function fitBBox(bbox: BBox, width: number, height: number, padding: Padding): Viewport {
+/**
+ * The largest uniform scale that fits `bbox` inside `width` × `height` minus `padding`. Spare
+ * width is split by `alignX` (0 all on the right, 0.5 centred, 1 all on the left); spare height
+ * is split evenly.
+ */
+export function fitBBox(bbox: BBox, width: number, height: number, padding: Padding, alignX = 0.5): Viewport {
   const availW = Math.max(1, width - padding.left - padding.right);
   const availH = Math.max(1, height - padding.top - padding.bottom);
   const bw = Math.max(1e-9, bbox.maxX - bbox.minX);
@@ -185,7 +189,7 @@ export function fitBBox(bbox: BBox, width: number, height: number, padding: Padd
   const scale = Math.min(availW / bw, availH / bh);
   const w = bw * scale;
   const h = bh * scale;
-  const left = padding.left + (availW - w) / 2;
+  const left = padding.left + (availW - w) * alignX;
   const top = padding.top + (availH - h) / 2;
   return { scale, offsetX: left - bbox.minX * scale, offsetY: top + bbox.maxY * scale, left, top, width: w, height: h };
 }
