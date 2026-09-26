@@ -35,7 +35,8 @@ TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_
              "revenue_usd", "charge_level", "healthy_workers", "predicted"}
 SETTINGS_KEYS = {"year", "preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
                  "capacity_kwh_range", "locations"}
-WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location", "charge_level"}
+WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location", "charge_level",
+               "usable_charge"}
 EVENT_KEYS = {"id", "wall_utc", "sim_utc", "kind", "severity", "message", "detail"}
 
 
@@ -112,6 +113,11 @@ def _assert_common(msg):
     assert all(set(w) == WORKER_KEYS for w in msg["workers"])
     for w in msg["workers"]:  # batteries each worker owns right now, per city
         assert sum(w["by_location"].values()) == w["batteries"] and set(w["by_location"]) <= set(LOCS)
+        # the gauge: the share of usable energy above the 20% reserve, null when it owns no batteries
+        if w["batteries"]:
+            assert w["usable_charge"] == pytest.approx(max(0.0, (w["charge_level"] - 0.2) / 0.8), abs=1e-4)
+        else:
+            assert w["usable_charge"] is None and w["charge_level"] is None
     _codes(msg)
     assert set(msg["failed_commands"]) == {"count", "recent"} and len(msg["failed_commands"]["recent"]) <= 10
     assert all(set(e) == {"battery_id", "worker_id", "reason", "tick_utc"} for e in msg["failed_commands"]["recent"])
@@ -365,6 +371,48 @@ def test_public_kill_flow(live):
     assert snap["workers"][1]["by_location"] == {}
     # the coordinator, the API and Redis are never valid targets
     assert co.workers[1].exit_code == -9
+
+
+def test_a_user_restart_brings_a_crashed_controller_back(live):
+    """POST /workers/{worker_id}/restart (docs/API.md): nothing restarts on its own; a user restart answers at once
+    with 'starting', the controller takes its original batteries back, and worker_recovered follows."""
+    client, co = live
+    client.post("/run/start", json={"speed_tps": 10, "strategy": "peak", "start_charge_level": 0.9})
+    assert _wait(lambda: co.run is not None and co.status == "running")
+
+    def restart(worker_id):
+        main.state.limits.worker_restart.reset()  # one restart per 2 s: the answers are what's under test here
+        return client.post(f"/workers/{worker_id}/restart")
+
+    r = restart(1)
+    assert r.status_code == 409 and r.json()["error"] == "not_crashed"
+    assert r.json()["message"] == "Controller 2 hasn't crashed, so there's nothing to restart."
+    r = restart(7)
+    assert r.status_code == 404 and r.json()["error"] == "unknown_worker"
+    r = client.post("/workers/one/restart")
+    assert r.status_code == 400 and r.json()["error"] == "invalid_worker"
+    assert client.post("/chaos/kill?worker_id=1").status_code == 200
+    assert _wait(lambda: co.workers[1].status == "dead", timeout=10)
+    time.sleep(1.0)
+    snap = client.get("/state").json()
+    down = snap["workers"][1]
+    assert down["status"] == "dead" and (down["batteries"], down["usable_charge"], down["by_location"]) == (0, None, {})
+    r = restart(1)
+    assert r.status_code == 200 and r.json() == {"worker_id": 1, "status": "starting"}
+    again = client.post("/workers/1/restart")  # one restart per 2 s, globally, like the kill
+    assert again.status_code == 429 and again.json()["error"] == "rate_limited" and again.headers["Retry-After"]
+    assert _wait(lambda: any(e["kind"] == "worker_recovered" for e in co.events), timeout=15)
+    snap = client.get("/state").json()
+    back = snap["workers"][1]
+    home = np.flatnonzero(co.home == 1)
+    assert back["status"] == "healthy" and back["batteries"] == 100 and back["pid"] == co.workers[1].pid
+    assert back["by_location"] == co.layout.counts_by_location(home) and back["usable_charge"] is not None
+    assert all(w["adopted_from"] == [] for w in snap["workers"])
+    recovered = next(e for e in snap["events"] if e["kind"] == "worker_recovered")
+    assert (recovered["detail"]["worker_id"], recovered["detail"]["controller"], recovered["detail"]["batteries"]) == (
+        1, 2, 100)
+    assert recovered["message"].startswith("Controller 2 is back and has taken back its 100 ")
+    assert recovered["severity"] == "good"
 
 
 def test_fleet_layout_is_the_running_fleet(live):

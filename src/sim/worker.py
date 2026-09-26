@@ -19,6 +19,9 @@ Per tick the worker:
 State is kept in-process between ticks (write-through; the preflight measured
 this as the fastest layout). A failed write is retried up to 3 times, each time
 re-reading the truth from Redis first, then dead-lettered as 'max_retries'.
+Besides 'tick', 'load' and 'stop', the stream carries 'soc' messages: SoC values the
+coordinator already wrote to the hashes (a controller taken offline halves its batteries'
+usable charge), applied in stream order, so never under a tick being applied.
 
 A heartbeat thread SETs hb:{worker_id} every 2 s with a 6 s TTL while the lease is
 still ours, and exits the process if the parent (coordinator) dies: macOS has no
@@ -171,8 +174,26 @@ class Worker:
             self.on_tick(msg)
         elif kind == "load":
             self.on_load(msg)
+        elif kind == "soc":
+            self.on_set_soc(msg)
         elif kind == "stop":
             self.stop.set()
+
+    def on_set_soc(self, msg: dict) -> None:
+        """The coordinator changed some batteries' SoC outside a tick (a controller taken offline halves their usable
+        charge: docs/API.md failure model). It has written the same values to the battery hashes and its mirror; this
+        brings the state held in-process in line, after every tick queued before it in this stream. Batteries not
+        held (yet) are skipped: whoever loads them reads the hash. The fence (last command id and tick) is unchanged."""
+        if msg.get("run") != self.run_id:
+            return  # a message for a run this process never loaded: nothing it holds
+        idx = arr(msg["idx"], np.int32)
+        soc = arr(msg["soc"], np.float64)
+        inside = (idx >= 0) & (idx < self.fleet_size)
+        pos = np.full(len(idx), -1, dtype=np.int64)
+        pos[inside] = self.posmap[idx[inside]]
+        known = pos >= 0
+        self.soc[pos[known]] = soc[known]
+        self.counters["soc_set"] = self.counters.get("soc_set", 0) + int(known.sum())
 
     # --- load (run start and adoption) -------------------------------------------------------
 

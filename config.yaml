@@ -146,6 +146,7 @@ api:        # owner: fleet + API
     run_reset_s: 5            # one /run/reset per 5 s (global)
     availability_per_s: 10
     chaos_kill_s: 2           # one /chaos/kill per 2 s (global; crashing controllers is open to everyone)
+    worker_restart_s: 2       # one POST /workers/{id}/restart per 2 s (global), like the kill
 
 backtest:   # owner: backtest (M4). Read by src/backtest/runner.py:backtest_settings()
   year: 2025                            # the pitch year shown on the Results screen
