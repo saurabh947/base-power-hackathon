@@ -1,13 +1,14 @@
 // "What the AI adds" (Results, right under the headline row): what the AI forecast earns over the simple
-// rule in the pitch year (2025), then three plain-language cards: earns more, gets closer to perfect, soaks up
-// surplus power. The numbers and words come from ./aiGains.ts.
+// rule in the year shown, then three plain-language cards: earns more, gets closer to perfect, soaks up
+// surplus power. In a year with an AI-predicted part (2026) the figures are estimates, and the gain is split
+// into its real and projected parts. The numbers and words come from ./aiGains.ts.
 
 import type { ReactNode } from 'react';
 import { Icon, type IconName } from '../../components/Icon.tsx';
 import { Panel } from '../../components/Panel.tsx';
 import { TechBlock } from '../../components/Tech.tsx';
 import { fmtCount, fmtNumber, lowerFirst, shortLabel } from '../../lib/format.ts';
-import { gainsView, type EarnsCard, type PerfectCard, type PitchGains, type SurplusCard } from './aiGains.ts';
+import { gainsView, type EarnsCard, type GainsSplit, type PerfectCard, type PitchGains, type SplitInput, type SurplusCard } from './aiGains.ts';
 
 const width = (share: number) => `${Math.round(Math.min(1, Math.max(0, share)) * 1000) / 10}%`;
 
@@ -73,7 +74,7 @@ function Card({
   );
 }
 
-function Earns({ card }: { card: EarnsCard }) {
+function Earns({ card, split, estimate }: { card: EarnsCard; split: GainsSplit | null; estimate: string }) {
   return (
     <Card
       icon="dollar"
@@ -86,21 +87,32 @@ function Earns({ card }: { card: EarnsCard }) {
           ]}
         />
       }
-      caption="Earned per battery per year."
+      caption={`Earned per battery per year${estimate}.`}
       details={
-        card.fleetDiffText ? (
-          <p>
-            Whole fleet: <strong className="gains-plus">{card.fleetDiffText}</strong>
-            {card.fleetText ? <span className="muted"> ({card.fleetText})</span> : null}
-          </p>
-        ) : null
+        <>
+          {split ? (
+            <>
+              <p>{split.earnsReal}</p>
+              <p className="year-split-projected">
+                <Icon name="ai" size={13} />
+                {split.earnsProjected}
+              </p>
+            </>
+          ) : null}
+          {card.fleetDiffText ? (
+            <p>
+              Whole fleet: <strong className="gains-plus">{card.fleetDiffText}</strong>
+              {card.fleetText ? <span className="muted"> ({card.fleetText})</span> : null}
+            </p>
+          ) : null}
+        </>
       }
       means="Same batteries, same prices: the AI picks better times to buy and to sell."
     />
   );
 }
 
-function Perfect({ card }: { card: PerfectCard }) {
+function Perfect({ card, estimate }: { card: PerfectCard; estimate: string }) {
   return (
     <Card
       icon="target"
@@ -108,7 +120,8 @@ function Perfect({ card }: { card: PerfectCard }) {
       rows={<Rows rows={card.bars.map((b) => ({ key: b.key, label: b.label, value: b.text, share: b.share, ai: b.ai }))} />}
       caption={
         <>
-          Share of the best possible earnings{card.bestText ? <>, where 100% is {card.bestText} per battery per year</> : null}.
+          Share of the best possible earnings{card.bestText ? <>, where 100% is {card.bestText} per battery per year</> : null}
+          {estimate}.
         </>
       }
       means="“Perfect” means knowing every price in advance, which no real system can do."
@@ -116,7 +129,7 @@ function Perfect({ card }: { card: PerfectCard }) {
   );
 }
 
-function Surplus({ card }: { card: SurplusCard }) {
+function Surplus({ card, estimate }: { card: SurplusCard; estimate: string }) {
   return (
     <Card
       icon="sun"
@@ -129,7 +142,7 @@ function Surplus({ card }: { card: SurplusCard }) {
           ]}
         />
       }
-      caption="Power bought at $0/MWh or less in the year."
+      caption={`Power bought at $0/MWh or less in the year${estimate}.`}
       details={
         <>
           {card.times ? (
@@ -145,18 +158,24 @@ function Surplus({ card }: { card: SurplusCard }) {
   );
 }
 
-export function AiGainsSection({ gains, fleetSize }: { gains: PitchGains; fleetSize: number | null }) {
-  const view = gainsView(gains, fleetSize);
+export function AiGainsSection({ gains, fleetSize, split }: { gains: PitchGains; fleetSize: number | null; split: SplitInput | null }) {
+  const view = gainsView(gains, fleetSize, split);
   const { headline } = view;
   const aiLabel = view.year.strategies[gains.ai].label;
   const baseLabel = view.year.strategies[gains.baseline].label;
   const batteries = fleetSize ? `${fmtCount(fleetSize)} ` : '';
+  // A year with an AI-predicted part: its figures are estimates, part projected.
+  const estimate = split ? ` (${view.year.year} estimate)` : '';
 
   return (
     <Panel
       className="span-12 ai-gains"
       title="What the AI adds"
-      what={`The ${shortLabel(aiLabel)} against the ${lowerFirst(shortLabel(baseLabel))} over the full year ${view.year.year}: the same ${batteries}batteries and the same real prices. Only the decisions differ.`}
+      what={
+        split
+          ? `The ${shortLabel(aiLabel)} against the ${lowerFirst(shortLabel(baseLabel))} over the full year ${view.year.year}: the same ${batteries}batteries and the same prices, real through ${split.span.realSpan.split(' – ')[1]} and the AI’s prediction after that. Only the decisions differ.`
+          : `The ${shortLabel(aiLabel)} against the ${lowerFirst(shortLabel(baseLabel))} over the full year ${view.year.year}: the same ${batteries}batteries and the same real prices. Only the decisions differ.`
+      }
       how={
         <p>
           Both methods replay every 5-minute price of the year with the same code as the live fleet. “Surplus power”
@@ -168,6 +187,7 @@ export function AiGainsSection({ gains, fleetSize }: { gains: PitchGains; fleetS
         <div className="gains-headline">
           <p className="gains-kicker">
             {aiLabel}, {view.year.year}
+            {split ? ' estimate' : ''}
           </p>
           <p className="gains-big num">
             <span>{headline.amount}</span>
@@ -178,21 +198,32 @@ export function AiGainsSection({ gains, fleetSize }: { gains: PitchGains; fleetS
             {headline.versus}
             {headline.fleetText ? `, ${headline.fleetText}` : ''}
           </p>
+          {view.split ? (
+            <p className="year-split">
+              <span>{view.split.real}</span>
+              <span className="year-split-projected">
+                <Icon name="ai" size={14} />
+                {view.split.projected}
+              </span>
+              <span>{view.split.estimate}</span>
+            </p>
+          ) : null}
           <p className="sr-only">
-            {view.year.year}: {headline.sentence}.
+            {view.year.year}
+            {split ? ' estimate' : ''}: {headline.sentence}.
           </p>
         </div>
       ) : null}
 
       <ul className="gains-cards">
-        {view.earns ? <Earns card={view.earns} /> : null}
-        {view.perfect ? <Perfect card={view.perfect} /> : null}
-        {view.surplus ? <Surplus card={view.surplus} /> : null}
+        {view.earns ? <Earns card={view.earns} split={view.split} estimate={estimate} /> : null}
+        {view.perfect ? <Perfect card={view.perfect} estimate={estimate} /> : null}
+        {view.surplus ? <Surplus card={view.surplus} estimate={estimate} /> : null}
       </ul>
 
       <TechBlock
         rows={[
-          ['GET /results/ai-gains', `ai=${gains.ai} · baseline=${gains.baseline} · the pitch year only`],
+          ['GET /results/ai-gains', `ai=${gains.ai} · baseline=${gains.baseline} · year=${view.year.year}`],
           ['year', `${view.year.year}${view.year.is_pitch ? ' (is_pitch)' : ''}`],
           ['uplift', JSON.stringify(view.year.uplift)],
           ['best_possible_per_battery_usd_year', fmtNumber(view.year.best_possible_per_battery_usd_year, 2)],

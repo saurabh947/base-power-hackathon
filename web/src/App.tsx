@@ -1,11 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Header } from './components/Header.tsx';
 import { Link } from './components/Link.tsx';
 import { PracticeBanner } from './components/PracticeBanner.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { useRoute, type Route } from './lib/router.ts';
 import { LiveScreen } from './screens/live/LiveScreen.tsx';
-import { useView } from './screens/live/viewStore.ts';
 import { ResultsScreen } from './screens/results/ResultsScreen.tsx';
 import { StartScreen } from './screens/start/StartScreen.tsx';
 import { checkBackend } from './state/backend.ts';
@@ -19,17 +18,18 @@ const TITLES: Record<Route, string> = {
 
 export function App() {
   const route = useRoute();
-  const liveMode = useView((v) => v.mode);
   const mainRef = useRef<HTMLElement>(null);
   const firstRender = useRef(true);
-  // The live map fills the window (docs/UX.md, Live map). Every page shares its dark theme (tokens.css).
-  const mapMode = route === 'live' && liveMode === 'map';
+  // The Live page is the map, filling the window (docs/UX.md, Live map). Every page shares its dark theme (tokens.css).
+  const mapMode = route === 'live';
 
   useEffect(() => {
     void checkBackend();
   }, []);
 
-  useEffect(() => {
+  // A layout effect, so it runs before the pages' own effects: a page can name itself more exactly
+  // ("Full-year results 2026 · Fleet Sim").
+  useLayoutEffect(() => {
     document.title = TITLES[route];
     // After in-app navigation, move focus to the new page so screen readers start there.
     if (firstRender.current) {

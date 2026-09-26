@@ -1,8 +1,9 @@
-// Run controls shared by the map's bottom-left corner and the detailed layout's top bar: Pause/Resume,
-// Speed, Reset (with a confirmation) and "Crash a controller", which is open to everyone (docs/UX.md,
-// Crashing controllers). A visitor can also crash one controller by clicking its tile, after a small
-// "Crash controller 7?" confirmation (CrashPopover). Crashes are limited to one every 2 s for everyone
-// together, and the server never leaves fewer than 2 working controllers (./crash.ts).
+// Run controls in the map's bottom-left corner: Pause/Resume, Speed, Reset (with a confirmation) and
+// "Crash a controller", which is open to everyone (docs/UX.md, Crashing controllers). A visitor can also
+// crash one controller by clicking its gauge in the "Charge by controller" panel, after a small "Crash
+// controller 7?" confirmation, and restart a crashed one the same way ("Restart controller 7?", both in
+// ControllerPopover). Crashes and restarts are limited to one every 2 s for everyone together, and the server
+// never leaves fewer than 2 working controllers (./crash.ts).
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Dialog } from '../../components/Dialog.tsx';
@@ -11,7 +12,16 @@ import { useLive } from '../../live/liveStore.ts';
 import { controllerName } from '../../lib/fleet.ts';
 import { fmtCount, fmtSpeed, fmtSpeedShort, plural } from '../../lib/format.ts';
 import { pauseRun, resetRun, resumeRun, setSpeed } from './actions.ts';
-import { crashController, CRASH_POP_WIDTH, useCrashable, useCrashWait, workerCities, type CrashTarget } from './crash.ts';
+import {
+  ASK_POP_WIDTH,
+  crashController,
+  restartController,
+  useCrashable,
+  useCrashWait,
+  useRestartWait,
+  workerCities,
+  type AskTarget,
+} from './crash.ts';
 
 const SPEEDS = [1, 2, 5, 10];
 
@@ -104,7 +114,7 @@ export function ResetButton() {
 
 // ---- crashing a controller (the logic is in ./crash.ts) -----------------------------------------------
 
-/** "Crash a controller": a random working one, for everyone watching. Clicking a controller tile picks one. */
+/** "Crash a controller": a random working one, for everyone watching. Clicking a controller's gauge picks one. */
 export function CrashButton() {
   const { can, why } = useCrashable();
   const { busy, waitS } = useCrashWait();
@@ -115,7 +125,7 @@ export function CrashButton() {
       className="btn btn-danger crash-button"
       onClick={() => void crashController()}
       disabled={!can || busy || waitS > 0}
-      title={why ?? 'Crashes a random working controller. To pick one, click its tile.'}
+      title={why ?? 'Crashes a random working controller. To pick one, click its gauge; click a crashed one to restart it.'}
     >
       <Icon name="crash" />
       <span className="crash-button-label">{label}</span>
@@ -124,18 +134,27 @@ export function CrashButton() {
 }
 
 /**
- * "Crash controller 7?", just above the tile that was clicked (render it inside the tiles' wrapper, from
- * useCrashAsk). Esc, Cancel, a click elsewhere or tabbing away closes it.
+ * Just above the gauge that was clicked (render it inside the gauges' wrapper, from useControllerAsk):
+ * "Crash controller 7?" for a working controller, "Restart controller 7?" for a crashed one. Esc, Cancel, a
+ * click elsewhere or tabbing away closes it.
  */
-export function CrashPopover({ target, onClose }: { target: CrashTarget; onClose: (refocus: boolean) => void }) {
+export function ControllerPopover({ target, onClose }: { target: AskTarget; onClose: (refocus: boolean) => void }) {
   const titleId = useId();
   const ref = useRef<HTMLDivElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
   const worker = useLive((s) => s.workers.find((w) => w.worker_id === target.workerId));
-  const { can, why } = useCrashable();
-  const { busy, waitS } = useCrashWait();
-  const working = worker?.status === 'healthy';
-  const allowed = working && can && waitS === 0;
+  // Decided when it opens: a crashed controller is offered a restart, any other a crash.
+  const [mode] = useState<'crash' | 'restart'>(() => (worker?.status === 'dead' ? 'restart' : 'crash'));
+  const crashable = useCrashable();
+  const crashWait = useCrashWait();
+  const restartWait = useRestartWait();
+  const status = useLive((s) => s.status);
+  const restart = mode === 'restart';
+  const { busy, waitS } = restart ? restartWait : crashWait;
+  const running = status === 'running' || status === 'paused';
+  const ready = restart ? worker?.status === 'dead' && running : worker?.status === 'healthy' && crashable.can;
+  const allowed = ready && waitS === 0;
+  const why = restart ? (running ? null : 'Start a simulation first.') : crashable.why;
 
   useEffect(() => {
     // The confirm button when it can be pressed, else the popover itself, so Esc and Tab work from here.
@@ -149,10 +168,11 @@ export function CrashPopover({ target, onClose }: { target: CrashTarget; onClose
     return () => document.removeEventListener('pointerdown', onDown);
   }, [onClose, target.button]);
 
-  // The controller stopped working meanwhile (someone else crashed it): nothing is left to confirm.
+  // Someone else got there first (crashed it, or restarted it): nothing is left to confirm.
   useEffect(() => {
-    if (worker && worker.status === 'dead' && !busy) onClose(false);
-  }, [worker, busy, onClose]);
+    if (!worker || busy) return;
+    if (restart ? worker.status !== 'dead' : worker.status === 'dead') onClose(false);
+  }, [worker, busy, restart, onClose]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape') {
@@ -164,21 +184,28 @@ export function CrashPopover({ target, onClose }: { target: CrashTarget; onClose
 
   const confirm = async () => {
     if (busy || !allowed) return;
-    if (await crashController(target.workerId)) onClose(true);
+    const done = restart ? await restartController(target.workerId) : await crashController(target.workerId);
+    if (done) onClose(true);
   };
 
   const name = controllerName(target.workerId);
+  const lower = name.replace(/^Controller/, 'controller');
   const cities = workerCities(worker);
   const count = worker?.batteries ?? 0;
+  let text: string;
+  if (restart) text = 'It takes its own batteries back from the other controllers, with whatever charge they have by then.';
+  else if (worker?.status === 'healthy') {
+    text = `Its ${fmtCount(count)} ${plural(count, 'battery', 'batteries')}${cities ? ` in ${cities}` : ''} lose their charge and pulse red on the map until the other controllers take them over. It stays down until someone restarts it.`;
+  } else text = `${name} is not working right now, so it can't be crashed.`;
   return (
     // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Esc closes this small dialog, as in native ones
     <div
       ref={ref}
-      className="crash-pop"
+      className={`crash-pop${restart ? ' is-restart' : ''}`}
       role="dialog"
       aria-labelledby={titleId}
       tabIndex={-1}
-      style={{ left: target.left, bottom: target.bottom, width: CRASH_POP_WIDTH }}
+      style={{ left: target.left, bottom: target.bottom, width: ASK_POP_WIDTH }}
       onKeyDown={onKeyDown}
       onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
@@ -187,25 +214,21 @@ export function CrashPopover({ target, onClose }: { target: CrashTarget; onClose
       }}
     >
       <p className="crash-pop-title" id={titleId}>
-        Crash {name.replace(/^Controller/, 'controller')}?
+        {restart ? 'Restart' : 'Crash'} {lower}?
       </p>
-      <p className="crash-pop-text">
-        {working
-          ? `Its ${fmtCount(count)} ${plural(count, 'battery', 'batteries')}${cities ? ` in ${cities}` : ''} pulse red on the map until the other controllers take them over.`
-          : `${name} is not working right now, so it can't be crashed.`}
-      </p>
+      <p className="crash-pop-text">{text}</p>
       <div className="crash-pop-actions">
         <button
           type="button"
           ref={confirmRef}
-          className="btn btn-danger btn-sm"
+          className={`btn btn-sm ${restart ? 'btn-primary' : 'btn-danger'}`}
           onClick={() => void confirm()}
           disabled={!allowed}
           aria-disabled={busy || undefined}
           title={why ?? undefined}
         >
-          <Icon name="crash" size={15} />
-          {busy ? 'Crashing…' : waitS > 0 ? `Wait ${waitS} s` : 'Crash it'}
+          <Icon name={restart ? 'reset' : 'crash'} size={15} />
+          {busy ? (restart ? 'Restarting…' : 'Crashing…') : waitS > 0 ? `Wait ${waitS} s` : restart ? 'Restart it' : 'Crash it'}
         </button>
         <button type="button" className="btn btn-quiet btn-sm" onClick={() => onClose(true)}>
           Cancel

@@ -22,6 +22,16 @@
 // and Austin); idle message every 5 s; the race (a shadow fleet on the
 // comparison strategy) in every snapshot and frame while a run exists.
 //
+// The failure model (docs/API.md, the human's rules): each worker reports the
+// capacity-weighted charge of the batteries it owns (charge_level) and the
+// usable share above the 20% reserve (usable_charge). A crash empties that
+// controller's batteries to the reserve; the others take them over and run
+// them; nothing comes back on its own: POST /workers/{id}/restart (or Reset)
+// brings the controller back, taking its own block back with whatever charge
+// those batteries have by then (worker_recovered). Taking a controller's
+// batteries offline halves their usable charge. The race shadow mirrors both;
+// the potential fleet (all online) never loses charge.
+//
 // The full-year numbers (GET /results/pitch per-battery figures and GET
 // /results/ai-gains) are copied from the real backtest in RUNLOG.md (./gains.ts);
 // the rest of the Results payload (cycles, top days, most city splits) is simulated.
@@ -57,13 +67,13 @@ import type {
 import { batteryRanges, DEFAULT_SHARES } from '../src/lib/fleet.ts';
 import { CHARGING, DOWN, OFFLINE, packStatus, SELLING, WAITING } from '../src/map/status.ts';
 import priceFixture from './data/ercot_rt_lz_preset_days_2025.json' with { type: 'json' };
-import { MEASURED, mockAiGains } from './gains.ts';
+import { MEASURED, mockAiGains, SPLIT_2026 } from './gains.ts';
 import { buildMockLayout } from './layout.ts';
 
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
 export const MOCK_MARKER = 'FLEET_SIM_MOCK_DO_NOT_SHIP';
 export const MOCK_VERSION =
-  'mock-0.5 (simulated data; real ERCOT prices for the 2025 replay days; 2026 is 2025 a year on, then a simulated prediction; measured full-year figures from RUNLOG.md)';
+  'mock-0.6 (simulated data; real ERCOT prices for the 2025 replay days; 2026 is 2025 a year on, then a simulated prediction; measured 2025 full-year figures from RUNLOG.md, 2026 full-year figures made up)';
 
 /** The Texas Triangle load zones in config order. */
 export const LOCS = ['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN'] as const;
@@ -438,20 +448,27 @@ export function batteryIndex(id: string): number | null {
 }
 
 /**
- * Initial cohorts, as the backend's FleetLayout.default_owners: the fleet in id order split into 20
- * contiguous chunks (numpy.array_split), so each controller serves one city, or two where a city
- * boundary falls inside its chunk (worker 17: 600 San Antonio + 400 Austin).
+ * Worker `w`'s own block of battery indices [start, end), as the backend's FleetLayout.default_owners: the
+ * fleet in id order split into 20 contiguous chunks (numpy.array_split), so each controller serves one city,
+ * or two where a city boundary falls inside its chunk (worker 17: 600 San Antonio + 400 Austin).
  */
-function defaultOwners(out: Uint8Array): void {
+function defaultBlock(w: number): [number, number] {
   const small = Math.floor(FLEET / WORKERS);
   const extra = FLEET % WORKERS;
-  let g = 0;
-  for (let w = 0; w < WORKERS; w++) {
-    const size = small + (w < extra ? 1 : 0);
-    out.fill(w, g, g + size);
-    g += size;
-  }
+  const start = w * small + Math.min(w, extra);
+  return [start, start + small + (w < extra ? 1 : 0)];
 }
+
+/** Initial cohorts: every worker on its own block. */
+function defaultOwners(out: Uint8Array): void {
+  for (let w = 0; w < WORKERS; w++) out.fill(w, ...defaultBlock(w));
+}
+
+/** Usable energy above the 20% reserve, 0-1, for a charge level (docs/API.md Worker.usable_charge). */
+const usableOf = (level: number) => Math.min(1, Math.max(0, (level - SOC_MIN) / (SOC_MAX - SOC_MIN)));
+
+/** Halve the usable energy of a battery at charge `soc` (a controller's batteries taken offline). */
+const halvedSoc = (soc: number) => SOC_MIN + (soc - SOC_MIN) / 2;
 
 /** {location: batteries} among these battery indices, only locations that have some (event details). */
 function byLocation(idx: Iterable<number>): Record<string, number> {
@@ -499,6 +516,8 @@ interface WorkerState extends Worker {
   killedAtTick: number | null;
   killedAtMs: number | null;
   missed: number;
+  /** POST /workers/{id}/restart was called at this time; it takes its batteries back at the next step. */
+  restartAtMs: number | null;
 }
 
 /** Killed or not responding, and not handed over yet: its batteries are "controller down". */
@@ -510,14 +529,23 @@ interface Job {
   fail: boolean;
   /** Stopped with POST /backtest/{job_id}/cancel. */
   cancelled: boolean;
+  /** The year it re-runs (POST /backtest {"year"}). */
+  year: number;
 }
+
+/** The years with full-year results (docs/API.md GET /results/pitch?year=): 2025 is the pitch year. */
+export const RESULT_YEARS = [2025, 2026];
+const PITCH_YEAR = 2025;
 
 export interface MockSimOptions {
   now?: () => number;
   random?: () => number;
   backtestMs?: number;
   backtestFails?: boolean;
+  /** false: every year answers 404 no_results until a full-year re-run of it finishes. */
   resultsBeforeBacktest?: boolean;
+  /** These years answer 404 no_results until a re-run of them finishes (MOCK_NO_RESULTS=2026). */
+  noResultsYears?: number[];
   /** GET /results/ai-gains always answers 404 no_results (a backend without them yet). */
   noAiGains?: boolean;
 }
@@ -646,6 +674,31 @@ class RaceFleet {
     return this.revenueBy[loc];
   }
 
+  /** The same batteries as the live fleet's crashed controller, emptied to the reserve (docs/API.md Mirroring). */
+  empty(idx: Iterable<number>): void {
+    for (const g of idx) this.soc[g] = SOC_MIN;
+    this.recount();
+  }
+
+  /** The same batteries as the live fleet's controller taken offline, their usable charge halved. */
+  halve(idx: Iterable<number>): void {
+    for (const g of idx) this.soc[g] = halvedSoc(this.soc[g]);
+    this.recount();
+  }
+
+  private recount(): void {
+    let stored = 0;
+    let capacity = 0;
+    for (const loc of LOCS) {
+      let locStored = 0;
+      for (let n = 0; n < COUNT[loc]; n++) locStored += this.soc[BASE[loc] + n] * CAPACITY[BASE[loc] + n];
+      this.level[loc] = locStored / CAPACITY_BY_LOC[loc];
+      stored += locStored;
+      capacity += CAPACITY_BY_LOC[loc];
+    }
+    this.fleetLevel = stored / capacity;
+  }
+
   toJson(liveRevenue: number): Race {
     return {
       strategy: this.strategy,
@@ -672,7 +725,8 @@ export class MockSim {
   private readonly backtestMs: number;
   private readonly backtestFails: boolean;
   private readonly noAiGains: boolean;
-  private resultsReady: boolean;
+  /** Years that answer 404 no_results until a full-year re-run of them finishes. */
+  private readonly missing: Set<number>;
 
   private segment: Segment | null = null;
   private startedAtMs = 0;
@@ -722,7 +776,7 @@ export class MockSim {
     this.backtestMs = options.backtestMs ?? 6000;
     this.backtestFails = options.backtestFails ?? false;
     this.noAiGains = options.noAiGains ?? false;
-    this.resultsReady = options.resultsBeforeBacktest ?? true;
+    this.missing = new Set(options.resultsBeforeBacktest === false ? RESULT_YEARS : (options.noResultsYears ?? []));
     this.resetFleet();
   }
 
@@ -747,6 +801,7 @@ export class MockSim {
       killedAtTick: null,
       killedAtMs: null,
       missed: 0,
+      restartAtMs: null,
     }));
     this.recountWorkers();
   }
@@ -947,16 +1002,19 @@ export class MockSim {
         const w = this.workers.find((x) => x.worker_id === Number(req.worker_id));
         if (!w) throw new MockError(404, 'unknown_worker', `There is no worker ${req.worker_id}.`);
         const offline = req.available === false;
-        for (let g = 0; g < FLEET; g++) {
-          if (this.owner[g] === w.worker_id) {
-            this.offWorker[g] = offline ? 1 : 0;
-            affected++;
-          }
+        const owned = this.ownedBy(w.worker_id);
+        // docs/API.md failure model: going offline halves its batteries' usable charge, at that moment (the
+        // race shadow too); while offline they don't move; back online they carry on from there.
+        if (offline && !this.offlineWorkers.has(w.worker_id)) {
+          for (const g of owned) this.soc[g] = halvedSoc(this.soc[g]);
+          this.race.halve(owned);
         }
+        for (const g of owned) this.offWorker[g] = offline ? 1 : 0;
+        affected = owned.length;
         if (offline) this.offlineWorkers.add(w.worker_id);
         else this.offlineWorkers.delete(w.worker_id);
         message = offline
-          ? `${controller(w.worker_id)}'s ${affected.toLocaleString('en-US')} batteries were taken offline. The controller itself keeps running.`
+          ? `${controller(w.worker_id)}'s ${affected.toLocaleString('en-US')} batteries were taken offline, and half their usable charge is lost. The controller itself keeps running.`
           : `${controller(w.worker_id)}'s batteries are back online.`;
         break;
       }
@@ -1025,8 +1083,60 @@ export class MockSim {
     }
     target.killedAtTick = this.tickIndex;
     target.killedAtMs = this.now();
+    target.restartAtMs = null; // crashed again while restarting: it stays down
+    // docs/API.md failure model: a crash empties its batteries to the reserve (the race shadow's too); the
+    // others take them over as they are.
+    const emptied = this.ownedBy(target.worker_id);
+    for (const g of emptied) this.soc[g] = SOC_MIN;
+    this.race.empty(emptied);
     this.hadOutage = true; // race.shows_potential, for the rest of the run
     return { worker_id: target.worker_id, pid: target.pid ?? 0, killed_at_utc: new Date(this.now()).toISOString() };
+  }
+
+  /**
+   * POST /workers/{worker_id}/restart: a crashed controller comes back only this way (or with Reset). It is
+   * "starting" until the next step (a second while paused), then takes its own block back with whatever charge
+   * those batteries have by then, and says so (worker_recovered).
+   */
+  restart(workerId: number): { worker_id: number; status: 'starting' } {
+    const w = Number.isInteger(workerId) ? this.workers.find((x) => x.worker_id === workerId) : undefined;
+    if (!w) throw new MockError(404, 'unknown_worker', `There is no worker ${workerId} (ids run 0 to 19).`);
+    if (w.status !== 'dead' || w.restartAtMs !== null) {
+      throw new MockError(409, 'not_crashed', `${controller(workerId)} has not crashed, so there is nothing to restart.`);
+    }
+    Object.assign(w, { status: 'starting', pid: this.pidSeq++, restartAtMs: this.now(), killedAtTick: null, killedAtMs: null, missed: 0 });
+    return { worker_id: workerId, status: 'starting' };
+  }
+
+  /** A restarted controller takes its own block back (see restart). */
+  private recover(w: WorkerState): void {
+    const [start, end] = defaultBlock(w.worker_id);
+    let stored = 0;
+    let capacity = 0;
+    const block: number[] = [];
+    for (let g = start; g < end; g++) {
+      this.owner[g] = w.worker_id;
+      stored += this.soc[g] * CAPACITY[g];
+      capacity += CAPACITY[g];
+      block.push(g);
+    }
+    Object.assign(w, { status: 'healthy', restartAtMs: null, adopted_from: [] });
+    for (const other of this.workers) other.adopted_from = other.adopted_from.filter((id) => id !== w.worker_id);
+    this.recountWorkers();
+    const usable = Math.round(usableOf(stored / capacity) * 100);
+    this.emit(
+      'worker_recovered',
+      'good',
+      `${controller(w.worker_id)} is back and has taken back its ${block.length.toLocaleString('en-US')} batteries${this.inCities(block)}, at ${usable}% usable charge.`,
+      { ...workerDetail(w), batteries: block.length, by_location: byLocation(block) },
+    );
+  }
+
+  /** Restarts waiting for their step: at a tick, or after a second while nothing ticks (paused, finished). */
+  private recoverPending(nowMs: number | null): void {
+    for (const w of this.workers) {
+      if (w.status === 'starting' && w.restartAtMs !== null && (nowMs === null || nowMs - w.restartAtMs >= 1000)) this.recover(w);
+    }
   }
 
   // ---- the clock -------------------------------------------------------------------
@@ -1086,6 +1196,8 @@ export class MockSim {
     } else if (this.status === 'paused') {
       this.detectWhilePaused(now);
     }
+    // A restart finishes at the next step; while nothing steps, after a second.
+    if (this.status !== 'running') this.recoverPending(now);
     const forecast = this.pendingForecast;
     this.pendingForecast = null;
     const frame: FrameMessage = {
@@ -1175,16 +1287,31 @@ export class MockSim {
     }
   }
 
+  /**
+   * docs/API.md Worker: `charge_level` is the capacity-weighted charge of the batteries a worker owns now, and
+   * `usable_charge` the share above the 20% reserve; both null when it owns none (a crashed one, handed over).
+   */
   private publicWorkers(): Worker[] {
-    return this.workers.map(({ worker_id, status, pid, batteries, last_tick_utc, adopted_from, by_location }) => ({
-      worker_id,
-      status,
-      pid,
-      batteries,
-      last_tick_utc,
-      adopted_from: [...adopted_from],
-      by_location: { ...by_location },
-    }));
+    const stored = new Float64Array(WORKERS);
+    const capacity = new Float64Array(WORKERS);
+    for (let g = 0; g < FLEET; g++) {
+      stored[this.owner[g]] += this.soc[g] * CAPACITY[g];
+      capacity[this.owner[g]] += CAPACITY[g];
+    }
+    return this.workers.map(({ worker_id, status, pid, batteries, last_tick_utc, adopted_from, by_location }) => {
+      const level = batteries > 0 && capacity[worker_id] > 0 ? stored[worker_id] / capacity[worker_id] : null;
+      return {
+        worker_id,
+        status,
+        pid,
+        batteries,
+        last_tick_utc,
+        adopted_from: [...adopted_from],
+        by_location: { ...by_location },
+        charge_level: level === null ? null : round(level, 4),
+        usable_charge: level === null ? null : round(usableOf(level), 4),
+      };
+    });
   }
 
   private emit(kind: string, severity: Severity, message: string, detail: Record<string, unknown> = {}): void {
@@ -1221,6 +1348,7 @@ export class MockSim {
         { real_until_utc: REAL_UNTIL_2026 },
       );
     }
+    this.recoverPending(null);
     const dying = this.detectAtTick();
 
     const price = perLoc(() => 0);
@@ -1624,14 +1752,16 @@ export class MockSim {
     return !job.cancelled && this.now() < job.doneAtMs;
   }
 
-  startBacktest(): { job_id: string } {
+  /** POST /backtest {"year"}: a full-year re-run of that year (the pitch year without one). */
+  startBacktest(year: number = PITCH_YEAR): { job_id: string } {
+    if (!RESULT_YEARS.includes(year)) throw new MockError(400, 'invalid_year', 'The year must be 2025 or 2026.');
     // While a job runs, POST /backtest returns that job's id (docs/API.md).
     if (this.runningJob) {
       const job = this.jobs.get(this.runningJob);
       if (job && this.isRunning(job)) return { job_id: job.id };
     }
     const id = crypto.randomUUID();
-    this.jobs.set(id, { id, doneAtMs: this.now() + this.backtestMs, fail: this.backtestFails, cancelled: false });
+    this.jobs.set(id, { id, doneAtMs: this.now() + this.backtestMs, fail: this.backtestFails, cancelled: false, year });
     this.runningJob = id;
     return { job_id: id };
   }
@@ -1661,20 +1791,38 @@ export class MockSim {
     if (job.fail) {
       return { status: 'failed', run_ids: [], skipped: {}, error: 'The practice server was told to fail this run (MOCK_BACKTEST_FAIL=1).' };
     }
-    this.resultsReady = true;
+    this.missing.delete(job.year);
     return { status: 'done', run_ids: ['mock-bands', 'mock-forecast', 'mock-peak'], skipped: {}, error: null };
   }
 
-  results(): Results {
-    if (!this.resultsReady) throw new MockError(404, 'no_results', 'No full-year results yet.');
+  /** 404 no_results for a year without results (or one this server does not have). */
+  private resultsYear(year: number | null): number {
+    const y = year ?? PITCH_YEAR;
+    if (!RESULT_YEARS.includes(y) || this.missing.has(y)) throw new MockError(404, 'no_results', 'No full-year results yet.');
+    return y;
+  }
+
+  /**
+   * GET /results/pitch?year=: 2025's per-battery figures are the measured ones (RUNLOG.md, 4-city full-year
+   * results; ./gains.ts); 2026's are SIMULATED, split at real_until_utc into their real and projected parts
+   * (docs/API.md). Cycles, top days and most city splits are made up for both.
+   */
+  results(year: number | null = null): Results {
+    const y = this.resultsYear(year);
     const powerMw = NAMEPLATE_KW / 1000;
     const energyMwh = CAPACITY.reduce((a, b) => a + b, 0) / 1000;
     const avgKw = NAMEPLATE_KW / FLEET;
     const avgKwh = (energyMwh * 1000) / FLEET;
     const factor: Record<Loc, number> = { LZ_HOUSTON: 0.94, LZ_NORTH: 0.98, LZ_CPS: 1.11, LZ_AEN: 1.12 };
-    // The per-battery figures are the measured 2025 ones (RUNLOG.md, 4-city full-year results; ./gains.ts).
-    const measured = MEASURED.find((y) => y.isPitch) ?? MEASURED[0];
+    const measured = MEASURED.find((m) => m.year === y) ?? MEASURED[0];
+    const split = y === 2026;
     const perBattery = (key: 'bands' | 'forecast' | 'peak') => measured.strategies[key].perBattery;
+    // docs/API.md: real + projected = per_battery_usd_year; a fully real year has projected 0.
+    const parts = (key: 'bands' | 'forecast' | 'peak' | 'best', whole: number) =>
+      split
+        ? { real_per_battery_usd: SPLIT_2026[key].real, projected_per_battery_usd: SPLIT_2026[key].projected }
+        : { real_per_battery_usd: whole, projected_per_battery_usd: 0 };
+    const dayScale = split ? 1.06 : 1;
     const strategy = (
       key: 'bands' | 'forecast' | 'peak',
       label: string,
@@ -1685,24 +1833,28 @@ export class MockSim {
     ) => ({
       strategy: key,
       label,
-      run_id: `mock-${key}`,
+      run_id: `mock-${key}-${y}`,
       is_headline: headline,
       per_battery_usd_year: perBattery(key),
+      ...parts(key, perBattery(key)),
       fleet_usd_year: Math.round(perBattery(key) * FLEET),
       usd_per_kwh_year: round(perBattery(key) / avgKwh),
       usd_per_kw_year: round(perBattery(key) / avgKw),
       cycles_per_year: cycles,
-      per_location_usd: perLoc((l) => Math.round((perCity ? perCity[l] : perBattery(key) * factor[l]) * COUNT[l])),
-      top_days: TOP_DAY_DATES.map((date_local, i) => ({ date_local, usd: days[i] })),
+      per_location_usd: perLoc((l) => Math.round((perCity && !split ? perCity[l] : perBattery(key) * factor[l]) * COUNT[l])),
+      top_days: (split ? TOP_DAY_DATES_2026 : TOP_DAY_DATES).map((date_local, i) => ({ date_local, usd: Math.round(days[i] * dayScale) })),
     });
     return {
-      year: measured.year,
+      year: y,
       generated_utc: new Date(this.now()).toISOString(),
       fleet_size: FLEET,
       fleet_power_mw: round(powerMw, 1),
       fleet_energy_mwh: round(energyMwh, 1),
+      real_until_utc: split ? REAL_UNTIL_2026 : null,
       assumptions: [
-        'SIMULATED practice data from the mock server: the per-battery figures and the AI forecast’s city figures are copied from the real 2025 backtest (RUNLOG.md); the cycles, top days and other city splits are made up.',
+        split
+          ? 'SIMULATED practice data from the mock server: every 2026 figure is made up (no 2026 backtest exists here), split at Sep 20 into a real part and a part projected on the AI’s predicted prices.'
+          : 'SIMULATED practice data from the mock server: the per-battery figures and the AI forecast’s city figures are copied from the real 2025 backtest (RUNLOG.md); the cycles, top days and other city splits are made up.',
         'Gross wholesale energy value at ERCOT real-time prices (15-minute settlement).',
       ],
       strategies: [
@@ -1719,15 +1871,17 @@ export class MockSim {
       ceiling: {
         label: 'Best possible (perfect hindsight)',
         per_battery_usd_year: measured.bestPerBattery,
+        ...parts('best', measured.bestPerBattery),
         fleet_usd_year: Math.round(measured.bestPerBattery * FLEET),
       },
     };
   }
 
-  /** GET /results/ai-gains: the measured numbers (./gains.ts); 404 no_results like GET /results/pitch. */
-  aiGains(): AiGains {
-    if (!this.resultsReady || this.noAiGains) throw new MockError(404, 'no_results', 'No full-year results yet.');
-    return mockAiGains(FLEET);
+  /** GET /results/ai-gains?year=: that year's numbers (./gains.ts); 404 no_results like GET /results/pitch. */
+  aiGains(year: number | null = null): AiGains {
+    const y = this.resultsYear(year);
+    if (this.noAiGains) throw new MockError(404, 'no_results', 'No full-year results yet.');
+    return mockAiGains(FLEET, year === null ? null : y);
   }
 }
 
@@ -1743,6 +1897,20 @@ const TOP_DAY_DATES = [
   '2025-07-29',
   '2025-09-03',
   '2025-05-13',
+];
+
+/** 2026's (all made up): some fall after Sep 20, on the AI's predicted prices. */
+const TOP_DAY_DATES_2026 = [
+  '2026-08-18',
+  '2026-05-12',
+  '2026-10-06',
+  '2026-07-24',
+  '2026-01-21',
+  '2026-11-17',
+  '2026-06-30',
+  '2026-09-02',
+  '2026-12-09',
+  '2026-04-15',
 ];
 
 /** GET /settings with the pinned item shapes (docs/API.md). */

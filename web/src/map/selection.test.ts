@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dispatchSelection, escapeClears, nextSelection, onSelectionChange, selectionStore } from './selection.ts';
+import { dispatchSelection, escapeClears, nextSelection, selectionStore } from './selection.ts';
 
 const CITIES = ['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN'];
 
@@ -26,16 +26,16 @@ describe('city selection', () => {
     expect(nextSelection('LZ_NORTH', { type: 'map', location: 'HB_WEST' }, CITIES)).toBe('LZ_NORTH');
   });
 
-  it('stores the selection and tells a listener only when it changes', () => {
+  it('stores the selection, telling subscribers only when it changes', () => {
     const seen: (string | null)[] = [];
-    onSelectionChange((loc) => seen.push(loc));
     selectionStore.set(null);
+    const off = selectionStore.subscribe(() => seen.push(selectionStore.get()));
     dispatchSelection({ type: 'label', location: 'LZ_HOUSTON' }, CITIES);
     dispatchSelection({ type: 'map', location: 'LZ_HOUSTON' }, CITIES);
     dispatchSelection({ type: 'escape' }, CITIES);
     expect(seen).toEqual(['LZ_HOUSTON', null]);
     expect(selectionStore.get()).toBeNull();
-    onSelectionChange(null);
+    off();
   });
 
   it('leaves Esc to dialogs and form fields', () => {

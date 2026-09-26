@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyAdoption, cohortOf, defaultOwners } from './owners.ts';
+import { applyAdoption, applyRecovery, blockOf, cohortOf, defaultOwners } from './owners.ts';
 
 describe("controllers' batteries (a replica of the backend's ownership)", () => {
   it('start as contiguous blocks: workers 0-6 Houston, 7-14 Dallas–Fort Worth, 17 spans San Antonio and Austin', () => {
@@ -33,5 +33,16 @@ describe("controllers' batteries (a replica of the backend's ownership)", () => 
     const owners = defaultOwners(4, 2);
     applyAdoption(owners, 0, []);
     expect(Array.from(owners)).toEqual([-1, -1, 1, 1]);
+  });
+
+  it('give a restarted controller its own block back (worker_recovered)', () => {
+    expect(blockOf(20_000, 20, 17)).toEqual([17_000, 18_000]);
+    expect(blockOf(10, 4, 1)).toEqual([3, 6]);
+    const owners = defaultOwners(12, 3); // 0: 0-3, 1: 4-7, 2: 8-11
+    applyAdoption(owners, 1, [0, 2]);
+    applyRecovery(owners, 1, 3);
+    expect(Array.from(owners)).toEqual([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]);
+    applyRecovery(owners, 7, 3); // not a controller: nothing changes
+    expect(Array.from(owners)).toEqual([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]);
   });
 });

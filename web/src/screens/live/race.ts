@@ -1,6 +1,6 @@
 // The race (docs/API.md Race): the live fleet against a shadow copy of itself that runs the comparison
 // strategy on the same batteries, prices and availability. Pure, so the wording and the numbers are unit
-// tested; Race.tsx draws it on the map's money corner and in the "Show charts" money card.
+// tested; RaceBars.tsx draws it in the map's money corner.
 //
 // "AI forecast $46,310 · Simple rule $31,020 · AI forecast ahead by $15,290", for all of Texas or one city
 // (race.by_location). Labels come from race.label and the live strategy's label.

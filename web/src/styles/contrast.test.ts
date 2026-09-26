@@ -73,8 +73,6 @@ const TEXT_PAIRS: [string, string][] = [
   ['text-muted', 'hold-soft'],
   ['text-muted', 'warn-soft'],
   ['text-muted', 'fail-soft'],
-  ['chart-axis', 'surface'],
-  ['chart-axis', PANEL],
   // Results: the big per-battery number, the headline bar's value; Start: "20,000 home batteries".
   ['money', PANEL],
   ['money', 'bg'],
@@ -105,10 +103,7 @@ const UI_PAIRS: [string, string][] = [
   // Info notices and events.
   ['info', 'bg'],
   ['info', PANEL],
-  // Detailed charts.
-  ['chart-price', 'surface'],
-  ['chart-plan', 'surface'],
-  ['chart-delivered', 'surface'],
+  // The corners' mini charts and the timeline's price line, on the panels.
   ['chart-price', PANEL],
   ['chart-plan', PANEL],
   ['chart-delivered', PANEL],
@@ -166,9 +161,12 @@ describe('always dark', () => {
   });
 
   it('defines every colour token the stylesheets use', () => {
-    // --map-left/top/width/height are set by the map at run time and always come with a fallback.
-    const used = new Set([...`${appCss}\n${mapCss}`.matchAll(/var\(--([a-z0-9-]+)\s*\)/gi)].map((m) => m[1]));
-    for (const name of used) expect(tokens[name], `--${name}`).toBeDefined();
+    // --map-left/top/width/height and the gauges' --fill, --ghost and --was are set at run time and always come
+    // with a fallback; a panel's own properties (the gauges' --edge, --juice, …) are declared in the stylesheets.
+    const css = `${appCss}\n${mapCss}`;
+    const local = readTokens(css);
+    const used = new Set([...css.matchAll(/var\(--([a-z0-9-]+)\s*\)/gi)].map((m) => m[1]));
+    for (const name of used) expect(tokens[name] ?? local[name], `--${name}`).toBeDefined();
   });
 
   it('uses only hex colours for the tokens that text and marks sit on or are drawn in', () => {

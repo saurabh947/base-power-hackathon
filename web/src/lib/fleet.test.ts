@@ -1,17 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { batteryRanges, controllerFromDetail, controllerName, DEFAULT_SHARES } from './fleet.ts';
+import { batteryRanges, controllerName, DEFAULT_SHARES } from './fleet.ts';
 
 describe('controllers', () => {
   it('counts from 1 for people while worker_id counts from 0', () => {
     expect(controllerName(0)).toBe('Controller 1');
     expect(controllerName(19)).toBe('Controller 20');
-  });
-
-  it('reads the controller number from event details', () => {
-    expect(controllerFromDetail({ worker_id: 6, controller: 7 })).toBe(7);
-    expect(controllerFromDetail({ worker_id: 6 })).toBe(7);
-    expect(controllerFromDetail({})).toBeNull();
-    expect(controllerFromDetail(undefined)).toBeNull();
   });
 });
 

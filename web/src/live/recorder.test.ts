@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Tick } from '../api/types.ts';
+import type { Tick, Worker } from '../api/types.ts';
 import { packStatus } from '../map/status.ts';
 import { FrameRecorder, RECORDER_MAX_BYTES } from './recorder.ts';
 import { initialLiveState, type LiveState } from './reducer.ts';
@@ -9,6 +9,20 @@ const tick = (i: number) => ({ ts_utc: new Date(T0 + i * 300_000).toISOString().
 
 /** battery_status for 20 batteries, all with `code`. */
 const status = (code: number) => btoa(String.fromCharCode(...packStatus(Array.from({ length: 20 }, () => code))));
+
+/** Controller 7 with this usable charge (null: crashed and handed over). */
+const workers = (usable: number | null): Worker[] => [
+  {
+    worker_id: 6,
+    status: usable === null ? 'dead' : 'healthy',
+    pid: 7,
+    batteries: usable === null ? 0 : 1000,
+    last_tick_utc: null,
+    adopted_from: [],
+    usable_charge: usable,
+    charge_level: usable === null ? null : 0.2 + usable * 0.8,
+  },
+];
 
 function state(i: number, code = 1, runId = 'run-1', status_: LiveState['status'] = 'running'): LiveState {
   return {
@@ -33,6 +47,16 @@ describe('the frames this page has seen', () => {
     // Before this page was opened: nothing.
     expect(r.at(T0 - 1)).toBeNull();
     expect(r.firstMs()).toBe(T0);
+  });
+
+  it('keeps each frame’s controllers with their charge, so the charge gauges can look back', () => {
+    const r = new FrameRecorder();
+    r.add({ ...state(1), workers: workers(0.5) });
+    r.add({ ...state(2), workers: workers(0) }); // crashed: its batteries emptied
+    r.add({ ...state(3), workers: workers(null) }); // handed over
+    expect(r.at(T0 + 300_000)?.workers[0].usable_charge).toBe(0.5);
+    expect(r.at(T0 + 2 * 300_000)?.workers[0].usable_charge).toBe(0);
+    expect(r.at(T0 + 3 * 300_000)?.workers[0]).toMatchObject({ status: 'dead', usable_charge: null });
   });
 
   it('replaces the view of the same moment (paused), sharing unchanged bytes', () => {

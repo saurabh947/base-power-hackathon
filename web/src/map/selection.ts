@@ -1,6 +1,5 @@
 // Which city the live map is showing: null means all of Texas. Selecting a city
-// switches the corners to its numbers; it also becomes the price chart's area in
-// the detailed layout ("Show charts").
+// switches the corners to its numbers and highlights the controllers serving it.
 
 import { createStore, useStore } from '../lib/store.ts';
 
@@ -37,19 +36,8 @@ export function useSelectedCity(): string | null {
   return useStore(selectionStore, (s) => s);
 }
 
-let onSelect: ((location: string | null) => void) | null = null;
-
-/** Called with every new selection (the Live screen uses it to keep the price chart's area in step). */
-export function onSelectionChange(listener: ((location: string | null) => void) | null): void {
-  onSelect = listener;
-}
-
 export function dispatchSelection(action: SelectionAction, known: readonly string[]): void {
-  const prev = selectionStore.get();
-  const next = nextSelection(prev, action, known);
-  if (next === prev) return;
-  selectionStore.set(next);
-  onSelect?.(next);
+  selectionStore.set(nextSelection(selectionStore.get(), action, known));
 }
 
 /** Escape clears the selection, unless something else is using the key (a dialog, a menu, a text field). */

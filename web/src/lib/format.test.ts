@@ -17,7 +17,6 @@ import {
   fmtPower,
   fmtPowerFlow,
   fmtPresetLabel,
-  fmtPrice,
   fmtPriceKwh,
   fmtPriceKwhShort,
   fmtPriceMwh,
@@ -39,12 +38,14 @@ const MINUS = '−';
 
 describe('prices carry a unit and a per-kWh translation', () => {
   it('matches the UX guide example', () => {
-    expect(fmtPrice(120)).toBe('$120/MWh (12¢ per kWh)');
+    expect(`${fmtPriceMwh(120)} (${fmtPriceKwh(120)})`).toBe('$120/MWh (12¢ per kWh)');
   });
 
   it('keeps cents for small prices and switches to dollars for spikes', () => {
-    expect(fmtPrice(42.1)).toBe('$42.10/MWh (4.2¢ per kWh)');
-    expect(fmtPrice(2250.15)).toBe('$2,250/MWh ($2.25 per kWh)');
+    expect(fmtPriceMwh(42.1)).toBe('$42.10/MWh');
+    expect(fmtPriceKwh(42.1)).toBe('4.2¢ per kWh');
+    expect(fmtPriceMwh(2250.15)).toBe('$2,250/MWh');
+    expect(fmtPriceKwh(2250.15)).toBe('$2.25 per kWh');
     expect(fmtPriceMwh(99.99)).toBe('$99.99/MWh');
     expect(fmtPriceKwh(1000)).toBe('$1.00 per kWh');
   });
@@ -56,12 +57,14 @@ describe('prices carry a unit and a per-kWh translation', () => {
   });
 
   it('shows negative prices with a real minus sign', () => {
-    expect(fmtPrice(-5)).toBe(`${MINUS}$5.00/MWh (${MINUS}0.5¢ per kWh)`);
+    expect(fmtPriceMwh(-5)).toBe(`${MINUS}$5.00/MWh`);
+    expect(fmtPriceKwh(-5)).toBe(`${MINUS}0.5¢ per kWh`);
     expect(fmtPriceKwh(-0.2)).toBe('0.0¢ per kWh');
   });
 
   it('never prints NaN', () => {
-    expect(fmtPrice(Number.NaN)).toBe('–');
+    expect(fmtPriceMwh(Number.NaN)).toBe('–');
+    expect(fmtPriceKwh(Number.NaN)).toBe('–');
     expect(fmtUsd(Number.POSITIVE_INFINITY)).toBe('–');
   });
 });

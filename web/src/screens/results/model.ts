@@ -1,9 +1,82 @@
-// What the Results panels draw, from GET /results/pitch (docs/API.md). Pure, so
-// the order of the rows and the lengths of the bars are unit tested.
+// What the Results panels draw, from GET /results/pitch?year= (docs/API.md). Pure, so
+// the order of the rows, the lengths of the bars and the real/projected split are unit tested.
+//
+// A year with an AI-predicted part (2026) carries real_until_utc, and every figure splits into what real
+// prices earned up to then and what the AI's predicted prices project for the rest of the year.
 
 import type { Results, StrategyResult } from '../../api/types.ts';
 import { cityName } from '../../lib/cities.ts';
-import { strategyName } from '../../lib/format.ts';
+import { fmtLocalDate, localDateOf, strategyName } from '../../lib/format.ts';
+
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+export interface YearSplit {
+  /** The last day of real prices and the first of the AI's prediction, Central time ("2026-09-20"). */
+  lastRealDay: string;
+  firstProjectedDay: string;
+  /** "Jan 1 – Sep 20" */
+  realSpan: string;
+  /** "Sep 21 – Dec 31" */
+  projectedSpan: string;
+}
+
+const dayMonth = (day: string) => fmtLocalDate(day).replace(/, \d{4}$/, '');
+
+/** Where a year's real prices end and the AI's prediction takes over; null for a year of real prices only. */
+export function yearSplit(results: Pick<Results, 'year' | 'real_until_utc'>): YearSplit | null {
+  const until = results.real_until_utc ? Date.parse(results.real_until_utc) : Number.NaN;
+  if (!Number.isFinite(until)) return null;
+  const lastRealDay = localDateOf(until - 1);
+  const firstProjectedDay = localDateOf(until);
+  const year = String(results.year);
+  // Only a prediction that starts inside the year splits it.
+  if (!lastRealDay?.startsWith(year) || !firstProjectedDay?.startsWith(year)) return null;
+  return {
+    lastRealDay,
+    firstProjectedDay,
+    realSpan: `Jan 1 – ${dayMonth(lastRealDay)}`,
+    projectedSpan: `${dayMonth(firstProjectedDay)} – Dec 31`,
+  };
+}
+
+/** A per-battery figure's parts: earned on real prices, and projected on the AI's. */
+export interface Split {
+  real: number;
+  projected: number;
+  total: number;
+}
+
+/** The real and projected parts of a strategy's or the ceiling's figure; null when the backend does not split it. */
+export function splitOf(s: { per_battery_usd_year: number; real_per_battery_usd?: number; projected_per_battery_usd?: number }): Split | null {
+  const { real_per_battery_usd: real, projected_per_battery_usd: projected } = s;
+  if (!finite(real) || !finite(projected)) return null;
+  return { real, projected, total: finite(s.per_battery_usd_year) ? s.per_battery_usd_year : real + projected };
+}
+
+/**
+ * Whole dollars for two parts and their sum, so the shown parts add up to the shown total ("$151 + $54 =
+ * $205", not "$152 + $54 = $205"): each part is rounded, and when they miss the rounded total by a dollar, the
+ * part that was rounded the furthest gives or takes it.
+ */
+export function roundedParts(a: number, b: number): [number, number, number] {
+  const total = Math.round(a + b);
+  let ra = Math.round(a);
+  let rb = Math.round(b);
+  const over = ra + rb - total;
+  if (over > 0) {
+    if (ra - a >= rb - b) ra -= over;
+    else rb -= over;
+  } else if (over < 0) {
+    if (a - ra >= b - rb) ra -= over;
+    else rb -= over;
+  }
+  return [ra, rb, total];
+}
+
+/** Is this day (YYYY-MM-DD, Central time) in the AI-predicted part of the year? */
+export function isProjectedDay(dateLocal: string, split: YearSplit | null): boolean {
+  return split !== null && dateLocal >= split.firstProjectedDay;
+}
 
 /** Simple rule, AI forecast, Evening peak; anything else after them. */
 const ORDER = ['bands', 'forecast', 'peak'];
@@ -33,21 +106,27 @@ export interface BarRow {
   headline: boolean;
   /** "Best possible (perfect hindsight)" (hatched). */
   ceiling: boolean;
+  /** In a year with an AI-predicted part: the real and projected parts, and their bar lengths (they add up to `share`). */
+  split: (Split & { realShare: number; projectedShare: number }) | null;
 }
 
 const share = (value: number, max: number) => (Number.isFinite(value) && max > 0 ? Math.min(1, Math.max(0, value / max)) : 0);
 
-/** One bar per decision method in the usual order, then the hindsight ceiling. */
+/** One bar per decision method in the usual order, then the hindsight ceiling; split real/projected when the year is. */
 export function comparisonRows(results: Results, headline: StrategyResult | null): BarRow[] {
-  const rows: Omit<BarRow, 'share'>[] = results.strategies
-    .toSorted((a, b) => rank(a) - rank(b))
-    .map((s) => ({
+  const splitYear = yearSplit(results) !== null;
+  const rows: Omit<BarRow, 'share' | 'split'>[] = [];
+  const splits: (Split | null)[] = [];
+  for (const s of results.strategies.toSorted((a, b) => rank(a) - rank(b))) {
+    rows.push({
       key: s.strategy,
       label: strategyLabel(s),
       value: s.per_battery_usd_year,
       headline: headline !== null && s.strategy === headline.strategy,
       ceiling: false,
-    }));
+    });
+    splits.push(splitYear ? splitOf(s) : null);
+  }
   if (results.ceiling) {
     rows.push({
       key: 'ceiling',
@@ -56,9 +135,20 @@ export function comparisonRows(results: Results, headline: StrategyResult | null
       headline: false,
       ceiling: true,
     });
+    splits.push(splitYear ? splitOf(results.ceiling) : null);
   }
   const max = Math.max(0, ...rows.map((r) => (Number.isFinite(r.value) ? r.value : 0)));
-  return rows.map((r) => ({ ...r, share: share(r.value, max) }));
+  return rows.map((r, i) => {
+    const sp = splits[i];
+    const whole = share(r.value, max);
+    // The real part first; the projected part fills the rest of the bar (a loss on either side draws nothing).
+    const realShare = sp ? Math.min(whole, share(sp.real, max)) : whole;
+    return {
+      ...r,
+      share: whole,
+      split: sp ? { ...sp, realShare, projectedShare: Math.max(0, whole - realShare) } : null,
+    };
+  });
 }
 
 export interface CityRow {

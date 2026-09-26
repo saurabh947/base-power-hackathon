@@ -15,6 +15,8 @@ const POLL_MS = 2000;
 interface Job {
   id: string;
   startedAtMs: number;
+  /** The year it re-runs (the year the page showed when it started). */
+  year?: number;
 }
 
 /** A run in progress survives navigating away and back (sessionStorage, this tab only). */
@@ -33,9 +35,9 @@ function saveJob(job: Job | null): void {
 }
 
 /**
- * "Re-run the full year": POST /backtest, then poll GET /backtest/{job_id} until it is done. "Stop" (enabled only
- * while a re-run runs) sends POST /backtest/{job_id}/cancel; the previous results stay. `hasResults` says whether
- * there are previous results to keep showing.
+ * "Re-run the full year": POST /backtest for the year shown, then poll GET /backtest/{job_id} until it is done.
+ * "Stop" (enabled only while a re-run runs) sends POST /backtest/{job_id}/cancel; the previous results stay.
+ * `hasResults` says whether there are previous results to keep showing.
  */
 export function RerunPanel({ year, onDone, hasResults = true }: { year: number; onDone: () => void; hasResults?: boolean }) {
   const [job, setJob] = useState<Job | null>(loadJob);
@@ -54,7 +56,7 @@ export function RerunPanel({ year, onDone, hasResults = true }: { year: number; 
     setSkipped([]);
     try {
       const { job_id } = await api.backtest(['bands', 'forecast', 'peak'], year);
-      const next = { id: job_id, startedAtMs: Date.now() };
+      const next = { id: job_id, startedAtMs: Date.now(), year };
       saveJob(next);
       setNow(next.startedAtMs);
       setJob(next);
@@ -160,8 +162,8 @@ export function RerunPanel({ year, onDone, hasResults = true }: { year: number; 
               <div className="progress-bar" />
             </div>
             <p className="muted small">
-              Running for {fmtDuration(elapsed)}. It usually takes under a minute; you can leave this page and come
-              back.
+              Re-running {job.year ?? year} for {fmtDuration(elapsed)}. It usually takes under a minute; you can leave this
+              page and come back.
             </p>
             <TechOnly>
               <span className="tech">

@@ -5,8 +5,75 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 
 ## What was built
 
+- **Charge by controller, no "Show charts", the failure model, Results by year** (2026-09-26, the human's
+  requests; contract docs/API.md at aee2832). In the order asked:
+  1. **"Show charts" is gone; the Live page is the map only.** Removed: the button (map controls corner) and
+     its view (`ChartsView` in LiveScreen), the view choice and its sessionStorage key (`viewStore.ts`,
+     `fleet-sim.live-view`), the top bar (`TopBar`, `Clock`, `ReplayLabel`), `PriceCard`, `PowerCard`,
+     `MoneyCard`, `EventsFeed`, `ControllersCard` (with its "Latest handover" line and the failed-commands
+     counter), the uPlot charts (`components/charts/PriceChart`, `PowerChart`, `theme`, `window`, and the chart
+     model's price/power/crash-marker builders with their tests), the race's "card" variant, the city
+     selection's listener that fed the price chart (`onSelectionChange`), `fmtPrice`, `firstPredicted`,
+     `controllerFromDetail`, the `map`/`chart` icons, the `--chart-axis` token, the uplot dependency and every
+     style used only by them (top bar, readouts, legend swatches, chart and tooltip, meter, tiles, money card,
+     feed list, race card). Kept because the map uses them: `actionSpans` (now `map/spans.ts`, tested), the status
+     lines and the Predicted badge (`status.tsx`), the compact race, the mini feed's colours. JS 468 → 386 KB
+     (155 → 123 KB gzip), CSS 51 → 42 KB, before the new panel.
+  2. **"Charge by controller"** at the centre right of the map (`map/ChargePanel.tsx`, model `map/gauges.ts`,
+     tested). The bottom-right tiles moved into it, so the controllers show in one place: 20 small upright battery
+     gauges, 1-10 over 11-20, each filled to the usable charge of the batteries that controller runs
+     (`Worker.usable_charge`, the energy above the 20% reserve: 0 is empty, 100% full; worked out from
+     `charge_level` for an older backend), its number inside (dark over the fill, light above it, split exactly
+     at the fill line). Header "CHARGE BY CONTROLLER · 19 of 20 working"; one line under it only when needed: "✕
+     1 crashed", "! 1 not responding", "1 offline" chips and, with a city selected, "7 serving Houston".
+     - Looks: working green; not responding an amber outline; crashed red with ✕ at 0% (and "—" once its
+       batteries were handed over); offline a dashed red outline, a hatched fill and a ghost mark where it stood
+       before (going offline halves the charge and it holds still, so the old level is twice today's).
+     - A tip on hover or keyboard focus: "Controller 7 · 52%", what is going on ("Working, running 1,000
+       batteries in Houston", "Crashed. Its batteries were emptied and handed to the other controllers.", "Its
+       1,000 batteries in Dallas–Fort Worth are offline: half their charge was lost (it had 88%), and the rest
+       holds still.") and what a click does. Every gauge is a button with that text as its label; ones that do
+       nothing now are `aria-disabled` but still focusable, so their charge can be read from the keyboard.
+     - Click a working gauge: "Crash controller 7?" (the old tile popover, moved); click a crashed one: "Restart
+       controller 7?" with "Restart it" (`POST /workers/{id}/restart`; 409 `not_crashed` "That controller is not
+       down.", 429 "One restart every 2 seconds, please." with a countdown, 404 `unknown_worker`). Nothing comes
+       back on its own; Reset still brings everything back.
+     - Animated so it is obvious: a crash or going offline drops the fill (0.7 s) with a red flash and the old
+       level fading in red; a restart glows green and fills to whatever charge its batteries have by then
+       (1.2 s). Only those status changes animate, never ordinary trading, however fast the replay runs.
+     - A selected city dims the controllers that don't serve it (`workers[].by_location`) and rings the ones
+       that do. The timeline shows the charge each recorded frame held; before the page was opened the gauges
+       are dimmed with "Charge not recorded before you opened this page."
+     - The bottom-right corner keeps the battery counts (the dot legend) and "What just happened".
+  3. **The failure model** (docs/API.md): the crash popover and toast say the batteries lose their charge and the
+     controller stays down until someone restarts it; the race's "All online" explainer adds "no charge lost";
+     the client's ownership replay handles `worker_recovered` (a restarted controller takes its own block back),
+     and so does the timeline's rebuild of the controllers before the page was opened.
+  4. **Results follow the year** (the human's "option A", `src/state/resultsYear.ts`, tested): the year of the
+     run that exists now (running, paused, starting or finished; from the live store, else one `GET /state`),
+     else the year last picked on Start (localStorage `fleet-sim.year`, written when the Year setting changes or
+     a run starts), else 2025. "Full-year results, 2026" and the tab title "Full-year results 2026 · Fleet Sim";
+     the subtitle says whose prices and why this year ("2026 is the year of the replay running now."). It calls
+     `GET /results/pitch?year=` and `GET /results/ai-gains?year=`; "Re-run the full year" posts the shown year; a
+     404 says "No full-year results for 2026 yet." and offers the re-run.
+     - A year with an AI-predicted part (2026, `real_until_utc`): "Real Jan 1 – Sep 20: $151 per battery ·
+       Projected Sep 21 – Dec 31: $54 · 2026 estimate: $205" under the big number with a violet "2026 estimate"
+       chip; each method's bar solid for the real part and hatched violet for the projected part, with "$98 real
+       + $33 projected"; top days after the cut-off marked "projected"; the fine print's first line says whose
+       prices each part used; "What the AI adds" reads the 2026 entry, says "2026 estimate" and splits the gain
+       ("Real …: +$53 per battery · Projected …: +$21 · 2026 estimate: +$74") and the "Earns more" card the same
+       way.
+  5. **Mock**: workers report `charge_level` and `usable_charge` from its simulated batteries; a crash empties the
+     controller's batteries (the race shadow's too) and it stays `dead`; `POST /workers/{id}/restart` (one per
+     2 s) makes it `starting`, and at the next step (a second later while paused) it takes its own block back as
+     it is and emits `worker_recovered`; taking a controller's batteries offline halves their usable charge (the
+     race's too); the potential fleet never loses charge. Results for 2025 (measured) and 2026 (simulated, split
+     at Sep 20), per year; `POST /backtest` re-runs the posted year; `MOCK_NO_RESULTS=2026` makes just that year
+     404 until re-run. Still labelled practice data throughout (tested in `mock/failures.test.ts`,
+     `mock/sim.test.ts`).
 - **Live map v2 and the human's other requests** (2026-09-26; docs/UX.md "Live map v2", contract docs/API.md at
-  4879fde). Each piece, in the order the human asked:
+  4879fde; "Show charts" and the controller tiles below were removed later, see above). Each piece, in the order
+  the human asked:
   1. **No presenter mode.** The header link, the passcode dialog, the sessionStorage passcode,
      `X-Presenter-Passcode`, `POST /presenter/check`, `GET /batteries` ("Find a battery"), their tests and docs
      are gone. "Crash a controller" is a normal button in the Live controls (the map's bottom-left corner and the
@@ -85,7 +152,7 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
   method and starting charge; "Waking up the simulator… (usually a few seconds)" while `GET /health` is slow or
   failing; "A simulation is running. Watch live" plus "Start over" when `GET /health` reports a run. One calm
   column, centred under the header; no map (the map is the Live page's).
-- **Live** (`/live`) opens on the **live map** (docs/UX.md, "Live map" and "Live map v2"):
+- **Live** (`/live`) is the **live map** (docs/UX.md, "Live map" and "Live map v2"), and only the map:
   - a full-window, always-dark gray page (#25282c) with Texas as a bright red outline and the 20,000 batteries as
     dots from `GET /fleet/layout` and `battery_status`, in the v2 looks above;
   - clickable Texas Triangle cities: label buttons beside each cluster, or click a cluster; the "All of Texas" chip,
@@ -94,20 +161,19 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
     and the price (all four cities, or the selected city's price with its ¢/kWh, a 6-hour mini line with
     charge/sell shading and the forecast band); top-right money earned (fleet or `totals.by_location`, with the
     projected part), the race, and power asked for vs delivered (numbers, sparkline, On target); bottom-left
-    Pause/Resume, Speed, Reset, Take batteries offline, Crash a controller ("or click a controller") and "Show
-    charts"; bottom-right the 20 controllers (those serving the selected city highlighted, from
-    `workers[].by_location`; click one to crash it), batteries online and by state (the dot legend), and the last
-    3 events;
+    Pause/Resume, Speed, Reset, Take batteries offline and Crash a controller ("or click a controller");
+    bottom-right batteries online and by state (the dot legend) and the last 3 events;
+  - at the centre right, "Charge by controller": the 20 controllers as battery gauges (those serving the selected
+    city highlighted, from `workers[].by_location`; click one to crash it, a crashed one to restart it), above;
   - **the race** (2026-09-26, approved by the human): under the money, "RACE ↑ AI forecast ahead by $15,290"
     over two labelled bars, "AI forecast $46,310" in green and "Simple rule $31,020" in gray, from `race` in every
     frame (docs/API.md), plus the all-online third bar after an outage. Selecting a city shows that city's race
     from `race.by_location`, with an arrow for what each side is doing there. The lead is green when the live
     strategy is ahead, plain text when the other one is, "Level so far" at a tie. Hidden while `race` is null.
-    `race_update` events show in "What just happened" with a flag icon, on the map and in "Show charts";
+    `race_update` events show in "What just happened" with a flag icon;
   - the caption "Battery locations are simulated inside real metro areas.";
-  - "Show charts" switches to the detailed layout (top bar, price chart with a 4-city toggle that follows the
-    map's selection, power chart, controllers, money, events, the availability drawer), in the same dark theme;
-    "Show map" switches back. The choice is kept for the tab. Its money card has the race too.
+  - (until 2026-09-26 "Show charts" switched to an older detailed layout with uPlot price and power charts; the
+    human had it removed, see the top entry.)
 - **Results** (`/results`): the per-battery headline as a big green number, the fleet total, a row of three
   figures ($/kWh-year, $/kW-year, cycles a year); "By city" rows from `per_location_usd` (biggest first, a bar
   each); comparison bars (the headline method, the AI forecast, green; the other methods gray; "Best possible
@@ -164,9 +230,49 @@ controller crashed" pulsing red, then 0 after the hand-over.
 
 ## Decisions
 
-- **Stack**: React 19, Vite 8, TypeScript 6.0, uPlot for the detailed charts, plain canvas and SVG for the map,
-  oxlint, vitest. Runtime dependencies: react, react-dom, uplot. No map library: the projection, the outline, the
-  aggregation and the zoom are a few hundred lines of tested TypeScript.
+- **Stack**: React 19, Vite 8, TypeScript 6.0, plain canvas and SVG for the map and its mini charts, oxlint,
+  vitest. Runtime dependencies: react, react-dom (uPlot went with "Show charts"). No map or chart library: the
+  projection, the outline, the aggregation and the zoom are a few hundred lines of tested TypeScript.
+- **Charge gauges, the model** (`map/gauges.ts`, tested): the fill is `usable_charge` (clamped 0–1), else
+  `(charge_level − 0.2) / 0.8`; `null` means it runs no batteries ("—"), missing means not known (dimmed, no
+  fill). A crashed controller is drawn at 0% whatever arrives, "0%" while it still holds its emptied batteries and
+  "—" once they were handed over. The offline ghost is twice today's level (the contract halves the usable charge
+  when a controller's batteries go offline, and they don't move while offline), so it needs no memory and works on
+  the timeline too; nothing is marked when the charge is 0. What a click does is decided in one place
+  (`gaugeAction`): crash a working one, restart a crashed one, nothing otherwise (past moment, no run, not
+  responding, starting, or only 2 working), with the reason in the tip.
+- **Charge gauges, the animation**: `--fill` is registered with `@property` (a `<number>`), so a 0.7 s transition
+  moves the fill and the dark/light split of the number together. `gaugeChanges` animates only status changes,
+  never trading (at 10 steps a second one frame can move a battery 40%): a controller that crashed, stopped
+  responding or went offline drops (red flash, the old level fading in red), a restarted one refills (green glow,
+  1.2 s). The drop starts from the highest level of the last 4 s, because a crash empties the batteries a frame
+  before the controller is reported down (the mock while paused does this). Moving along the timeline never
+  animates; `prefers-reduced-motion` makes both instant.
+- **Charge gauges, the place**: a fifth panel, not a corner: LiveMap puts it at the vertical centre of the map's
+  right edge and moves it up or down only as far as it must to clear the money corner above and the battery
+  corner below (`--corner-mr-top`); the money corner is capped at the room the other two leave (it scrolls only
+  if that is not enough). When the three do not fit (1280 × 800 with the practice banner, an outage's third race
+  bar, the projected line, a city and a crash), the battery corner lists the last 2 events instead of 3
+  (`data-tight` on the map, with 40 px of hysteresis so it does not flicker). It is a label-placement obstacle
+  like the corners. In short windows it is a little tighter (24 px gauges); from 861 px tall 32 px, and 36 px at
+  1600 px wide. Narrow windows stack it between the controls and the battery corner. 2 rows of 10 rather than one
+  row of 20 keep each gauge a 24 px target (WCAG 2.5.8) and the old tiles' familiar layout.
+- **Restarts** (`crash.ts`): the same shared-countdown pattern as crashes, a store of its own (restarts are
+  rate-limited "like kill", which may or may not share the backend's limiter; a 429 is handled either way). The
+  popover is `ControllerPopover`: it decides crash or restart when it opens, from the controller's status, and
+  closes itself if someone else crashes or restarts that controller first.
+- **Results, the year** (`state/resultsYear.ts`): a run's year is `settings.year`, else the Central-time year of
+  its start. The page waits (a loading notice) while a run exists but its year is not known yet, rather than
+  flashing the wrong year; if `GET /state` fails it falls back to the remembered year. The Start page remembers
+  the year only when the visitor changes it or starts a run, so merely visiting Start never overwrites 2026 with
+  the default 2025. Each year's results live in a component keyed by the year, so nothing of one year ever shows
+  under another's title. The tab title is set in the page's effect after App's (App's is now a layout effect).
+- **Results, the split** (`results/model.ts`): `yearSplit` names the last real day and the first projected one in
+  Central time (`real_until_utc` minus a millisecond, and itself: Sep 20 and Sep 21 for 2026-09-21T05:00Z), and
+  only a cut-off inside the year counts. Bars draw the real part and then the projected part of the same total.
+  `roundedParts` rounds two parts so they add up to the rounded total ("$151 + $54 = $205", not $152), and "What
+  the AI adds" takes its split gains as differences of those same shown dollars, so every visible sum adds up.
+  AiGains has no split fields in the contract, so its split comes from the Results' strategies.
 - **Projection**: `src/map/albers.ts` is the ellipsoidal Albers equal-area conic (Snyder 1987) with the EPSG:3083
   parameters (GRS 1980, 27.5°N/35°N, origin 18°N 100°W, false easting 1,500,000 m, northing 6,000,000 m). It matches
   PROJ's `aea` reference values to 0.1 mm, maps the false origin exactly, is true to scale on both standard
@@ -210,28 +316,31 @@ controller crashed" pulsing red, then 0 after the hand-over.
   1280 × 800. Zoomed in, a notice moves to a compact bar at the bottom centre. `prefers-reduced-motion`: instant.
 - **Timeline, the model** (`src/live/recorder.ts`, `src/live/past.ts`, `timeline.ts`, all tested): the recorder
   keeps, per frame, the packed `battery_status` bytes (10 KB for 20,000 batteries, shared while unchanged, e.g.
-  paused), the controllers, availability and race, keyed by the sim time of the frame's latest tick. Past 8 MB
+  paused), the controllers (with each one's `charge_level` and `usable_charge`: 40 numbers a frame, next to the
+  status bytes), availability and race, keyed by the sim time of the frame's latest tick. Past 8 MB
   (about 800 changed frames, 13 minutes at a frame a second) every other record in the older half is dropped, so
   the whole visit stays scrubbable, coarser further back; leaving the Live page marks a gap. The past view is
   rebuilt from the tick history: clock, prices, power, and money as today's totals minus what the later ticks
-  earned; controllers, availability and race from the nearest recorded frame, or before the page was opened, the
-  controllers replayed from the worker events and the rest unknown. The track's high/low markers are per day.
-- **Timeline, the UI**: the map corners read the viewed moment through `LiveDataContext` (`useLiveData`), so the
-  map, the clock, prices, money, the race, controllers and the legend all time-travel together while the
-  controls, the toasts and "Show charts" stay live. The simulation is never paused by scrubbing. The chip sits
-  at the top centre; its "Back to live" keeps keyboard focus on the timeline. ← / → work from anywhere on the map
-  page (not in inputs), as on the track.
-- **Crashes** (`src/screens/live/crash.ts`): one shared store (busy, wait-until) drives the corner button, the
-  top-bar button and every tile's popover, so all of them count down together; the count-down starts from the
-  server's `retry_after_s` when there is one. The popover is anchored above the clicked tile inside the tiles'
-  own box (not a modal), because the map must stay visible to watch the dots turn red.
+  earned; controllers (with their charge), availability and race from the nearest recorded frame, or before the
+  page was opened, the controllers replayed from the worker events (crashes, hand-overs and restarts; their
+  charge unknown) and the rest unknown. The track's high/low markers are per day.
+- **Timeline, the UI**: the map corners and the charge panel read the viewed moment through `LiveDataContext`
+  (`useLiveData`), so the map, the clock, prices, money, the race, the controllers' charge and the legend all
+  time-travel together while the controls and the toasts stay live. The simulation is never paused by
+  scrubbing. The chip sits at the top centre; its "Back to live" keeps keyboard focus on the timeline. ← / → work
+  from anywhere on the map page (not in inputs), as on the track.
+- **Crashes** (`src/screens/live/crash.ts`): one shared store (busy, wait-until) drives the corner button and
+  every gauge's popover, so all of them count down together; the count-down starts from the server's
+  `retry_after_s` when there is one. The popover is anchored above the clicked gauge inside the gauges' own box
+  (not a modal), because the map must stay visible to watch the dots turn red.
 - **Years** (`src/api/settings.ts`, tested): a preset's year is its `year`, else its Central-time date (an older
   backend); only years from 2025 that have presets are offered, and a year a preset names but `years` omits still
   appears, so no preset is lost. The Year control uses the same segmented control as the other settings.
 - **2026 on Live**: "projected" is worked out from the ticks marked `predicted` (their revenue summed), per city
   too; when the kept history itself starts inside the prediction (older ticks dropped), the sum would be short, so
-  it says "Part of it is projected" instead. The price chart's violet wash starts at the first predicted tick. The timeline's caption says whose prices it shows, since the track looks the same
-  either way.
+  it says "Part of it is projected" instead. The timeline's shading and the mini price line's dashes start at the
+  first predicted tick. The timeline's caption says whose prices it shows, since the track looks the same either
+  way.
 - **Drawing**: two canvases, the outline (glow, redrawn on resize and during the zoom) and the dots (redrawn on
   every frame). Between frames nothing is drawn unless a transition (160 ms), a pulse, a zoom or a re-light
   (900 ms) plays; then a `requestAnimationFrame` loop runs until everything settles, and stops (a pulse keeps it
@@ -272,10 +381,11 @@ controller crashed" pulsing red, then 0 after the hand-over.
   event messages. City names come from `GET /fleet/layout` `cities[].name`, falling back to the documented four.
 - **Re-renders**: the map stage does not re-render per frame; the canvas is fed outside React, and each corner
   reads its own slices.
-- **What the AI adds, the numbers**: `src/screens/results/aiGains.ts` (tested) reads `GET /results/ai-gains`
-  defensively: the pitch year is the first entry with `is_pitch: true` (with none flagged, older data, the first
-  usable entry), every other year is ignored, and the section is hidden when the pitch year lacks the AI or the
-  baseline. Nothing is hardcoded: the headline is `uplift` (per battery, `pct` as a fraction, `fleet_usd_year`),
+- **What the AI adds, the numbers**: `src/screens/results/aiGains.ts` (tested) reads `GET /results/ai-gains?year=`
+  defensively: the entry whose `year` is the year shown (none: the section is hidden, so a backend that ignores
+  `?year=` never passes 2025's numbers off as 2026's); without a year, the pitch year (the first entry with
+  `is_pitch: true`, or with none flagged the first usable entry). The section is hidden when that year lacks the
+  AI or the baseline. Nothing is hardcoded: the headline is `uplift` (per battery, `pct` as a fraction, `fleet_usd_year`),
   with any missing piece worked out from the two methods and the fleet size; the fleet size is
   `GET /results/pitch`'s `fleet_size`, else what the AI's own sums imply. Money follows the site's style
   ("$1.35 million"); ratios drop a trailing ".0" ("5.7×").
@@ -297,46 +407,78 @@ controller crashed" pulsing red, then 0 after the hand-over.
   and the lead on one line, then the bars, with the potential's note on one line; the explainer and charge levels
   are in the tooltip and read to screen readers. In windows up to 860 px tall the money's definition ("Gross
   wholesale value.") and the projection's reason move to tooltips, so each is one line. As a guard, LiveMap caps
-  the money corner at the room the fleet corner leaves (`--corner-tr-max`), so the two right-hand corners never
-  overlap; the money corner scrolls only if that is not enough.
+  the money corner at the room the charge panel and the battery corner leave (`--corner-tr-max`), so the
+  right-hand panels never overlap; the money corner scrolls only if that is not enough (see "Charge gauges, the
+  place").
 - **Mock** (`web/mock`): real prices for all four load zones and every 2025 preset, plus Sep 14–20, 2025 as
   2026's stand-in; simulated metro positions; contiguous controller blocks and round-robin hand-over like the
   backend; `battery_status` as of the latest tick, with availability and (while paused) crashes applied at once;
   a race shadow fleet and a second, all-online one for `potential`; the 2026 prediction for two days after the
   real prices end, from the median of the week before, smoothed (plausible, labelled practice data); `GET
-  /results/ai-gains` with the measured 2025 numbers from RUNLOG.md. Never in `dist/` (`scripts/check-dist.mjs`).
-  Tested in `mock/sim.test.ts` and `mock/v2.test.ts` (which also calls the public crash over HTTP).
+  /results/ai-gains` with the measured 2025 numbers from RUNLOG.md; the failure model (each worker's charge, a
+  crash that empties and stays down, the user restart with `worker_recovered`, offline halving, mirrored in the
+  race); full-year results for 2025 (measured) and 2026 (made up, split at Sep 20). Never in `dist/`
+  (`scripts/check-dist.mjs`). Tested in `mock/sim.test.ts`, `mock/v2.test.ts` and `mock/failures.test.ts`
+  (which also call the public crash and restart over HTTP).
 
 ## Measurements (mock, Chrome)
 
-- **Bundle**: 468.5 KB JS (155.2 KB gzip) and 50.9 KB CSS (11.0 KB gzip) with v2 (442.3 KB, 146.3 KB and 45.2 KB
-  before; 372.4 KB JS before the map). v2 adds about 26 KB of JS net (the timeline, the recorder, the zoom, the
-  crash popover and the years, minus presenter mode, "Find a battery" and the spike card).
+- **Bundle**: 401.8 KB JS (128.0 KB gzip) and 47.0 KB CSS (10.5 KB gzip) now. Removing "Show charts" and uPlot
+  took it from 468.5 KB JS (155.2 KB gzip) and 50.9 KB CSS to 386.0 KB and 42.0 KB; the charge panel, restarts
+  and Results by year add back about 16 KB of JS and 5 KB of CSS. (v2 was 468.5 KB, v1 442.3 KB; 372.4 KB JS
+  before the map.)
+- **Right-hand panels at 1280 × 800** (with the practice banner; the map is 717 px tall): a typical run, money
+  corner 96–369, charge panel 391–495 (104 px, centred), battery corner 533–788. The worst case (a 2026 run in its
+  prediction with the projected line, Dallas–Fort Worth selected, an outage's third race bar, a crashed
+  controller): money 323 px with no scrolling, charge panel 121 px (one line: "✕ 1 crashed · 19 serving
+  Dallas–Fort Worth"), battery corner 211 px with 2 events (`data-tight`); before the tight mode the money corner
+  had to scroll by 70 px. Without the banner (production) there are 31 px more.
+- **Right-hand panels at 1920 × 1080** (with the banner, 997 px): money 96–491 (396 px, the full wording), charge
+  panel 504–662 (158 px, 36 px gauges, centred), battery corner 823–1068; never tight.
 - **Frame**: 18.7 KB of JSON at 1 tick per frame, of which `battery_status` is 13,336 characters; about 1 KB
   deflated. `GET /fleet/layout`: 106,668 characters of positions. The recorder stores 10 KB per changed frame.
 - **The red-dots check** (paused, 40% of Houston offline): 0 → 5,177 red dot pixels within 1.4 s, the rest of the
   dots unchanged (5,184 → 5,096); legend "17,200 waiting · 2,800 offline".
-- **Right-hand corners at 1280 × 800**, the worst case (practice banner, a 2026 run in its prediction with the
-  projected line, Houston selected, the third race bar showing): the money corner's content is 323 px and fits
-  above the 354 px fleet corner with no scrolling (before the one-line notes it needed 358 px and scrolled by
-  31 px). At 1920 × 1080 the full wording shows with room to spare.
+- **Right-hand corners at 1280 × 800 before the charge panel** (v2, the same worst case with Houston): the money
+  corner's content was 323 px and fitted above the 354 px fleet corner with no scrolling.
+- **The charge panel checked in the browser** (mock): crashing controller 4 from its gauge showed "Crash
+  controller 4?", then the gauge dropped 0.33 → 0 in about 0.7 s with the red flash, "✕" and "—" after the
+  hand-over; "Restart controller 7?" brought controller 7 back at 99% (its batteries had been recharged by the
+  others through the cheap midday); taking controller 13 offline from the drawer took it 88% → 44% with the
+  ghost at 88%; scrubbing to before the page opened dimmed the gauges with the hint, and to recorded moments
+  showed the charge then.
 - **Results at 1280 × 800**: the three-card "What the AI adds" panel is 559 px tall (the four-card one with the
   year switch was 642 px), the cards 389 × 308 px, so it fits one screen when scrolled to.
 
-## How the site follows the contract (docs/API.md, 4879fde)
+## How the site follows the contract (docs/API.md, aee2832)
 
 - **Controllers**: `worker_id` 0–19 is shown as "Controller N" with N = worker_id + 1 everywhere. Event messages
-  are shown verbatim. Crash markers and the "Latest handover" line read `detail.controller`, `detail.adopted_by`
-  and `detail.ms`; the map reads `detail.worker_id`.
-- **`POST /chaos/kill`**: public, no passcode, no body; `?worker_id=N` when a tile was clicked. 200 → the button
+  are shown verbatim. The map and the timeline read `detail.worker_id` and `detail.adopted_by`.
+- **`Worker.usable_charge` / `charge_level`**: the gauge fills to `usable_charge` (0–1), else `(charge_level −
+  0.2) / 0.8`; `null` = it runs no batteries ("—"); missing = not known (dimmed). A `dead` controller is drawn
+  at 0% whatever it reports. `recovers_in_s` (dropped from the contract) is not read.
+- **The failure model**: a crash drops the gauge to 0% with ✕ and it stays down (the site never expects an
+  automatic restart); `offline_workers` marks a controller's batteries offline and its ghost at twice today's
+  level; `worker_recovered` (`detail.worker_id`) gives the controller its own block back in the client's
+  ownership replay. The map stays driven by `battery_status` alone, so either hand-over answer works there.
+- **`POST /workers/{worker_id}/restart`**: public, no body, from a crashed gauge's popover. 200 (the body is not
+  needed; the next frames show "starting", then the controller back) → the restart button waits 2 s; 409
+  `not_crashed` → "That controller is not down."; 429 → "One restart every 2 seconds, please." and a count-down
+  from `retry_after_s`; 404 `unknown_worker` → "There is no such controller."
+- **`POST /chaos/kill`**: public, no passcode, no body; `?worker_id=N` when a gauge was clicked. 200 → the button
   waits 2 s; 429 → "One crash every 2 seconds, please." and a count-down from `retry_after_s`; 409
   `already_dead` / `too_few_healthy` and 404 `unknown_worker` → the sentences above. No request carries
   `X-Presenter-Passcode`; `POST /presenter/check` and `GET /batteries` are no longer called.
+- **`GET /results/pitch?year=`**: always sent with the year shown. `real_until_utc` (a date inside the year)
+  turns on the split; `real_per_battery_usd` and `projected_per_battery_usd` of every strategy and the ceiling
+  draw it (without them the bars are plain). A fully real year (`real_until_utc: null`, projected 0) looks as
+  before. 404 → "No full-year results for 2026 yet." and the re-run. `POST /backtest` sends `{"strategies", "year"}`
+  with the year shown.
 - **`GET /settings`**: `years` (year, label, description, real_until_utc) and each preset's `year`; `year` in
   `settings`, editable like the rest (`editable` lists it). Without `years` the site still works, reading each
   preset's year from its date.
 - **Ticks**: `predicted: true` drives the badge, the shading and "projected"; missing means real.
-- **`prediction_started`**: shown verbatim, with the AI icon, in both feeds.
+- **`prediction_started`**: shown verbatim, with the AI icon, in the feed.
 - **`battery_status`**: 4-bit codes, battery i in byte i >> 1, low nibble for even i (tested); codes above 4 read as
   waiting; a short or malformed field falls back to "all waiting". Every frame's field is decoded, paused or not,
   so a backend that follows the freshness rule shows changes within a frame. After its own availability change
@@ -348,9 +490,10 @@ controller crashed" pulsing red, then 0 after the hand-over.
 - **`totals.by_location`, `availability.by_location`, `workers[].by_location`**: missing cities read as 0 (a dead
   controller has `{}`); a city's "On target" uses the tick's `error_pct` formula with its own target and actual and
   0.5% of its estimated nameplate.
-- **`GET /results/ai-gains`**: `ai` and `baseline` pick the two strategies (default forecast and bands); only the
-  `is_pitch` year is read; `share_of_best` and `surplus_mwh` as documented; the `spike_*` fields are no longer
-  shown; 404 `no_results` hides the section.
+- **`GET /results/ai-gains?year=`**: `ai` and `baseline` pick the two strategies (default forecast and bands);
+  only the entry for the year shown is read (without a year, the `is_pitch` one); `share_of_best` and
+  `surplus_mwh` as documented; the `spike_*` fields are no longer shown; 404 `no_results` hides the section. Its
+  real/projected split is taken from the Results (AiGains has no split fields).
 - **`POST /run/start` 503 `simulator_restarting`**, **`POST /backtest/{job_id}/cancel`** and everything else as
   before: settings item shapes, the idle message and `last_run`, `run_finished`, 404 `no_results`, `skipped`
   reasons, amounts as fleet totals, `error_pct` as a percentage.
@@ -358,7 +501,22 @@ controller crashed" pulsing red, then 0 after the hand-over.
 ## Open issues
 
 - Built and checked against docs/API.md and the mock only (years, prediction, potential, public crash, paused
-  freshness); not run against the backend being built in parallel.
+  freshness, the failure model, the restart endpoint, results by year); not run against the backend being built
+  in parallel.
+- **Which batteries a restarted controller takes back**: the contract says "its original batteries". The
+  client's ownership replay (the event-triggered crash look, and the timeline before the page was opened) takes
+  that to mean its own default block (numpy `array_split`), as the mock does. If the backend gives back the set it
+  held when it crashed (which can include batteries it had adopted), only those two uses are off; the gauges
+  and the map follow `workers[]` and `battery_status`.
+- **The crash drop's starting level**: when a crash empties the batteries a frame before the controller is
+  reported down, the drop animates from the highest level of the last 4 s. A crash of a controller that was
+  already empty shows no drop (there is nothing to lose); its ✕ still shows.
+- **Tight mode**: at 1280 × 800 with the practice banner, an outage and a city selected, the battery corner shows 2
+  events instead of 3. In production (no banner) it needs a crash, the projected line and a city at once.
+- **Restart rate limit**: the site keeps its own 2 s countdown for restarts; if the backend shares one limiter for
+  crashes and restarts, a restart right after a crash gets the friendly 429 and counts down from `retry_after_s`.
+- **2026's split in "What the AI adds"** comes from `GET /results/pitch?year=2026`; if the two responses come from
+  different re-runs they could disagree by a little.
 - Before the page was opened the map can show each city's action only (no per-battery past exists anywhere), and
   the corners' controllers are rebuilt from the kept events (the last 50): an older crash's hand-over may be
   missing. Availability and the race before the page was opened are unknown: the race hides, and the battery counts
@@ -374,25 +532,51 @@ controller crashed" pulsing red, then 0 after the hand-over.
 
 ## Requests for integrator
 
+0. **This round (Charge by controller, no "Show charts", the failure model, Results by year)**:
+   - **docs/UX.md**: remove "Show charts" (the "Live map" bullet 137 and the Screens > Live section's price,
+     power, controllers and money cards, which described that layout; the map page covers them). Bottom-right:
+     "batteries online and by state (the dot legend) and the last 3 events" (no tiles). Add a centre-right
+     "Charge by controller": 20 battery gauges, 1-10 over 11-20, filled to `usable_charge`; green working, amber
+     outline not responding, red ✕ crashed (0%, "—" once handed over), dashed red with a ghost mark offline
+     (half the charge lost); "N of 20 working" and chips; the tip on hover/focus; click a working one "Crash
+     controller 7?", a crashed one "Restart controller 7?"; a city highlights the ones serving it; the timeline
+     shows past charge, dimmed before the page was opened. "Crash a controller": click a controller's gauge
+     (not a tile). Results: follows the year (the run's, else the one picked on Start, else 2025), title says it,
+     2026 split "Real Jan 1 – Sep 20: $X per battery · Projected Sep 21 – Dec 31: $Y · 2026 estimate: $Z" in the
+     big number, the method bars (solid + hatched violet), the top days and "What the AI adds"; a 404 says "No
+     full-year results for 2026 yet." with the re-run.
+   - **RUNLOG.md**: an entry for this round; the older lines "Show charts opens the earlier detailed layout"
+     (around line 383) and the Live screen's "price chart … plus 20 controller tiles" (around line 246) are now
+     history.
+   - **Backend**:
+     - `usable_charge` and `charge_level` in every snapshot and frame's `workers` (the recorder keeps them per
+       frame, so the timeline shows past charge only if every frame carries them).
+     - `POST /workers/{worker_id}/restart`'s 429 should carry `retry_after_s` like the kill's; 409 `not_crashed`
+       for any controller that is not `dead` (the site offers Restart only on `dead` ones).
+     - `worker_recovered` with `detail.worker_id` (the client replays ownership from it); say in docs/API.md
+       whether "its original batteries" means its default block.
+     - `GET /results/ai-gains?year=2026` must return the 2026 entry (the site reads only the entry for the year
+       shown, never another year's); `GET /results/pitch?year=2026` with `real_until_utc` and both parts for
+       every strategy and the ceiling.
 1. **docs/UX.md**, to match what was built (2026-09-26):
    - Principle 6 (colours): green = selling, money and primary actions; **blue = charging** (the old "a ring
      while charging" is superseded), a lighter blue for neutral information and focus; violet = the AI's forecast
      and prediction; red = outages, failures and the Texas outline.
-   - "Show charts", price card: "shaded teal while charging and amber while selling" → blue while charging, green
-     while selling, as on the map; a violet wash over the AI's predicted prices.
+   - (Done by removing "Show charts": its price card's shading colours no longer matter.)
    - The old "Live map" code table (charging "green with a thin light ring") and the availability drawer's "Find a
      battery" line: mark them superseded by "Live map v2" or remove them.
    - Availability drawer: opens on the left, with a light backdrop, so the dots stay visible.
    - Race corner: compact third bar "All online" with "projected · Outages cost $790 so far"; the full label
-     "All batteries online (projected)" in the money card.
-   - Crashing: the tile popover "Crash controller 7?" with "Crash it" / "Cancel"; buttons count down "Next crash
+     "All batteries online (projected)" in its tooltip.
+   - Crashing: the gauge popover "Crash controller 7?" with "Crash it" / "Cancel"; buttons count down "Next crash
      in 2 s".
    - Zoom: the + / − buttons sit in the scope pill next to "All of Texas"; the + and − keys work too.
-   - Results, "What the AI adds": three cards (Earns more, Gets closer to perfect, Soaks up surplus power), the
-     pitch year (2025) only, no year switch, no 2024 note, no "Ready for spikes".
+   - Results, "What the AI adds": three cards (Earns more, Gets closer to perfect, Soaks up surplus power), for
+     the year shown (see 0), no year switch, no 2024 note, no "Ready for spikes".
 2. **Presenter mode leftovers outside the website**: `mk/fleet.mk` line 50 ("Presenter mode needs
    PRESENTER_PASSCODE…"), DEMO.md steps 1 and "Click Presenter mode…" (crashing is now public: just click
-   "Crash a controller" or a controller tile), and a RUNLOG.md entry saying presenter mode is gone.
+   "Crash a controller" or a controller's gauge, and a crashed gauge restarts it), and a RUNLOG.md entry saying
+   presenter mode is gone.
 3. **Backend**:
    - `battery_status` within one frame while paused, for availability changes and crashes (docs/API.md); the
      site shows whatever each frame carries.

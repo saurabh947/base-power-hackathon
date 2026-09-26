@@ -11,6 +11,7 @@ import { beginRun } from '../../live/liveStore.ts';
 import { navigate } from '../../lib/router.ts';
 import { useRetryAfter } from '../../lib/useCountdown.ts';
 import { checkBackend, useBackend } from '../../state/backend.ts';
+import { rememberYear } from '../../state/resultsYear.ts';
 import { RunSettingsCard } from './RunSettingsCard.tsx';
 
 export function StartScreen() {
@@ -58,6 +59,8 @@ export function StartScreen() {
 
   const onDraft = (next: EditableSettings) => {
     touched.current = true;
+    // The Results page shows the year picked here while no run is going (src/state/resultsYear.ts).
+    if (next.year !== draft.year) rememberYear(next.year);
     setDraft(next);
   };
 
@@ -70,6 +73,7 @@ export function StartScreen() {
     setBusy(true);
     setError(null);
     try {
+      rememberYear(draft.year);
       const started = await api.start(editablePart(draft, model.editable));
       if (started && typeof started.run_id === 'string' && started.settings) beginRun(started.run_id, started.settings);
       void checkBackend();

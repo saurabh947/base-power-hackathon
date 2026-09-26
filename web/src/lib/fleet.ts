@@ -12,14 +12,6 @@ export function controllerName(workerId: number): string {
   return `Controller ${workerId + 1}`;
 }
 
-/** The controller number people see, from an event's detail (prefers `controller`, else worker_id + 1). */
-export function controllerFromDetail(detail: Record<string, unknown> | undefined): number | null {
-  if (!detail) return null;
-  if (typeof detail.controller === 'number') return detail.controller;
-  if (typeof detail.worker_id === 'number') return detail.worker_id + 1;
-  return null;
-}
-
 export interface AreaRange {
   location: string;
   /** First and last battery index, inclusive. */

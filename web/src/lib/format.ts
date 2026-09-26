@@ -197,12 +197,6 @@ export function fmtPriceKwhShort(usdPerMwh: number): string {
   return fmtPriceKwh(usdPerMwh).replace(' per kWh', '/kWh');
 }
 
-/** "$120/MWh (12¢ per kWh)" */
-export function fmtPrice(usdPerMwh: number): string {
-  if (!finite(usdPerMwh)) return '–';
-  return `${fmtPriceMwh(usdPerMwh)} (${fmtPriceKwh(usdPerMwh)})`;
-}
-
 // ---- power and energy -------------------------------------------------------
 
 /** Magnitude only: "48.0 MW", "850 kW". Direction words come from powerDirection(). */

@@ -1,11 +1,12 @@
 // The live view as it was at an earlier moment of the run, for the timeline (docs/UX.md, "Live map v2").
 // The corners work from the tick history for any moment it holds: the clock, the prices, the power, and the
-// money (today's totals minus what the later ticks earned). The controllers, the availability and the race
-// come from the frames this page recorded (src/live/recorder.ts); before the page was opened, the
-// controllers are rebuilt from the worker events and the rest is unknown. Pure, so it is unit tested.
+// money (today's totals minus what the later ticks earned). The controllers (with their charge), the
+// availability and the race come from the frames this page recorded (src/live/recorder.ts); before the page
+// was opened, the controllers are rebuilt from the worker events, their charge is unknown, and so are the
+// availability and the race. Pure, so it is unit tested.
 
 import type { ByLocation, LiveEvent, LocationTotals, Tick, Totals, Worker, WorkerStatus } from '../api/types.ts';
-import { applyAdoption, defaultOwners } from '../map/owners.ts';
+import { applyAdoption, applyRecovery, defaultOwners } from '../map/owners.ts';
 import type { FrameRecord } from './recorder.ts';
 import type { LiveState } from './reducer.ts';
 
@@ -117,8 +118,10 @@ function eventMs(e: LiveEvent): number | null {
 
 /**
  * The controllers as they were at `tMs`, rebuilt from the worker events up to then: not responding after
- * worker_suspect, crashed after worker_dead, and their batteries handed out round-robin after worker_adopted
- * (src/map/owners.ts, like the backend). With `cities`, each controller's batteries are counted per city.
+ * worker_suspect, crashed after worker_dead, their batteries handed out round-robin after worker_adopted
+ * (src/map/owners.ts, like the backend), and back on their own block after a restart (worker_recovered). With
+ * `cities`, each controller's batteries are counted per city. How charged they were is not in the events, so
+ * charge_level and usable_charge are left out (unknown).
  */
 export function workersAt(template: readonly Worker[], events: readonly LiveEvent[], tMs: number, cities?: FleetCities): Worker[] {
   const n = template.length || 20;
@@ -137,6 +140,13 @@ export function workersAt(template: readonly Worker[], events: readonly LiveEven
       const by = Array.isArray(e.detail?.adopted_by) ? e.detail.adopted_by.filter((x): x is number => typeof x === 'number') : [];
       for (const a of by) adoptedFrom.get(a)?.push(w);
       if (owners) applyAdoption(owners, w, by);
+    } else if (e.kind === 'worker_recovered') {
+      status.set(w, 'healthy');
+      for (const list of adoptedFrom.values()) {
+        const k = list.indexOf(w);
+        if (k >= 0) list.splice(k, 1);
+      }
+      if (owners) applyRecovery(owners, w, n);
     }
   }
   let counts: Map<number, { total: number; byCity: number[] }> | null = null;
@@ -167,6 +177,8 @@ export function workersAt(template: readonly Worker[], events: readonly LiveEven
       adopted_from: adoptedFrom.get(w.worker_id) ?? [],
       last_tick_utc: null,
       by_location: byLocation,
+      charge_level: undefined,
+      usable_charge: undefined,
     };
   });
 }
@@ -220,10 +232,4 @@ export function projectedMoney(history: readonly Tick[], scope: string | null): 
     }
   }
   return any ? { usd, exact: !history[0]?.predicted } : null;
-}
-
-/** The first predicted tick in the history, if any (where the AI's prediction took over). */
-export function firstPredicted(history: readonly Tick[]): Tick | null {
-  for (const t of history) if (t.predicted) return t;
-  return null;
 }

@@ -1,14 +1,17 @@
-// "What the AI adds" on the Results page, from GET /results/ai-gains (docs/API.md). Pure, so the uplift
-// maths and the wording are unit tested.
+// "What the AI adds" on the Results page, from GET /results/ai-gains?year= (docs/API.md). Pure, so the
+// uplift maths and the wording are unit tested.
 //
-// It shows the pitch year only (2025): the first entry of `years` with `is_pitch: true`. Other years the API
-// may send are ignored (the human: no 2024 switch, no spike card). Nothing here is hardcoded: every figure
-// comes from the API.
+// It shows the year the Results page shows (the run's, or the one picked on Start): the entry of `years`
+// for that year. Without a year it shows the pitch year (the first entry with `is_pitch: true`). Other years
+// the API may send are ignored. Nothing here is hardcoded: every figure comes from the API. For a year with
+// an AI-predicted part (2026), the uplift is split into its real and projected parts using the Results'
+// real_per_battery_usd and projected_per_battery_usd.
 
 import type { AiGainsYear, StrategyGains, Uplift } from '../../api/types.ts';
 import { fmtCount, fmtHomesDay, fmtNumber, fmtPercent, fmtUsd, fmtUsdLarge, lowerFirst, shortLabel, strategyName } from '../../lib/format.ts';
+import { roundedParts, type Split, type YearSplit } from './model.ts';
 
-/** GET /results/ai-gains as the site uses it: the AI, the baseline, and the pitch year. */
+/** GET /results/ai-gains as the site uses it: the AI, the baseline, and the year shown. */
 export interface PitchGains {
   ai: string;
   baseline: string;
@@ -71,14 +74,20 @@ function readYear(v: unknown, ai: string, baseline: string): AiGainsYear | null 
 }
 
 /**
- * GET /results/ai-gains, read defensively. The pitch year is the first entry with `is_pitch: true`; other years
- * are ignored. With no entry flagged (older data), the first usable one stands in. Null (the section is hidden)
- * when the pitch year lacks the AI or the baseline, or nothing usable is there.
+ * GET /results/ai-gains, read defensively. With `year`, the entry for that year (none: null, so a backend that
+ * ignores ?year= never shows another year's numbers as this one's). Without it, the pitch year: the first entry
+ * with `is_pitch: true`, or with none flagged (older data) the first usable one. Null (the section is hidden)
+ * when that year lacks the AI or the baseline, or nothing usable is there.
  */
-export function readAiGains(raw: unknown): PitchGains | null {
+export function readAiGains(raw: unknown, wanted: number | null = null): PitchGains | null {
   if (!isObject(raw) || !Array.isArray(raw.years)) return null;
   const ai = typeof raw.ai === 'string' && raw.ai ? raw.ai : 'forecast';
   const baseline = typeof raw.baseline === 'string' && raw.baseline ? raw.baseline : 'bands';
+  if (wanted !== null) {
+    const entry = raw.years.find((y) => isObject(y) && y.year === wanted);
+    const year = entry === undefined ? null : readYear(entry, ai, baseline);
+    return year ? { ai, baseline, year } : null;
+  }
   const pitch = raw.years.find((y) => isObject(y) && y.is_pitch === true);
   if (pitch !== undefined) {
     const year = readYear(pitch, ai, baseline);
@@ -308,6 +317,45 @@ export function surplusCard(gains: PitchGains, year: AiGainsYear): SurplusCard |
   };
 }
 
+// ---- a year with an AI-predicted part (2026) --------------------------------------------------------------
+
+/** From GET /results/pitch: where the real prices end, and the AI's and the baseline's real and projected parts. */
+export interface SplitInput {
+  span: YearSplit;
+  ai: Split;
+  base: Split;
+}
+
+/** "Real Jan 1 – Sep 20: +$45 per battery · Projected Sep 21 – Dec 31: +$25 · 2026 estimate: +$70", in parts. */
+export interface GainsSplit {
+  real: string;
+  projected: string;
+  estimate: string;
+  /** For the "Earns more" card: "Real Jan 1 – Sep 20: $140 vs $95 · Projected Sep 21 – Dec 31: $60 vs $35". */
+  earnsReal: string;
+  earnsProjected: string;
+}
+
+/** Whole dollars: "$140". */
+const usd = (n: number) => fmtUsd(n, 0);
+/** Whole dollars with a sign: "+$45", "−$3". */
+const signedUsd = (n: number) => `${n < 0 ? MINUS : '+'}${fmtUsd(Math.abs(n), 0)}`;
+
+export function gainsSplit(input: SplitInput | null, year: number): GainsSplit | null {
+  if (!input) return null;
+  // Whole dollars that add up everywhere: each side's parts add up to its total (roundedParts), and the gains
+  // are the differences of those same shown numbers.
+  const [aiReal, aiProjected, aiTotal] = roundedParts(input.ai.real, input.ai.projected);
+  const [baseReal, baseProjected, baseTotal] = roundedParts(input.base.real, input.base.projected);
+  return {
+    real: `Real ${input.span.realSpan}: ${signedUsd(aiReal - baseReal)} per battery`,
+    projected: `Projected ${input.span.projectedSpan}: ${signedUsd(aiProjected - baseProjected)}`,
+    estimate: `${year} estimate: ${signedUsd(aiTotal - baseTotal)}`,
+    earnsReal: `Real ${input.span.realSpan}: ${usd(aiReal)} vs ${usd(baseReal)}`,
+    earnsProjected: `Projected ${input.span.projectedSpan}: ${usd(aiProjected)} vs ${usd(baseProjected)}`,
+  };
+}
+
 // ---- everything the section shows -------------------------------------------------------------------------
 
 export interface GainsView {
@@ -316,10 +364,12 @@ export interface GainsView {
   earns: EarnsCard | null;
   perfect: PerfectCard | null;
   surplus: SurplusCard | null;
+  /** A year with an AI-predicted part: the uplift split into real and projected; null for a year of real prices. */
+  split: GainsSplit | null;
 }
 
-/** The headline and the three cards, all for the pitch year. */
-export function gainsView(gains: PitchGains, knownFleetSize: number | null): GainsView {
+/** The headline and the three cards, for the year shown (and its real/projected split, when it has one). */
+export function gainsView(gains: PitchGains, knownFleetSize: number | null, splitInput: SplitInput | null = null): GainsView {
   const y = gains.year;
   return {
     year: y,
@@ -327,5 +377,6 @@ export function gainsView(gains: PitchGains, knownFleetSize: number | null): Gai
     earns: earnsCard(gains, y, knownFleetSize),
     perfect: perfectCard(gains, y),
     surplus: surplusCard(gains, y),
+    split: gainsSplit(splitInput, y.year),
   };
 }

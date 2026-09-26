@@ -55,11 +55,11 @@
   /* Offline rings, crashed dots and red edges on the map, and the legend's (src/map/looks.ts PALETTE.outage). */
   --outage: #ff5a5a;
 
+  /* The corners' mini charts and the timeline: the price line, power asked for and delivered, the zero line. */
   --chart-price: #eef0f2;
   --chart-plan: #adb4bc;
   --chart-delivered: #8ab4ff;
   --chart-grid: #3a3f45;
-  --chart-axis: #adb4bc;
 
   /*
    * Panels: translucent over the page, like the map's corners. --panel-solid is what their text sits on

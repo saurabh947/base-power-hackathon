@@ -1,7 +1,8 @@
 // What this page has seen of the run, for the timeline (docs/UX.md, "Live map v2"): for each frame, the
-// battery_status (the map's dots at that moment) and the controllers, availability and race then, keyed by the
-// sim time of the frame's latest tick. The past before the page was opened is not here: the corners rebuild it
-// from the tick history (src/live/past.ts) and the map shows city totals only.
+// battery_status (the map's dots at that moment) and the controllers (with each one's charge_level and
+// usable_charge, for the "Charge by controller" gauges), availability and race then, keyed by the sim time of
+// the frame's latest tick. The past before the page was opened is not here: the corners rebuild it from the
+// tick history (src/live/past.ts), the map shows city totals only and the gauges' charge is unknown.
 //
 // Memory: battery_status is kept as its packed bytes (4 bits a battery, 10 KB for 20,000), shared between
 // frames that did not change (a pause). Past the cap (8 MB, about 800 frames of 20,000 batteries: 13 minutes
@@ -17,6 +18,7 @@ export interface FrameRecord {
   tMs: number;
   /** battery_status as packed bytes, or null when the frame had none. */
   status: Uint8Array | null;
+  /** The controllers then, each with its charge (20 numbers a frame, next to battery_status's 10 KB). */
   workers: Worker[];
   availability: Availability | null;
   race: Race | null;

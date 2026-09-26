@@ -4,7 +4,7 @@
 
 import { ApiError } from './client.ts';
 
-export type ErrorContext = 'load' | 'start' | 'control' | 'availability' | 'kill' | 'backtest' | 'results';
+export type ErrorContext = 'load' | 'start' | 'control' | 'availability' | 'kill' | 'restart' | 'backtest' | 'results';
 
 export interface FriendlyError {
   title: string;
@@ -64,6 +64,14 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
           detail: `Everyone shares one fleet, so crashes are spaced out. ${wait}`,
         };
       }
+      if (context === 'restart') {
+        // docs/API.md: restarts are rate-limited like crashes.
+        return {
+          ...base,
+          title: 'One restart every 2 seconds, please.',
+          detail: `Everyone shares one fleet, so restarts are spaced out. ${wait}`,
+        };
+      }
       return {
         ...base,
         title: 'Too many requests right now.',
@@ -92,12 +100,20 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
         detail: server ?? 'Try again in a few seconds.',
       };
     case 409:
-      // docs/API.md POST /chaos/kill: our own words, which say what to do next.
+      // docs/API.md POST /chaos/kill and POST /workers/{id}/restart: our own words, which say what to do next.
       if (err.code === 'already_dead') {
         return {
           ...base,
           title: 'That controller has already crashed.',
-          detail: 'Pick one that is still working. Crashed controllers stay down until someone presses Reset.',
+          detail: 'Pick one that is still working. Crashed controllers stay down until someone restarts them (click one) or presses Reset.',
+        };
+      }
+      if (err.code === 'not_crashed') {
+        // docs/API.md POST /workers/{worker_id}/restart: only a crashed controller can be restarted.
+        return {
+          ...base,
+          title: 'That controller is not down.',
+          detail: 'Only a crashed controller can be restarted. It may have just been restarted by someone else.',
         };
       }
       if (err.code === 'too_few_healthy') {
@@ -109,7 +125,7 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
       }
       return { ...base, title: "That can't happen right now.", detail: server ?? 'The simulation changed. Try again.' };
     case 404:
-      if (context === 'kill' && err.code === 'unknown_worker') {
+      if ((context === 'kill' || context === 'restart') && err.code === 'unknown_worker') {
         return { ...base, title: 'There is no such controller.', detail: 'Controllers are numbered 1 to 20.' };
       }
       if (context === 'results' || err.code === 'no_results') {

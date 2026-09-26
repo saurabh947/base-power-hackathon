@@ -126,6 +126,20 @@ export interface Worker {
   adopted_from: number[];
   /** How many of its batteries are in each location, e.g. {"LZ_NORTH": 400, …}. */
   by_location?: Record<string, number>;
+  /** Capacity-weighted average charge of the batteries it owns now, 0.2-1.0; null when it owns none. */
+  charge_level?: number | null;
+  /**
+   * Usable energy left above the 20% reserve, 0-1: (charge_level − 0.2) / 0.8; null when it owns none. The
+   * controller panel shows this. A crash empties a controller's batteries (0); taking its batteries offline
+   * halves it (docs/API.md, failure model). Missing from an older backend.
+   */
+  usable_charge?: number | null;
+}
+
+/** POST /workers/{worker_id}/restart: a crashed controller is coming back. */
+export interface RestartResponse {
+  worker_id: number;
+  status: WorkerStatus;
 }
 
 export interface FailedCommand {
@@ -337,7 +351,17 @@ export interface TopDay {
   usd: number;
 }
 
-export interface StrategyResult {
+/**
+ * A year with an AI-predicted part (2026, docs/API.md Results): the per-battery figure split at real_until_utc
+ * into what real prices earned and what the AI's predicted prices project. The two add up to
+ * per_battery_usd_year; for a fully real year projected is 0. Missing from an older backend.
+ */
+interface RealProjectedSplit {
+  real_per_battery_usd?: number;
+  projected_per_battery_usd?: number;
+}
+
+export interface StrategyResult extends RealProjectedSplit {
   strategy: string;
   label: string;
   run_id: string;
@@ -351,7 +375,7 @@ export interface StrategyResult {
   top_days: TopDay[];
 }
 
-export interface Ceiling {
+export interface Ceiling extends RealProjectedSplit {
   label: string;
   per_battery_usd_year: number;
   fleet_usd_year: number;
@@ -366,6 +390,8 @@ export interface Results {
   assumptions: string[];
   strategies: StrategyResult[];
   ceiling: Ceiling | null;
+  /** The end of the last real interval (2026); null or missing when the whole year is real prices. */
+  real_until_utc?: string | null;
 }
 
 /** One decision method's full year in GET /results/ai-gains. Energy in MWh, prices in $/MWh. */

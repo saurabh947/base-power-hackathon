@@ -4,21 +4,26 @@
 // workers 0-6 are Houston, 7-14 Dallas–Fort Worth, and so on), and when one
 // dies it deals that controller's batteries out round-robin, in id order, to the
 // healthy controllers listed in worker_adopted.detail.adopted_by
-// (coordinator._reassign). The map uses this to flash a crashed controller's
-// batteries when a frame missed their "controller down" code.
+// (coordinator._reassign). A user restart (worker_recovered) gives the
+// controller its own block back (docs/API.md, failure model). The map uses this
+// to flash a crashed controller's batteries when a frame missed their
+// "controller down" code, and the timeline to rebuild the controllers before the
+// page was opened.
 
-/** Owner of every battery at the start of a run: `workers` contiguous chunks, the first ones one longer. */
-export function defaultOwners(size: number, workers: number): Int16Array {
-  const owners = new Int16Array(size);
+/** Worker `w`'s own block of battery indices, [start, end): `workers` contiguous chunks, the first ones one longer. */
+export function blockOf(size: number, workers: number, w: number): [number, number] {
   const n = Math.max(1, workers);
   const small = Math.floor(size / n);
   const extra = size % n;
-  let g = 0;
-  for (let w = 0; w < n; w++) {
-    const len = small + (w < extra ? 1 : 0);
-    owners.fill(w, g, g + len);
-    g += len;
-  }
+  const start = w * small + Math.min(w, extra);
+  return [start, start + small + (w < extra ? 1 : 0)];
+}
+
+/** Owner of every battery at the start of a run: each worker on its own block. */
+export function defaultOwners(size: number, workers: number): Int16Array {
+  const owners = new Int16Array(size);
+  const n = Math.max(1, workers);
+  for (let w = 0; w < n; w++) owners.fill(w, ...blockOf(size, n, w));
   return owners;
 }
 
@@ -42,4 +47,10 @@ export function applyAdoption(owners: Int16Array, from: number, adoptedBy: reado
     owners[g] = adoptedBy[i % adoptedBy.length];
   });
   return cohort;
+}
+
+/** A restarted controller takes its own block back, from whoever runs those batteries now. */
+export function applyRecovery(owners: Int16Array, worker: number, workers: number): void {
+  if (!Number.isInteger(worker) || worker < 0 || worker >= Math.max(1, workers)) return;
+  owners.fill(worker, ...blockOf(owners.length, workers, worker));
 }

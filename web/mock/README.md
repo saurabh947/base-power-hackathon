@@ -7,7 +7,10 @@ including the pinned details: `worker_id` 0–19 shown as "Controller N+1", batt
 map fields (`GET /fleet/layout`, `battery_status`, `totals.by_location`, `workers[].by_location` and battery
 `city`/`lonlat`), the race (`race` in snapshots and frames, with `potential` and `shows_potential`, and
 `race_update` events), the years (`years` and each preset's `year` in `GET /settings`, `year` in settings,
-`predicted` ticks and the `prediction_started` event), the public `POST /chaos/kill` and `GET /results/ai-gains`.
+`predicted` ticks and the `prediction_started` event), the public `POST /chaos/kill` and `GET /results/ai-gains`,
+and the failure model: each worker's `charge_level` and `usable_charge`, a crash that empties a controller's
+batteries and stays down, `POST /workers/{worker_id}/restart` with `worker_recovered`, and a controller taken
+offline losing half its usable charge.
 
 ## What is real and what is simulated
 
@@ -15,8 +18,8 @@ map fields (`GET /fleet/layout`, `battery_status`, `totals.by_location`, `worker
 |---|---|
 | **Real** | 2025 electricity prices: ERCOT real-time settlement point prices for the four Texas Triangle load zones (LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN), 15-minute intervals, for every 2025 replay preset's local date and the day after (192 rows each), plus September 14–20, 2025 (672 rows), in `data/ercot_rt_lz_preset_days_2025.json`. |
 | **Stand-ins** | 2026's "real" prices: the mock has no 2026 data, so its 2026 replays use 2025's real prices from the same dates, a year on (January 1–2, and September 14–20 as 2026's last real week). |
-| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of `GET /results/ai-gains` (2025 only, the pitch year: the site shows no other year), and in `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. |
-| **Simulated** | The AI's 2026 prediction after the real prices end (2026-09-21T05:00Z, midnight on Sep 21 in Texas): for each 15 minutes, the median of the same time of day over the last 7 real days, pulled a little towards their mean and smoothed over an hour, for two days. Plausible practice data, not TimesFM. And everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
+| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of 2025's `GET /results/ai-gains` (the pitch year), and in 2025's `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. 2026's full-year results are made up (below). |
+| **Simulated** | The AI's 2026 prediction after the real prices end (2026-09-21T05:00Z, midnight on Sep 21 in Texas): for each 15 minutes, the median of the same time of day over the last 7 real days, pulled a little towards their mean and smoothed over an hour, for two days. Plausible practice data, not TimesFM. All of 2026's full-year results (`GET /results/pitch?year=2026` and `GET /results/ai-gains?year=2026`: a little above 2025's, split at Sep 20 into `real_per_battery_usd` and `projected_per_battery_usd`, `SPLIT_2026` in `gains.ts`). And everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
 
 The site shows a "Practice data" banner whenever it is connected to this mock (its `GET /health` version starts
 with `mock`), the mock's forecasts are labelled `mock (simulated, not TimesFM)`, and its full-year results list
@@ -60,6 +63,23 @@ A preset without loaded prices answers **501** `not_in_mock` on `POST /run/start
   contiguous blocks of 1,000: controllers 1-7 run Houston, 8-15 Dallas–Fort Worth, 16-17 San Antonio, 18 runs 600
   San Antonio and 400 Austin, 19-20 Austin (`workers[].by_location` lists only the cities a controller holds, and
   is empty once it is dead). A crashed controller's batteries go round-robin, in id order, to the healthy ones.
+- **Each controller's charge** (docs/API.md Worker): `charge_level` is the capacity-weighted charge of the
+  batteries it runs now, `usable_charge` = (`charge_level` − 0.2) / 0.8, the share above the 20% reserve; both
+  are `null` once it runs none (crashed and handed over, or restarting).
+- **The failure model** (docs/API.md, the human's rules):
+  - A crash (`POST /chaos/kill`) empties that controller's batteries to the reserve at once (`usable_charge` 0;
+    the race shadow's same batteries too). The others take them over as before and run them, recharging them
+    when it's cheap, so their own gauges dip. **Nothing comes back on its own**: the controller stays `dead`
+    until Reset or a user restart.
+  - `POST /workers/{worker_id}/restart` (public, one per 2 s like crashes): `200 {"worker_id", "status":
+    "starting"}`, `409 not_crashed` unless it is `dead`, `404 unknown_worker`. At the next step (a second later
+    while paused or finished) it takes its own block back with whatever charge those batteries have by then and
+    emits `worker_recovered` ("Controller 7 is back and has taken back its 1,000 batteries in Houston, at 12%
+    usable charge.", with `detail.worker_id`, `controller`, `batteries` and `by_location`).
+  - Taking a controller's batteries offline (`/availability` scope `worker`) halves their usable charge at that
+    moment (the race's too); while offline they don't move; back online they carry on from there. Going offline
+    again while offline changes nothing. City and single-battery offline change no charge.
+  - The potential fleet (all online) never loses charge, so `shortfall_usd` counts the lost energy.
 - **Positions** (`GET /fleet/layout`, `layout.ts`): seeded Gaussian blobs around real places in each metro
   (downtowns, suburbs, satellite cities), kept inside the Texas outline, rounded to 0.001° like the API. The same
   fleet always gets the same map.
@@ -106,7 +126,7 @@ Knobs (environment variables, for either mode):
 |---|---|
 | `MOCK_COLD_START_MS` | Hold every request (and refuse WebSockets) for this long after start, like a Cloud Run cold start. Try `8000` to see "Waking up the simulator…". |
 | `MOCK_WS=off` | Refuse WebSocket upgrades, so the site falls back to polling `GET /state`. |
-| `MOCK_NO_RESULTS=1` | `GET /results/pitch` and `GET /results/ai-gains` answer 404 `no_results` until a full-year re-run finishes. |
+| `MOCK_NO_RESULTS=1` | `GET /results/pitch` and `GET /results/ai-gains` answer 404 `no_results`, for every year, until a full-year re-run of that year finishes. `MOCK_NO_RESULTS=2026` (or `2025,2026`) does it for those years only. |
 | `MOCK_NO_AI_GAINS=1` | `GET /results/ai-gains` always answers 404 `no_results` (a backend without them yet): the Results page shows no "What the AI adds". |
 | `MOCK_BACKTEST_FAIL=1` | Full-year re-runs end with status `failed`. |
 
@@ -118,20 +138,24 @@ Knobs (environment variables, for either mode):
   `battery_status`, so after an availability change with no run the site fetches `GET /state` to redraw the map.
 - `GET /fleet/layout` sends its version as an `ETag` and answers a matching `If-None-Match` with 304.
 - Rate limits match docs/API.md: start and reset share one call per 5 s, availability 10 per second, crashes
-  one per 2 s for everyone together; limited calls answer 429 with `retry_after_s` and `Retry-After`.
+  one per 2 s for everyone together, restarts likewise (their own limiter); limited calls answer 429 with
+  `retry_after_s` and `Retry-After`.
 - `POST /chaos/kill` is public (no passcode) and takes an optional `worker_id` (0–19; a random working one
   without it): 409 `already_dead` for a controller that is already down, 409 `too_few_healthy` when only two
   are left working, 404 `unknown_worker` for another number.
 - A crashed controller misses two 5-minute steps: at the first it is "not responding", at the second it is marked
-  crashed; its batteries miss both steps' orders (those become failed commands) and show as code 4, and are handed
-  over after the second. Worker events carry `detail.worker_id`, `detail.controller` and, for `worker_suspect`
+  crashed; its batteries (emptied at the crash) miss both steps' orders (those become failed commands when there
+  was anything to do) and show as code 4, and are handed over after the second. Worker events carry `detail.worker_id`, `detail.controller` and, for `worker_suspect`
   and `worker_adopted`, `detail.by_location`; `worker_adopted` adds `adopted_by` and `ms`. While paused,
   detection uses wall-clock heartbeats instead (2 s, then 6 s), which is the easiest way to watch a crash on the
   map: pause, crash a controller, watch its batteries pulse red, then the hand-over.
 - Cities that switch action at the same step share one event ("Batteries in all four cities started selling at
   about $1,757/MWh"), and so do price spikes.
 - `POST /backtest` while a job runs returns that job's id; job status includes `skipped` (always empty here). A
-  job takes 6 s.
+  job takes 6 s and re-runs the body's `year` (2025 or 2026, else 400 `invalid_year`; the pitch year without one).
+- `GET /results/pitch?year=` and `GET /results/ai-gains?year=` answer for 2025 (the default) and 2026; any other
+  year is 404 `no_results`. 2025 carries `real_until_utc: null` and `projected_per_battery_usd: 0`, 2026
+  `real_until_utc` 2026-09-21T05:00Z and both parts for every method and the ceiling.
 - `POST /backtest/{job_id}/cancel` stops a running job: `200 {"status": "cancelled"}`, then its status reads
   `cancelled`, nothing is stored and the previous results stay; a `backtest_done` event says it was stopped.
   `409 not_running` once it has finished or been stopped, `404 unknown_job` for an unknown id.
@@ -140,7 +164,7 @@ Knobs (environment variables, for either mode):
 
 | File | Purpose |
 |---|---|
-| `sim.ts` | The simulated run, the race, the years and the 2026 prediction (pure; unit-tested in `sim.test.ts` and `v2.test.ts`, which also calls the public crash over HTTP) |
+| `sim.ts` | The simulated run, the race, the years, the 2026 prediction and the failure model (pure; unit-tested in `sim.test.ts`, `v2.test.ts` and `failures.test.ts`, which also call the public crash and restart over HTTP) |
 | `gains.ts` | `GET /results/ai-gains`: the measured 2025 numbers copied from RUNLOG.md |
 | `layout.ts` | Simulated battery positions for `GET /fleet/layout` |
 | `api.ts` | HTTP routes, errors, rate limits, WebSocket broadcast, CORS |

@@ -1,6 +1,6 @@
 // A minimal external store. Components read slices through useStore(selector),
 // so a live frame every second re-renders only the panels whose slice changed,
-// never the whole app. Charts go further and subscribe imperatively.
+// never the whole app. The map's canvas goes further and subscribes imperatively.
 
 import { useSyncExternalStore } from 'react';
 

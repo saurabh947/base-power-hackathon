@@ -1,7 +1,8 @@
 // The live map (docs/UX.md, Live map and "Live map v2"): a dark gray full-window stage with the red Texas
 // outline, the batteries as dots, clickable city labels, one zoom level (all of Texas or the Texas Triangle),
-// the timeline, and the four corner panels. Canvas drawing lives in src/map/renderer.ts; this component wires
-// it to the live data, the selection, the zoom, the timeline, the pointer and the keyboard.
+// the timeline, the four corner panels and, at the centre right, the controllers' charge (ChargePanel.tsx).
+// Canvas drawing lives in src/map/renderer.ts; this component wires it to the live data, the selection, the
+// zoom, the timeline, the pointer and the keyboard.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from 'react';
 import { Icon } from '../../../components/Icon.tsx';
@@ -17,7 +18,8 @@ import { dispatchSelection, escapeClears, useSelectedCity, type SelectionAction 
 import { CHARGING, DOWN, OFFLINE, SELLING, WAITING } from '../../../map/status.ts';
 import { zoomPadding } from '../../../map/viewports.ts';
 import { useTechnical } from '../../../state/prefs.ts';
-import { ClockCorner, ControlsCorner, FleetCorner, MoneyCorner } from './corners.tsx';
+import { ChargePanel } from './ChargePanel.tsx';
+import { BatteriesCorner, ClockCorner, ControlsCorner, MoneyCorner } from './corners.tsx';
 import { PREFERRED_SIDES, placeLabels, type LabelItem, type Rect } from './labels.ts';
 import { momentLabel } from './timeline.ts';
 
@@ -127,16 +129,17 @@ function ViewingChip({ chipRef }: { chipRef: { current: HTMLDivElement | null } 
 
 interface Props {
   onOpenAvailability: () => void;
-  onShowCharts: () => void;
   /** The run and connection notice (idle, finished, can't reach the simulator), if any. */
   notice: ReactNode;
 }
 
-/** Space kept between the two right-hand corners, and between them and the map's top and bottom edges. */
+/** Space kept between the right-hand panels (money, charge, batteries), and between them and the map's edges. */
 const RIGHT_GAP = 10;
 const EDGE = 12;
+/** The most one "What just happened" item takes: two lines and the gap before it. */
+const ONE_EVENT = 40;
 
-export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
+export function LiveMap({ onOpenAvailability, notice }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
@@ -147,12 +150,14 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
   const trRef = useRef<HTMLDivElement>(null);
   const blRef = useRef<HTMLDivElement>(null);
   const brRef = useRef<HTMLDivElement>(null);
+  const mrRef = useRef<HTMLDivElement>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   const captionRef = useRef<HTMLParagraphElement>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
   const chipRef = useRef<HTMLDivElement>(null);
   const labelRefs = useRef(new Map<string, HTMLButtonElement>());
   const boxesRef = useRef<CityBox[]>([]);
+  const tightRef = useRef(false);
 
   const selected = useSelectedCity();
   const cities = useCities();
@@ -173,7 +178,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
   const onPriceRow = useCallback((location: string) => select({ type: 'label', location }), [select]);
 
   useEffect(() => holdMapFeed(), []);
-  // Leaving the map (to "Show charts" or another page) goes back to live: only the map has the timeline.
+  // Leaving the map (for another page) goes back to live: only the map has the timeline.
   useEffect(() => () => backToLive(), []);
 
   // ---- labels ---------------------------------------------------------------------
@@ -182,7 +187,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
     const area = areaRef.current;
     const l = layoutStore.get().layout;
     if (!area || !l) return;
-    const obstacles = [tlRef.current, trRef.current, blRef.current, brRef.current, scopeRef.current, captionRef.current, noticeRef.current, chipRef.current]
+    const obstacles = [tlRef.current, trRef.current, mrRef.current, blRef.current, brRef.current, scopeRef.current, captionRef.current, noticeRef.current, chipRef.current]
       .map(rectOf)
       .filter((r): r is Rect => r !== null);
     const items: (LabelItem & { batteries: number })[] = [];
@@ -213,16 +218,34 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
   }, []);
 
   /**
-   * The money corner (top right, which also holds the race) and the fleet corner (bottom right) share the
-   * right edge. In a short window, cap the money corner's height at the room the fleet corner leaves, so the
-   * two never overlap; it scrolls inside only then (css: .corner-slot-tr > .corner).
+   * Three panels share the right edge: the money corner (top, which also holds the race), the controllers'
+   * charge (centre) and the battery corner (bottom). The charge panel sits at the vertical centre, moved up or
+   * down only as far as it must to clear the other two. In a short window the money corner is capped at the
+   * room the other two leave, so none overlap; it scrolls inside only then (css: .corner-slot-tr > .corner).
    */
   const fitRightCorners = useCallback(() => {
     const root = rootRef.current;
+    const tr = trRef.current;
+    const mr = mrRef.current;
     const br = brRef.current;
     if (!root || !br) return;
-    const room = root.clientHeight - br.offsetHeight - 2 * EDGE - RIGHT_GAP;
+    const h = root.clientHeight;
+    const mid = mr?.offsetHeight ?? 0;
+    // When the three do not fit (a short window with everything showing: the race's third bar, the projected
+    // line, a city, a crash), the battery corner lists the last 2 events instead of 3 (css: .livemap[data-tight]).
+    // It lists 3 again only once there is room for one more, so it does not flicker.
+    const trNeed = (tr?.firstElementChild as HTMLElement | null)?.scrollHeight ?? tr?.offsetHeight ?? 0;
+    const slack = h - trNeed - mid - br.offsetHeight - 2 * EDGE - (mid ? 2 : 1) * RIGHT_GAP;
+    tightRef.current = root.clientWidth >= STACKED_MAX_WIDTH && (tightRef.current ? slack < ONE_EVENT : slack < 0);
+    root.toggleAttribute('data-tight', tightRef.current);
+    const room = h - br.offsetHeight - 2 * EDGE - RIGHT_GAP - (mid ? mid + RIGHT_GAP : 0);
     root.style.setProperty('--corner-tr-max', `${Math.max(180, Math.floor(room))}px`);
+    if (tr && mid) {
+      const lo = EDGE + tr.offsetHeight + RIGHT_GAP;
+      const hi = h - EDGE - br.offsetHeight - RIGHT_GAP - mid;
+      const top = hi < lo ? lo : Math.min(hi, Math.max(lo, Math.round((h - mid) / 2)));
+      root.style.setProperty('--corner-mr-top', `${top}px`);
+    }
     // The corners' width, for what sits between them: the scope pill, and (zoomed in, when the Triangle fills
     // the middle) a notice as a compact bar at the bottom centre (css: .livemap.is-zoomed .map-notice).
     const tl = tlRef.current;
@@ -240,7 +263,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
       fitRightCorners();
       placeLabelsNow();
     });
-    for (const el of [rootRef.current, tlRef.current, trRef.current, blRef.current, brRef.current]) if (el) ro.observe(el);
+    for (const el of [rootRef.current, tlRef.current, trRef.current, mrRef.current, blRef.current, brRef.current]) if (el) ro.observe(el);
     return () => ro.disconnect();
   }, [placeLabelsNow, fitRightCorners]);
 
@@ -518,11 +541,14 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
       ) : null}
 
       <div className="corner-slot corner-slot-bl" ref={blRef}>
-        <ControlsCorner onOpenAvailability={onOpenAvailability} onShowCharts={onShowCharts} />
+        <ControlsCorner onOpenAvailability={onOpenAvailability} />
       </div>
       <LiveDataContext.Provider value={shownStore}>
+        <div className="corner-slot corner-slot-mr" ref={mrRef}>
+          <ChargePanel scope={selected} />
+        </div>
         <div className="corner-slot corner-slot-br" ref={brRef}>
-          <FleetCorner scope={selected} />
+          <BatteriesCorner scope={selected} />
         </div>
       </LiveDataContext.Provider>
 
