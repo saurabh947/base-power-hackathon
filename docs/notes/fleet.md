@@ -545,6 +545,9 @@ Built against docs/API.md as of 4879fde. Code: `src/data/years.py`, `src/feeds/p
 | Potential vs live, no outage, 20,000 batteries, 288 ticks | shortfall **0.0** (bit for bit) |
 | M3 at 2 ticks/s with the potential, kill worker 7 at tick 20 | 5.08% on the kill tick, then 0.000%; code 4 on ticks 21-22 for its 1,000 batteries |
 | Crash while paused → code 4 in a frame | 0.24 s after the kill (test) |
+| End to end, the whole backend (`src.launcher`, 20,000 batteries, `PRICE_SOURCE=postgres`), 2026 "Where real prices end" at 10 ticks/s, AI live | `run_started` names the cutoff; `prediction_started` at 2026-09-20T05:00Z; the first predicted tick's prices are the p50 ($30.57–31.22); hourly virtual forecasts in the frames; by 4 am the AI $13,453.31 vs the simple rule $9,889.80, potential = live exactly (shortfall 0.0) |
+| Same run, paused: worker 7 offline | the next frame: code 0 on exactly its 1,000 batteries, the other 19,000 unchanged, `shows_potential` true |
+| Same run, paused: `POST /chaos/kill?worker_id=12` (no passcode), then another at once | 200, then 429 `rate_limited` (retry 2 s); code 4 on its 1,000 batteries in a frame 0.97 s after the kill (1 s frames); declared dead 5.0 s after (6 s TTL), then code 4 on none |
 
 ## Open issues
 
