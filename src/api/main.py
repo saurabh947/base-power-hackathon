@@ -500,6 +500,6 @@ def _fallback_snapshot() -> dict:
     """What viewers get when Redis is unreachable: an idle fleet, so the page still renders."""
     idle = backend().idle_snapshot()
     return {"type": "snapshot", "run_id": None, "status": "idle", "sim_time_utc": None,
-            "speed_tps": idle["speed_tps"], "settings": idle["settings"], "history": [], "totals": idle["totals"],
+            "speed_tps": idle["speed_tps"], "settings": None, "history": [], "totals": idle["totals"],
             "workers": [], "failed_commands": {"count": 0, "recent": []}, "availability": idle["availability"],
             "events": [], "forecast": {}}

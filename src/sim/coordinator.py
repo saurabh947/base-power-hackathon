@@ -691,11 +691,13 @@ class Coordinator:
 
     def _ctl_speed(self, args: Mapping):
         speed = ctl.parse_speed(args.get("speed_tps"), allow_max=self.allow_max_speed)
-        if self.run is not None:
-            self.run.speed = None if speed == "max" else float(speed)
-            self.run.settings["speed_tps"] = speed
-            self.run.next_tick_at = time.monotonic()
-            self._emit("speed_changed", "info", f"Speed changed to {ctl.speed_phrase(speed)}.", detail={"speed_tps": speed})
+        if self.run is None:
+            raise ctl.ControlError(409, "no_active_run", "There's no replay running to change the speed of.")
+        # the next snapshot/frame shows it in both speed_tps and settings.speed_tps (docs/API.md)
+        self.run.speed = None if speed == "max" else float(speed)
+        self.run.settings["speed_tps"] = speed
+        self.run.next_tick_at = time.monotonic()
+        self._emit("speed_changed", "info", f"Speed changed to {ctl.speed_phrase(speed)}.", detail={"speed_tps": speed})
         self._snapshot_dirty = True
         return {"speed_tps": speed}, None
 
@@ -838,7 +840,7 @@ class Coordinator:
         return run_id
 
     def _retire_run(self) -> None:
-        if self.run is not None and self.run.ticks_done:
+        if self.run is not None:  # the idle WebSocket message sums up the run a reset or new start replaced
             self.last_run = {"run_id": self.run.run_id, "totals": self._totals()}
         self.run = None
 
@@ -1671,11 +1673,13 @@ def _keep_forecasts_warm(co: Coordinator, every_s: float = 0.8 * STRATEGY_CACHE_
     while not co._stop:
         t0 = time.monotonic()
         try:
-            _, name, warning = build_strategies("forecast", co.cfg, co.layout.locations, refresh=True)
-            if warning:
-                _log(f"forecast strategy not ready: {warning}")
+            strategies, name, warning = build_strategies("forecast", co.cfg, co.layout.locations, refresh=True)
+            counts = {loc: len((getattr(s, "books", None) or {}).get(loc, ())) for loc, s in strategies.items()}
+            if warning or not all(counts.values()):
+                _log(f"forecast strategy not ready ({warning or f'forecasts cached: {counts}'}); "
+                     "runs that ask for it use the simple rule")
             else:
-                _log(f"forecast strategies loaded in {time.monotonic() - t0:.1f}s")
+                _log(f"forecast strategies loaded in {time.monotonic() - t0:.1f}s ({counts} forecasts)")
         except Exception as exc:
             _log(f"forecast warm-up failed: {exc!r}")
         deadline = time.monotonic() + every_s

@@ -42,7 +42,7 @@ def snapshot_message(backend: Backend, cursor: LiveCursor | None = None, *, hist
         "status": snap.get("status", "idle"),
         "sim_time_utc": snap.get("sim_time_utc"),
         "speed_tps": snap.get("speed_tps"),
-        "settings": snap.get("settings"),
+        "settings": snap.get("settings") if run_id else None,  # no run, no replay settings (as the mock)
         "history": ticks,
         "totals": snap.get("totals"),
         "workers": snap.get("workers", []),

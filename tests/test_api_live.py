@@ -72,7 +72,7 @@ def _wait(pred, timeout=10.0):
 
 def _assert_common(msg):
     if msg["type"] == "snapshot":
-        assert set(msg["settings"]) == SETTINGS_KEYS
+        assert (msg["settings"] is None) if msg["run_id"] is None else (set(msg["settings"]) == SETTINGS_KEYS)
     assert set(msg["totals"]) == {"revenue_usd", "sold_kwh", "bought_kwh", "ticks"}
     assert all(set(w) == WORKER_KEYS for w in msg["workers"])
     assert set(msg["failed_commands"]) == {"count", "recent"} and len(msg["failed_commands"]["recent"]) <= 10
@@ -172,7 +172,9 @@ def test_forecasts_ride_along_only_when_new(live, monkeypatch):
 
 def test_run_controls(live):
     client, co = live
-    assert client.post("/run/pause").status_code == 409  # nothing to pause yet
+    for path, body in (("/run/pause", None), ("/run/resume", None), ("/run/speed", {"speed_tps": 5})):
+        r = client.post(path, json=body)  # nothing to control yet
+        assert r.status_code == 409 and r.json()["error"] == "no_active_run", path
     run_id = client.post("/run/start", json={"speed_tps": 10, "strategy": "bands"}).json()["run_id"]
     assert _wait(lambda: co.run is not None and co.run.k >= 2)
     assert client.post("/run/pause").json() == {"status": "paused"}
@@ -180,7 +182,13 @@ def test_run_controls(live):
     time.sleep(0.4)
     assert co.run.k == k and client.get("/health").json()["status"] == "paused"
     assert client.post("/run/resume").json() == {"status": "running"}
-    assert client.post("/run/speed", json={"speed_tps": 5}).json() == {"speed_tps": 5}
+    with client.websocket_connect("/live") as ws:
+        assert ws.receive_json()["speed_tps"] == 10
+        assert client.post("/run/speed", json={"speed_tps": 5}).json() == {"speed_tps": 5}
+        frame = _recv_until(ws, lambda m: m["type"] == "frame")  # the very next frame shows the new speed
+        assert frame["speed_tps"] == 5
+    state = client.get("/state").json()
+    assert state["speed_tps"] == 5 and state["settings"]["speed_tps"] == 5
     assert _wait(lambda: co.run.k > k)
     assert co.run.run_id == run_id and co.run.speed == 5
     kinds = [e["kind"] for e in co.events]
