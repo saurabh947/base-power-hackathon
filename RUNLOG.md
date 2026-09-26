@@ -430,3 +430,25 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   - Live's bottom-left presenter link is gone.
   - Results' "Re-run the full year" has a Stop button, enabled only while a re-run runs.
 - **Tests.** 344 website tests.
+
+## Live race and the AI section, deployed (2026-09-26)
+
+- **Backend** revision from commit f7379fb. **Website** deployed.
+- **Stored results.** The 2025 (pitch) and 2024 backtests were re-run in the cloud, so the stored runs carry `metrics.insights`.
+  - `/results/ai-gains` returns: 2025 uplift +$67.28 per battery (+54.4%), +$1.35M for the fleet; 2024 uplift +$157.75 (+138.7%).
+- **Demo day, chosen from the daily race table** (`insights --daily --pair bands,forecast`; both fleets start at 90% at 6 pm, as the live race does).
+  - 2025-05-30 ranks first: AI $38,936 vs simple rule $17,536.
+  - New preset `ai_best_evening`, now the default. July 11 stays as a preset; the AI leads there by only ~$1.5k.
+- **Race narration.** `race_update` now fires at `api.race_spike_usd_mwh` = $300/MWh, separate from the $1,000 `price_spike` alert.
+- **Live race on the deployed system (May 30):**
+
+  | Time | Simple rule | AI | State |
+  |---|---|---|---|
+  | 7:05 pm | $11,744 | $1,151 | simple rule 39% charged, AI 86% |
+  | 9:00 pm | | | "Prices jumped to $389 in all four cities…" |
+  | 9:45 pm | | | "The AI is now $21,330 ahead of the simple rule." |
+  | midnight | $17,536 | $38,936 | AI ahead by $21,401 |
+
+  The midnight figures equal the backtest race table.
+- **Stop.** The cloud test: start a re-run → cancel returns 200 `cancelled` → a second cancel returns 409 `not_running` → the pitch results are unchanged.
+- **Tests:** 540 backend and 344 website tests passing. DEMO.md is rewritten for the new flow.
