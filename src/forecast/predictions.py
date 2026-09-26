@@ -167,13 +167,16 @@ def clear_cache() -> None:
 
 
 def load(location: str, *, max_cutoff: datetime | None = None, model: str | None = None, source: str | None = None,
-         cache_dir: Path | None = None, refresh: bool = False) -> PredictionPath | None:
+         cache_dir: Path | None = None, refresh: bool = False, conn=None) -> PredictionPath | None:
     """The stored path for `location` with the latest cutoff at or before max_cutoff (any cutoff if None).
-    Cached for CACHE_S per process (the coordinator and the API ask per run and per forecast lookup)."""
+    Cached for CACHE_S per process (the coordinator and the API ask per run and per forecast lookup); a given
+    `conn` (tests: a scratch schema) is read directly, uncached."""
     model = model or default_model()
     source = source or store.default_source()
     folder = Path(cache_dir) if cache_dir is not None else default_cache_dir()
     cut = None if max_cutoff is None else pd.Timestamp(max_cutoff).tz_convert("UTC")
+    if conn is not None:
+        return _load_db(location, cut, model, conn)
     key = (location, None if cut is None else cut.value, model, source, str(folder))
     now = time.monotonic()
     with _lock:
@@ -202,23 +205,25 @@ def _load_parquet(location: str, cut: pd.Timestamp | None, model: str, folder: P
     return PredictionPath.from_frame(df) if not df.empty else None
 
 
-def _load_db(location: str, cut: pd.Timestamp | None, model: str) -> PredictionPath | None:
+def _load_db(location: str, cut: pd.Timestamp | None, model: str, conn=None) -> PredictionPath | None:
     from src import db
 
-    with db.connect() as conn:
-        (table,) = conn.execute("SELECT to_regclass('price_predictions')").fetchone()
-        if table is None:
-            return None
-        if cut is None:
-            (cutoff,) = conn.execute("SELECT max(cutoff) FROM price_predictions WHERE model = %s AND location = %s",
-                                     (model, location)).fetchone()
-        else:
-            (cutoff,) = conn.execute("SELECT max(cutoff) FROM price_predictions WHERE model = %s AND location = %s "
-                                     "AND cutoff <= %s", (model, location, cut.to_pydatetime())).fetchone()
-        if cutoff is None:
-            return None
-        rows = conn.execute(f"SELECT {', '.join(COLUMNS)} FROM price_predictions WHERE model = %s AND location = %s "
-                            "AND cutoff = %s ORDER BY ts", (model, location, cutoff)).fetchall()
+    if conn is None:
+        with db.connect() as own:
+            return _load_db(location, cut, model, own)
+    (table,) = conn.execute("SELECT to_regclass('price_predictions')").fetchone()
+    if table is None:
+        return None
+    if cut is None:
+        (cutoff,) = conn.execute("SELECT max(cutoff) FROM price_predictions WHERE model = %s AND location = %s",
+                                 (model, location)).fetchone()
+    else:
+        (cutoff,) = conn.execute("SELECT max(cutoff) FROM price_predictions WHERE model = %s AND location = %s "
+                                 "AND cutoff <= %s", (model, location, cut.to_pydatetime())).fetchone()
+    if cutoff is None:
+        return None
+    rows = conn.execute(f"SELECT {', '.join(COLUMNS)} FROM price_predictions WHERE model = %s AND location = %s "
+                        "AND cutoff = %s ORDER BY ts", (model, location, cutoff)).fetchall()
     return PredictionPath.from_frame(pd.DataFrame(rows, columns=COLUMNS)) if rows else None
 
 

@@ -198,3 +198,90 @@ def test_labels_come_from_config(monkeypatch):
     finally:
         c.shutdown()
         c.cleanup_keys()
+
+
+# --- race.potential: the live strategy with every battery online and no crashes ----------------------------------
+
+
+def _assert_potential_is_the_live_fleet(c):
+    """No outage: the potential earned exactly the live totals (same Strategy instances and prices; revenue booked
+    in the live ledger's order), city by city, with exactly the live batteries' charge levels."""
+    run, snap = c.run, c.snapshot()
+    pot = snap["race"]["potential"]
+    assert run.potential.running_usd == run.revenue_usd  # bit for bit, not approximately
+    assert pot["revenue_usd"] == snap["totals"]["revenue_usd"] and pot["shortfall_usd"] == 0.0
+    for loc in LOCS:
+        assert pot["by_location"][loc]["revenue_usd"] == snap["totals"]["by_location"][loc]["revenue_usd"], loc
+        assert run.potential.cities[loc].revenue_usd == run.by_location[loc][0], loc
+        assert np.array_equal(run.potential.cities[loc].soc, c.soc[c.loc_slice[loc]]), loc
+    assert snap["race"]["shows_potential"] is False
+
+
+def test_the_potential_equals_the_live_fleet_without_outages(co):
+    co.start({"start_utc": SUMMER_SPIKE, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
+             max_ticks=42, internal=True)
+    assert co.run.potential.strategy == "peak" and co.run.potential.label == "Evening peak, all batteries online"
+    assert co.serve_until(lambda: co.run.status == "finished", timeout_s=90)
+    assert co.run.potential.ticks == 42 and co.run.revenue_usd > 100  # it sold through the 9 pm spike
+    _assert_potential_is_the_live_fleet(co)
+    ms = [r["potential_ms"] for r in co.tick_log]
+    print(f"\n[potential] {SIZE} batteries: per tick p50 {np.percentile(ms, 50):.3f} ms, max {max(ms):.3f} ms")
+
+
+def test_the_potential_of_a_live_simple_rule_and_of_the_live_ai(co, monkeypatch):
+    """Parity holds for every live strategy: the simple rule (racing the AI) and the AI itself (SYNTHETIC forecast
+    books, test doubles). The potential uses the live run's own Strategy instances."""
+    import src.strategy
+    from src.strategy.forecast import ForecastStrategy
+
+    books = _synthetic_books(int(datetime.fromisoformat(SUMMER_SPIKE.replace("Z", "+00:00")).timestamp()))
+    real = src.strategy.make_strategy
+
+    def make(cfg, tick_seconds, name=None, **context):
+        if name == "forecast":
+            wanted = context.get("locations") or LOCS
+            return ForecastStrategy({loc: books[loc] for loc in wanted}, duration_h=2.0)
+        return real(cfg, tick_seconds, name, **context)
+
+    monkeypatch.setattr(src.strategy, "make_strategy", make)
+    for live, label in (("bands", "Simple rule, all batteries online"),
+                        ("forecast", "AI forecast, all batteries online")):
+        monkeypatch.setattr(coord, "_STRATEGY_CACHE", {})
+        co.start({"start_utc": SUMMER_SPIKE, "speed_tps": "max", "strategy": live, "start_charge_level": 0.9},
+                 max_ticks=40, internal=True)
+        assert co.run.strategy_name == live and co.run.potential.label == label
+        assert co.serve_until(lambda: co.run.status == "finished", timeout_s=90)
+        _assert_potential_is_the_live_fleet(co)
+
+
+def test_outages_show_the_potential_and_what_they_cost(co):
+    co.start({"start_utc": SUMMER_SPIKE, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
+             max_ticks=40, internal=True)
+    for _ in range(24):  # to 8 pm: the evening peak sells
+        co.step()
+    assert co.snapshot()["race"]["shows_potential"] is False
+    co.handle_control({"cmd": "availability", "args": {"scope": "location", "location": "LZ_NORTH",
+                                                        "offline_fraction": 0.5}})
+    assert co.snapshot()["race"]["shows_potential"] is True  # at once, before the next tick
+    for _ in range(4):
+        co.step()
+    co.handle_control({"cmd": "availability", "args": {"scope": "all", "available": True}})
+    co.step()
+    assert co.snapshot()["race"]["shows_potential"] is True  # it stays true for the run
+    north = co.loc_slice["LZ_NORTH"]
+    snap = co.snapshot()
+    pot = snap["race"]["potential"]
+    assert pot["shortfall_usd"] > 0 and pot["shortfall_usd"] == pytest.approx(
+        pot["revenue_usd"] - snap["totals"]["revenue_usd"], abs=1e-6)
+    assert pot["by_location"]["LZ_NORTH"]["revenue_usd"] > snap["totals"]["by_location"]["LZ_NORTH"]["revenue_usd"]
+    assert (co.run.potential.cities["LZ_NORTH"].soc < co.soc[north]).any()  # its offline half kept selling there
+    # a new run starts with a fresh flag (nothing is offline now), and a crash flips it
+    co.start({"start_utc": SUMMER_SPIKE, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
+             max_ticks=40, internal=True)
+    for _ in range(3):
+        co.step()
+    assert co.snapshot()["race"]["shows_potential"] is False
+    os.kill(co.workers[2].pid, signal.SIGKILL)
+    for _ in range(3):
+        co.step()
+    assert co.workers[2].status == "dead" and co.snapshot()["race"]["shows_potential"] is True
