@@ -228,6 +228,10 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
     if (method === 'GET' && path.startsWith('/batteries/')) {
       return send(res, 200, sim.battery(decodeURIComponent(path.slice('/batteries/'.length))));
     }
+    const cancel = /^\/backtest\/([^/]+)\/cancel$/.exec(path);
+    if (method === 'POST' && cancel) {
+      return send(res, 200, sim.cancelBacktest(decodeURIComponent(cancel[1])));
+    }
     if (method === 'GET' && path.startsWith('/backtest/')) {
       return send(res, 200, sim.backtestStatus(decodeURIComponent(path.slice('/backtest/'.length))));
     }

@@ -1,11 +1,9 @@
 // The live map's four corner panels (docs/UX.md, Live map > Corners). Each one
 // shows the selected city's numbers, or the whole fleet's for "All of Texas".
 
-import { useState } from 'react';
 import type { Tick, Worker, WorkerStatus } from '../../../api/types.ts';
 import { AnimatedNumber } from '../../../components/AnimatedNumber.tsx';
 import { Icon } from '../../../components/Icon.tsx';
-import { PresenterDialog } from '../../../components/PresenterDialog.tsx';
 import { TechBlock, TechOnly, Term } from '../../../components/Tech.tsx';
 import { useLive } from '../../../live/liveStore.ts';
 import { byBatteries, cityName, useCities } from '../../../lib/cities.ts';
@@ -28,9 +26,8 @@ import {
 } from '../../../lib/format.ts';
 import { useLayoutState, useMapStatus } from '../../../map/feed.ts';
 import { CHARGING, DOWN, OFFLINE, SELLING, WAITING } from '../../../map/status.ts';
-import { leavePresenter, useIsPresenter } from '../../../state/presenter.ts';
+import { useIsPresenter } from '../../../state/presenter.ts';
 import { useTechnical } from '../../../state/prefs.ts';
-import { showToast } from '../../../state/toasts.ts';
 import { ActionChip, ActionIcon } from '../ActionChip.tsx';
 import { CrashControl, PauseResume, ResetButton, SpeedSelect } from '../controls.tsx';
 import { eventClass, eventIcon, eventSpoken } from '../eventLook.ts';
@@ -267,37 +264,7 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
   );
 }
 
-// ---- bottom left: controls -------------------------------------------------------------
-
-function PresenterLink() {
-  const presenter = useIsPresenter();
-  const [open, setOpen] = useState(false);
-  if (presenter) {
-    return (
-      <span className="corner-foot-note">
-        Presenter mode on ·{' '}
-        <button
-          type="button"
-          className="linklike"
-          onClick={() => {
-            leavePresenter();
-            showToast({ kind: 'info', title: 'Presenter mode is off.' });
-          }}
-        >
-          Leave
-        </button>
-      </span>
-    );
-  }
-  return (
-    <>
-      <button type="button" className="linklike muted corner-foot-note" onClick={() => setOpen(true)}>
-        Presenter
-      </button>
-      <PresenterDialog open={open} onClose={() => setOpen(false)} />
-    </>
-  );
-}
+// ---- bottom left: controls (the presenter link is in the header) ------------------------
 
 export function ControlsCorner({ onOpenAvailability, onShowCharts }: { onOpenAvailability: () => void; onShowCharts: () => void }) {
   const presenter = useIsPresenter();
@@ -318,7 +285,6 @@ export function ControlsCorner({ onOpenAvailability, onShowCharts }: { onOpenAva
           <Icon name="chart" />
           Show charts
         </button>
-        <PresenterLink />
       </div>
     </section>
   );

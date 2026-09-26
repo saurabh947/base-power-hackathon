@@ -30,7 +30,7 @@ export function PresenterDialog({ open, onClose }: { open: boolean; onClose: () 
       showToast({
         kind: 'success',
         title: 'Presenter mode is on.',
-        detail: '"Crash a controller" is now in the top bar of the Live screen.',
+        detail: '"Crash a controller" is now with the controls on the Live screen.',
       });
       close();
     } catch (err) {
@@ -43,10 +43,7 @@ export function PresenterDialog({ open, onClose }: { open: boolean; onClose: () 
   return (
     <Dialog open={open} onClose={close} title="Presenter mode" initialFocusSelector="#presenter-passcode">
       <form className="dialog-form" onSubmit={submit} style={{ display: 'grid', gap: 14 }}>
-        <p className="muted small">
-          Presenter mode adds a "Crash a controller" button to the Live screen, for demos. The passcode is kept only in
-          this browser tab and is forgotten when you close it.
-        </p>
+        <p className="muted small">Enter a passcode to enter presenter mode</p>
         <div className="field">
           <label className="field-label" htmlFor="presenter-passcode">
             Passcode

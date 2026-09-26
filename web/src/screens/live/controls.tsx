@@ -104,7 +104,7 @@ export function ResetButton() {
   );
 }
 
-/** Presenter only. "Leave presenter mode" lives in the footer (or the map's controls corner). */
+/** Presenter only. "Presenter mode" and "Leave presenter mode" are the link in the header. */
 export function CrashControl() {
   const workers = useLive((s) => s.workers);
   const status = useLive((s) => s.status);

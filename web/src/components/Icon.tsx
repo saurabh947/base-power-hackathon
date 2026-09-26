@@ -13,6 +13,7 @@ const PATHS = {
   info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01',
   play: 'M6 4l14 8-14 8V4z',
   pause: 'M7 4h3v16H7zM14 4h3v16h-3z',
+  stop: 'M6 6h12v12H6z',
   reset: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5',
   plug: 'M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0V8zM12 18v4',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',

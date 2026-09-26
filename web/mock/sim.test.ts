@@ -218,6 +218,27 @@ describe('MockSim', () => {
     expect(caught(() => sim.backtestStatus('nope'))).toMatchObject({ status: 404 });
   });
 
+  it('stops a running full-year job (POST /backtest/{job_id}/cancel), keeping the previous results', () => {
+    let now = 0;
+    const sim = new MockSim({ now: () => now, resultsBeforeBacktest: false, backtestMs: 1000 });
+    const job = sim.startBacktest();
+    expect(sim.cancelBacktest(job.job_id)).toEqual({ status: 'cancelled' });
+    expect(sim.backtestStatus(job.job_id)).toMatchObject({ status: 'cancelled', run_ids: [] });
+    // Stopped already: 409 not_running; an unknown id: 404.
+    expect(caught(() => sim.cancelBacktest(job.job_id))).toMatchObject({ status: 409, code: 'not_running' });
+    expect(caught(() => sim.cancelBacktest('nope'))).toMatchObject({ status: 404 });
+    // Nothing was stored, even after the time it would have taken.
+    now += 5000;
+    expect(sim.backtestStatus(job.job_id).status).toBe('cancelled');
+    expect(caught(() => sim.results())).toMatchObject({ status: 404, code: 'no_results' });
+    // A new re-run is a new job, and one that has finished cannot be stopped.
+    const next = sim.startBacktest();
+    expect(next.job_id).not.toBe(job.job_id);
+    now += 1000;
+    expect(sim.backtestStatus(next.job_id).status).toBe('done');
+    expect(caught(() => sim.cancelBacktest(next.job_id))).toMatchObject({ status: 409, code: 'not_running' });
+  });
+
   it('gives each controller a contiguous block of 1,000, and moves them on a crash (workers[].by_location)', () => {
     const { sim, step } = running(1);
     const before = frame(step()).workers;

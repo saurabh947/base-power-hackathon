@@ -128,6 +128,9 @@ export const api = {
   backtest: (strategies: string[], year: number) =>
     request<{ job_id: string }>('POST', '/backtest', { body: { strategies, year } }),
   backtestStatus: (jobId: string) => request<BacktestStatus>('GET', `/backtest/${encodeURIComponent(jobId)}`),
+  /** Stops a running full-year job: 200 {"status": "cancelled"}, 409 not_running, 404 unknown. */
+  cancelBacktest: (jobId: string) =>
+    request<{ status: 'cancelled' }>('POST', `/backtest/${encodeURIComponent(jobId)}/cancel`),
   results: (signal?: AbortSignal) => request<Results>('GET', '/results/pitch', { signal, timeoutMs: 30_000 }),
   /** GET /results/ai-gains, read defensively by src/screens/results/aiGains.ts. */
   aiGains: (signal?: AbortSignal) => request<unknown>('GET', '/results/ai-gains', { signal, timeoutMs: 30_000 }),

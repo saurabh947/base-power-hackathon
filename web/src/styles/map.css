@@ -670,11 +670,6 @@ html.map-mode .toasts {
   margin-left: -6px;
 }
 
-.corner-foot-note {
-  color: var(--text-muted);
-  font-size: 12.5px;
-}
-
 /* Controllers: 20 mini tiles. Status is in the glyph and the text too, never colour alone. */
 .mini-tiles {
   display: grid;

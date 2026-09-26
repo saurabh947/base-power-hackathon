@@ -283,7 +283,8 @@ export interface KillResponse {
 }
 
 export interface BacktestStatus {
-  status: 'running' | 'done' | 'failed';
+  /** `cancelled`: stopped with POST /backtest/{job_id}/cancel; nothing was stored. */
+  status: 'running' | 'done' | 'failed' | 'cancelled';
   run_ids: string[];
   /** Strategies left out of the run, with the reason, e.g. {"forecast": "forecasts do not cover 2025"}. */
   skipped?: Record<string, string>;

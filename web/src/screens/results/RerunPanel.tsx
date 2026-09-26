@@ -7,6 +7,7 @@ import { Panel } from '../../components/Panel.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
 import { fmtDuration, strategyName } from '../../lib/format.ts';
 import { readStorage, writeStorage } from '../../lib/storage.ts';
+import { rerunButtons, rerunPhase, stoppedMessage, stopRerun } from './rerun.ts';
 
 const JOB_KEY = 'fleet-sim.backtest-job';
 const POLL_MS = 2000;
@@ -31,17 +32,25 @@ function saveJob(job: Job | null): void {
   writeStorage('session', JOB_KEY, job ? JSON.stringify(job) : null);
 }
 
-/** "Re-run the full year": POST /backtest, then poll GET /backtest/{job_id} until it is done. */
-export function RerunPanel({ year, onDone }: { year: number; onDone: () => void }) {
+/**
+ * "Re-run the full year": POST /backtest, then poll GET /backtest/{job_id} until it is done. "Stop" (enabled only
+ * while a re-run runs) sends POST /backtest/{job_id}/cancel; the previous results stay. `hasResults` says whether
+ * there are previous results to keep showing.
+ */
+export function RerunPanel({ year, onDone, hasResults = true }: { year: number; onDone: () => void; hasResults?: boolean }) {
   const [job, setJob] = useState<Job | null>(loadJob);
   const [error, setError] = useState<FriendlyError | null>(null);
   const [finished, setFinished] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const [skipped, setSkipped] = useState<[string, string][]>([]);
   const [now, setNow] = useState(() => Date.now());
+  const buttons = rerunButtons(rerunPhase(job, stopping));
 
   const start = async () => {
     setError(null);
     setFinished(false);
+    setStopped(false);
     setSkipped([]);
     try {
       const { job_id } = await api.backtest(['bands', 'forecast', 'peak'], year);
@@ -54,10 +63,26 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
     }
   };
 
+  const stop = async () => {
+    if (!job || stopping) return;
+    setStopping(true);
+    setError(null);
+    const outcome = await stopRerun(job.id, api.cancelBacktest);
+    setStopping(false);
+    if (outcome.kind === 'stopped' || outcome.kind === 'unknown') {
+      saveJob(null);
+      setJob(null);
+      setStopped(outcome.kind === 'stopped');
+    } else if (outcome.kind === 'error') {
+      setError(outcome.error);
+    }
+    // not_running: it had just finished; the next poll shows how (done, failed or stopped).
+  };
+
   useEffect(() => {
     if (!job) return;
     let cancelled = false;
-    const stop = (nextError: FriendlyError | null) => {
+    const end = (nextError: FriendlyError | null) => {
       saveJob(null);
       setJob(null);
       setError(nextError);
@@ -67,12 +92,16 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
         const status = await api.backtestStatus(job.id);
         if (cancelled) return;
         if (status.status === 'done') {
-          stop(null);
+          end(null);
           setFinished(true);
           setSkipped(Object.entries(status.skipped ?? {}).filter(([, why]) => typeof why === 'string'));
           onDone();
+        } else if (status.status === 'cancelled') {
+          // Stopped here, or by someone else: everyone shares the fleet and its re-run.
+          end(null);
+          setStopped(true);
         } else if (status.status === 'failed') {
-          stop({
+          end({
             title: 'The full-year run failed.',
             detail: status.error ?? 'Please try again in a moment.',
             retryAfterS: null,
@@ -84,12 +113,12 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
         if (cancelled) return;
         // A job id the server no longer knows (it restarted) is simply forgotten.
         if (err instanceof ApiError && err.status === 404) {
-          stop(null);
+          end(null);
           return;
         }
         const f = friendlyError(err, 'backtest');
         // Keep polling through blips; give up on real answers.
-        if (!f.unreachable) stop(f);
+        if (!f.unreachable) end(f);
       }
     };
     void check();
@@ -110,10 +139,14 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
       what={`Replays every 5 minutes of ${year} for each decision method, with the same code as the live fleet.`}
     >
       <div className="rerun">
-        <div>
-          <button type="button" className="btn" onClick={() => void start()} disabled={!!job}>
+        <div className="rerun-actions">
+          <button type="button" className="btn" onClick={() => void start()} disabled={!buttons.run}>
             <Icon name="reset" />
             {job ? 'Running…' : 'Re-run the full year'}
+          </button>
+          <button type="button" className="btn" onClick={() => void stop()} disabled={!buttons.stop}>
+            <Icon name="stop" />
+            {stopping ? 'Stopping…' : 'Stop'}
           </button>
         </div>
         {job ? (
@@ -137,6 +170,7 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
             </TechOnly>
           </>
         ) : null}
+        {stopped ? <Notice kind="info" title={stoppedMessage(hasResults)} /> : null}
         {finished ? (
           <Notice kind="info" title="Done. The numbers on this page are up to date.">
             {skipped.length

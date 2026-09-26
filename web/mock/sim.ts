@@ -371,6 +371,8 @@ interface Job {
   id: string;
   doneAtMs: number;
   fail: boolean;
+  /** Stopped with POST /backtest/{job_id}/cancel. */
+  cancelled: boolean;
 }
 
 export interface MockSimOptions {
@@ -1417,21 +1419,43 @@ export class MockSim {
 
   // ---- full-year results (SIMULATED placeholders) -----------------------------------------
 
+  private isRunning(job: Job): boolean {
+    return !job.cancelled && this.now() < job.doneAtMs;
+  }
+
   startBacktest(): { job_id: string } {
     // While a job runs, POST /backtest returns that job's id (docs/API.md).
     if (this.runningJob) {
       const job = this.jobs.get(this.runningJob);
-      if (job && this.now() < job.doneAtMs) return { job_id: job.id };
+      if (job && this.isRunning(job)) return { job_id: job.id };
     }
     const id = crypto.randomUUID();
-    this.jobs.set(id, { id, doneAtMs: this.now() + this.backtestMs, fail: this.backtestFails });
+    this.jobs.set(id, { id, doneAtMs: this.now() + this.backtestMs, fail: this.backtestFails, cancelled: false });
     this.runningJob = id;
     return { job_id: id };
+  }
+
+  /**
+   * POST /backtest/{job_id}/cancel: stops a running job; nothing is stored and the previous results stay.
+   * 409 not_running once it has finished (or was stopped already), 404 for an unknown id.
+   */
+  cancelBacktest(jobId: string): { status: 'cancelled' } {
+    const job = this.jobs.get(jobId);
+    if (!job) throw new MockError(404, 'unknown_job', 'No full-year run has that ID.');
+    if (!this.isRunning(job)) throw new MockError(409, 'not_running', 'That full-year run is not running any more.');
+    job.cancelled = true;
+    if (this.runningJob === job.id) this.runningJob = null;
+    this.emit('backtest_done', 'info', 'The full-year re-run was stopped. The previous results are unchanged.', {
+      job_id: job.id,
+      status: 'cancelled',
+    });
+    return { status: 'cancelled' };
   }
 
   backtestStatus(jobId: string): BacktestStatus {
     const job = this.jobs.get(jobId);
     if (!job) throw new MockError(404, 'unknown_job', 'No full-year run has that ID.');
+    if (job.cancelled) return { status: 'cancelled', run_ids: [], skipped: {}, error: null };
     if (this.now() < job.doneAtMs) return { status: 'running', run_ids: [], skipped: {}, error: null };
     if (job.fail) {
       return { status: 'failed', run_ids: [], skipped: {}, error: 'The practice server was told to fail this run (MOCK_BACKTEST_FAIL=1).' };

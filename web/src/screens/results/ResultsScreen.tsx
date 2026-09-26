@@ -146,7 +146,7 @@ export function ResultsScreen() {
           </div>
         </div>
       ) : !loading ? (
-        <RerunPanel year={year} onDone={reload} />
+        <RerunPanel year={year} onDone={reload} hasResults={false} />
       ) : null}
     </div>
   );
