@@ -42,7 +42,7 @@ Change it only through the integrator.
 | `GET /state` | anyone | – | the same object as the WebSocket `snapshot` message |
 | `POST /run/start` | anyone | partial Settings | `202 {"run_id": "…", "settings": Settings}`. Starts a fresh shared run, replacing any current one. |
 | `POST /run/pause` / `POST /run/resume` | anyone | – | `{"status": "paused" \| "running"}` |
-| `POST /run/speed` | anyone | `{"speed_tps": 5}` | `{"speed_tps": 5}` |
+| `POST /run/speed` | anyone | `{"speed_tps": 5}` | `{"speed_tps": 5}`. The next snapshot/frame `speed_tps` **and** `settings.speed_tps` both show the new speed. |
 | `POST /run/reset` | anyone | – | `{"status": "idle"}`. Stops the run, restarts all 20 workers (**including killed ones**) and brings every battery back online. |
 | `POST /availability` | anyone | see below | `{"applied_from_tick_utc": "…", "affected": 6000, "available": 14000, "total": 20000}` |
 | `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
@@ -87,7 +87,7 @@ Change it only through the integrator.
 **`POST /availability` bodies** take effect from the next tick:
 - `{"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0.3}` takes a seeded-random 30% of that area offline (the same fraction always picks the same batteries). `0` brings them all back.
 - `{"scope": "worker", "worker_id": 7, "available": false}` takes all batteries currently owned by worker 7 offline **without** killing the process.
-- `{"scope": "battery", "battery_id": "LZ_HOUSTON-000123", "available": false}`
+- `{"scope": "battery", "battery_id": "b00123", "available": false}`
 - `{"scope": "all", "available": true}` brings everything back online.
 
 ## WebSocket `/live`
