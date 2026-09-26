@@ -1,30 +1,38 @@
 """The API against a real coordinator + worker processes (small fleet): WebSocket message shapes
 exactly as docs/API.md, availability scopes, battery lookup, presenter-only chaos kill, run control."""
+import base64
+import math
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api import main
+from src.config import load_config
+from src.sim import battery_status as bstatus
+from src.sim import geo
 from src.sim.coordinator import Coordinator
 from src.sim.redis_layout import reachable, redis_url
 
 pytestmark = pytest.mark.redis
 PASS = "presenter-test-passcode"
+LOCS = list(load_config().fleet.locations)
 
 SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "settings", "history", "totals", "workers",
-                 "failed_commands", "availability", "events", "forecast"}
+                 "failed_commands", "availability", "events", "forecast", "battery_status"}
 IDLE_KEYS = {"type", "status", "run_id", "last_run"}
 FRAME_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "ticks", "totals", "workers", "failed_commands",
-              "availability", "events"}
+              "availability", "events", "battery_status"}
+TOTALS_KEYS = {"revenue_usd", "sold_kwh", "bought_kwh", "ticks", "by_location"}
 TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_kw", "actual_kw", "error_pct",
              "revenue_usd", "charge_level", "healthy_workers"}
 SETTINGS_KEYS = {"preset", "start_utc", "speed_tps", "strategy", "start_charge_level", "fleet_size", "power_kw_range",
                  "capacity_kwh_range", "locations"}
-WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from"}
+WORKER_KEYS = {"worker_id", "status", "pid", "batteries", "last_tick_utc", "adopted_from", "by_location"}
 EVENT_KEYS = {"id", "wall_utc", "sim_utc", "kind", "severity", "message", "detail"}
 
 
@@ -70,11 +78,25 @@ def _wait(pred, timeout=10.0):
     return pred()
 
 
+def _codes(msg, n=300) -> np.ndarray:
+    """battery_status decoded: base64 of packed 4-bit codes, battery i in byte i // 2 (low nibble when even)."""
+    raw = base64.b64decode(msg["battery_status"])
+    assert len(raw) == math.ceil(n / 2)
+    codes = bstatus.unpack(raw, n)
+    assert set(codes.tolist()) <= {0, 1, 2, 3, 4}
+    return codes
+
+
 def _assert_common(msg):
     if msg["type"] == "snapshot":
         assert (msg["settings"] is None) if msg["run_id"] is None else (set(msg["settings"]) == SETTINGS_KEYS)
-    assert set(msg["totals"]) == {"revenue_usd", "sold_kwh", "bought_kwh", "ticks"}
+    assert set(msg["totals"]) == TOTALS_KEYS and list(msg["totals"]["by_location"]) == LOCS
+    for per in msg["totals"]["by_location"].values():
+        assert set(per) == {"revenue_usd", "sold_kwh", "bought_kwh"}
     assert all(set(w) == WORKER_KEYS for w in msg["workers"])
+    for w in msg["workers"]:  # batteries each worker owns right now, per city
+        assert sum(w["by_location"].values()) == w["batteries"] and set(w["by_location"]) <= set(LOCS)
+    _codes(msg)
     assert set(msg["failed_commands"]) == {"count", "recent"} and len(msg["failed_commands"]["recent"]) <= 10
     assert all(set(e) == {"battery_id", "worker_id", "reason", "tick_utc"} for e in msg["failed_commands"]["recent"])
     assert set(msg["availability"]) == {"available", "total", "by_location", "offline_workers"}
@@ -85,9 +107,9 @@ def _assert_tick(t):
     assert set(t) == TICK_KEYS
     assert t["ts_utc"].endswith("Z") and t["ts_local"][-6:] in ("-05:00", "-06:00")
     for key in ("price", "decision_price", "action"):
-        assert set(t[key]) == {"LZ_HOUSTON", "LZ_NORTH"}
+        assert set(t[key]) == set(LOCS)
     for key in ("target_kw", "actual_kw", "revenue_usd", "charge_level"):
-        assert set(t[key]) == {"LZ_HOUSTON", "LZ_NORTH", "fleet"}
+        assert set(t[key]) == set(LOCS) | {"fleet"}
     assert set(t["action"].values()) <= {"charge", "sell", "hold"}
     assert isinstance(t["error_pct"], float) and isinstance(t["healthy_workers"], int)
 
@@ -133,7 +155,10 @@ def test_websocket_messages_match_the_contract(live):
         idle = _recv_until(ws, lambda m: m["type"] == "idle")
         assert set(idle) == IDLE_KEYS and idle["status"] == "idle" and idle["run_id"] is None
         assert idle["last_run"]["run_id"] == run_id and idle["last_run"]["totals"]["ticks"] >= len(seen)
-        assert set(idle["last_run"]["totals"]) == {"revenue_usd", "sold_kwh", "bought_kwh", "ticks"}
+        assert set(idle["last_run"]["totals"]) == TOTALS_KEYS
+        per_city = idle["last_run"]["totals"]["by_location"]
+        for key in ("revenue_usd", "sold_kwh", "bought_kwh"):  # the cities add up to the fleet
+            assert sum(v[key] for v in per_city.values()) == pytest.approx(idle["last_run"]["totals"][key], abs=1e-4)
 
 
 def test_forecasts_ride_along_only_when_new(live, monkeypatch):
@@ -159,7 +184,7 @@ def test_forecasts_ride_along_only_when_new(live, monkeypatch):
     assert _wait(lambda: co.run is not None and co.run.k >= 2)
     with client.websocket_connect("/live") as ws:
         snap = ws.receive_json()
-        assert set(snap["forecast"]) == {"LZ_HOUSTON", "LZ_NORTH"}
+        assert set(snap["forecast"]) == set(LOCS)
         assert snap["forecast"]["LZ_NORTH"]["issued_utc"].endswith("Z")  # datetimes serialised as *_utc strings
         with_forecast = []
         for _ in range(12):
@@ -202,21 +227,25 @@ def test_availability_scopes(live):
     client, co = live
     client.post("/run/start", json={"speed_tps": 10, "strategy": "peak"})
     assert _wait(lambda: co.run is not None and co.status == "running")
+    houston = co.layout.counts[0]
+    off = round(0.3 * houston)
     r = client.post("/availability", json={"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0.3})
     body = r.json()
     assert r.status_code == 200 and set(body) == {"applied_from_tick_utc", "affected", "available", "total"}
-    assert (body["affected"], body["available"], body["total"]) == (45, 255, 300)
+    assert (body["affected"], body["available"], body["total"]) == (off, 300 - off, 300)
     assert body["applied_from_tick_utc"].endswith("Z")
     again = client.post("/availability", json={"scope": "location", "location": "LZ_HOUSTON", "offline_fraction": 0.3})
     assert again.json()["affected"] == 0  # the same fraction picks the same batteries
     mine = co.owner == 1
-    assert mine.sum() == 100  # 50 Houston + 50 Dallas-Fort Worth
+    assert mine.sum() == 100 and np.array_equal(np.flatnonzero(mine), np.arange(100, 200))  # a contiguous block
     already_off = int(co.availability.offline[mine].sum())
     r = client.post("/availability", json={"scope": "worker", "worker_id": 1, "available": False})
-    assert r.json()["available"] == 255 - (100 - already_off) and r.json()["affected"] == 100 - already_off
+    assert r.json()["available"] == 300 - off - (100 - already_off) and r.json()["affected"] == 100 - already_off
     snap = client.get("/state").json()
     assert snap["availability"]["offline_workers"] == [1]
-    assert snap["availability"]["by_location"]["LZ_NORTH"] == {"available": 100, "total": 150}
+    north = co.layout.location_indices("LZ_NORTH")
+    assert snap["availability"]["by_location"]["LZ_NORTH"] == {
+        "available": int(len(north) - mine[north].sum()), "total": int(len(north))}
     r = client.post("/availability", json={"scope": "battery", "battery_id": "b00299", "available": False})
     assert r.json()["affected"] == 1
     assert client.get("/batteries/b00299").json()["available"] is False
@@ -229,19 +258,25 @@ def test_availability_scopes(live):
     # offline batteries got 0: they never moved while offline, the others did
     assert _wait(lambda: any(e["kind"] == "availability_changed" for e in co.events))
     msgs = [e["message"] for e in co.events if e["kind"] == "availability_changed"]
-    assert any("Houston area" in m and "offline" in m for m in msgs)
+    assert f"30% of the Houston batteries ({off}) are now offline; {300 - off} of 300 batteries are online." in msgs
 
 
 def test_battery_lookup(live):
     client, co = live
     b = client.get("/batteries/b00007").json()
-    assert set(b) == {"battery_id", "location", "worker_id", "capacity_kwh", "power_kw", "charge_level",
-                      "power_kw_now", "available"}
+    assert set(b) == {"battery_id", "location", "city", "lonlat", "worker_id", "capacity_kwh", "power_kw",
+                      "charge_level", "power_kw_now", "available"}
     assert b["battery_id"] == "b00007" and b["location"] == "LZ_HOUSTON" and b["worker_id"] == 0
-    assert b["available"] is True
+    assert b["city"] == "Houston" and b["available"] is True
     assert b["capacity_kwh"] == pytest.approx(float(co.cap[7])) and b["power_kw"] == pytest.approx(float(co.power[7]))
-    north = client.get("/batteries/b00150").json()  # 300 batteries at 50/50: b00150.. are Dallas-Fort Worth
-    assert north["location"] == "LZ_NORTH" and north["worker_id"] == 0
+    layout = client.get("/fleet/layout").json()
+    pos = geo.decode_positions(base64.b64decode(layout["positions"]))
+    assert b["lonlat"] == pytest.approx(pos[7].tolist(), abs=1e-9)  # exactly where the map draws it
+    for city in layout["cities"][1:]:  # the first battery of every other city (contiguous blocks in config order)
+        g = city["first_battery"]
+        got = client.get(f"/batteries/b{g:05d}").json()
+        assert (got["location"], got["city"]) == (city["location"], city["name"])
+        assert got["worker_id"] == int(co.owner[g]) and got["lonlat"] == pytest.approx(pos[g].tolist(), abs=1e-9)
     assert client.get("/batteries/b00300").status_code == 404
     assert client.get("/batteries/LZ_HOUSTON-000007").status_code == 404
     assert client.get("/batteries/garbage").status_code == 404
@@ -278,6 +313,84 @@ def test_presenter_kill_flow(live):
     adopted = next(e for e in snap["events"] if e["kind"] == "worker_adopted")
     assert adopted["detail"]["worker_id"] == 1 and adopted["detail"]["controller"] == 2
     assert sorted(adopted["detail"]["adopted_by"]) == [0, 2] and adopted["detail"]["ms"] >= 0
-    assert adopted["message"].startswith("Controller 2's 100 batteries were handed to the other 2 controllers")
+    cities = geo.join_names([geo.city_name(loc) for loc in co.layout.counts_by_location(np.arange(100, 200))])
+    assert adopted["message"].startswith(f"Controller 2's 100 batteries in {cities} were handed to the other 2 "
+                                         "controllers")
+    assert adopted["detail"]["by_location"] == co.layout.counts_by_location(np.arange(100, 200))
+    # after the hand-over the survivors' by_location includes the adopted batteries
+    assert sum(sum(w["by_location"].values()) for w in snap["workers"]) == 300
+    assert snap["workers"][1]["by_location"] == {}
     # the coordinator, the API and Redis are never valid targets
     assert co.workers[1].exit_code == -9
+
+
+def test_fleet_layout_is_the_running_fleet(live):
+    client, co = live
+    r = client.get("/fleet/layout")
+    assert r.status_code == 200 and r.headers["etag"] == f'"{r.json()["version"]}"'
+    layout = r.json()
+    assert set(layout) == {"version", "fleet_size", "cities", "positions"} and layout["fleet_size"] == 300
+    assert [c["location"] for c in layout["cities"]] == list(co.layout.locations)
+    assert [c["batteries"] for c in layout["cities"]] == list(co.layout.counts)
+    assert [c["first_battery"] for c in layout["cities"]] == co.layout.offsets
+    pos = geo.decode_positions(base64.b64decode(layout["positions"]))
+    assert pos.shape == (300, 2)
+    for c in layout["cities"]:
+        city = geo.city(c["location"])
+        block = pos[c["first_battery"]:c["first_battery"] + c["batteries"]]
+        assert (geo.distance_km(city, block[:, 0], block[:, 1]) <= city.radius_km + 0.2).all()
+    again = client.get("/fleet/layout", headers={"If-None-Match": r.headers["etag"]})
+    assert again.status_code == 304 and again.headers["etag"] == r.headers["etag"]
+
+
+def test_battery_status_idle_follows_availability_and_a_run_shows_what_batteries_do(live):
+    client, co = live
+    snap = client.get("/state").json()
+    assert snap["run_id"] is None and set(_codes(snap).tolist()) == {bstatus.WAITING}  # no run: all waiting
+    client.post("/availability", json={"scope": "location", "location": "LZ_CPS", "offline_fraction": 1.0})
+    codes = _codes(client.get("/state").json())  # no run: offline shows at once
+    cps = co.layout.location_indices("LZ_CPS")
+    assert (codes[cps] == bstatus.OFFLINE).all() and (np.delete(codes, cps) == bstatus.WAITING).all()
+    client.post("/run/start", json={"preset": "spike_evening", "speed_tps": 10, "strategy": "peak",
+                                    "start_charge_level": 0.9})
+    assert _wait(lambda: co.run is not None and co.run.k >= 30, timeout=20)  # after 6 pm: the peak rule sells
+    with client.websocket_connect("/live") as ws:
+        first = ws.receive_json()
+        frame = _recv_until(ws, lambda m: m["type"] == "frame")
+    for msg in (first, frame):
+        codes = _codes(msg)
+        assert (codes[cps] == bstatus.OFFLINE).all()
+        others = np.delete(codes, cps)
+        assert set(others.tolist()) <= {bstatus.WAITING, bstatus.SELLING, bstatus.CHARGING}
+        assert (others == bstatus.SELLING).sum() > 0.5 * len(others)  # the evening peak sells
+    totals = frame["totals"]
+    assert totals["by_location"]["LZ_CPS"] == {"revenue_usd": 0.0, "sold_kwh": 0.0, "bought_kwh": 0.0}  # offline
+    for key in ("revenue_usd", "sold_kwh", "bought_kwh"):
+        assert sum(v[key] for v in totals["by_location"].values()) == pytest.approx(totals[key], abs=1e-4)
+    assert totals["by_location"]["LZ_HOUSTON"]["sold_kwh"] > 0
+
+
+def test_a_start_right_after_a_reset_waits_for_the_controllers(live, monkeypatch):
+    """Cloud Run logged Starts failing with 503 after ~4 s while a Reset respawned the 20 workers: the Start
+    sat in the control stream behind the blocking respawn. Now /run/start waits until the coordinator says it
+    is ready, then starts. A short control timeout makes the old failure certain here."""
+    client, co = live
+    assert client.post("/run/start", json={"speed_tps": 10, "strategy": "peak"}).status_code == 202
+    assert _wait(lambda: co.run is not None and co.status == "running")
+    respawn = co.reset
+
+    def slow_reset():  # respawning 20 workers on 4 vCPUs takes seconds; 3 on a laptop take ~0.1 s
+        time.sleep(1.0)
+        respawn()
+
+    monkeypatch.setattr(co, "reset", slow_reset)
+    monkeypatch.setenv("FLEET_CONTROL_TIMEOUT_S", "0.5")  # the API's control timeout, shorter than the respawn
+    main.state.limits.run_start.reset()  # the next Start comes at once, as a visitor's Reset-then-Start does
+    t0 = time.monotonic()
+    assert client.post("/run/reset").json() == {"status": "idle"}
+    r = client.post("/run/start", json={"speed_tps": 10, "strategy": "bands"})
+    waited = time.monotonic() - t0
+    assert r.status_code == 202, r.json()
+    assert _wait(lambda: co.run is not None and co.run.run_id == r.json()["run_id"] and co.status == "running")
+    assert all(h.status == "healthy" for h in co.workers)
+    print(f"\nreset -> start accepted in {waited:.2f}s")

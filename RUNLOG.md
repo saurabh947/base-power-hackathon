@@ -323,3 +323,24 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
 
 - **Reading.** The AI's lead over the simple rule holds out of sample: 2.3× in 2024 and 1.5× in 2025. It reaches 51% of the hindsight ceiling in 2024 and 45% in 2025. It does cycle about once a day, and battery wear is not priced in (see the pitch footnote).
 - **Storage.** The 2024 runs are in Cloud SQL `backtest_runs` without the pitch flag. The pitch stays 2025, the spec's year.
+
+## Texas Triangle fleet (2026-09-26, the human's direction)
+
+- **Fleet.** 20,000 batteries, split by metro population:
+  - Dallas–Fort Worth (LZ_NORTH): 8,000
+  - Houston (LZ_HOUSTON): 7,000
+  - San Antonio (LZ_CPS): 2,600
+  - Austin (LZ_AEN): 2,400
+- **Forecasts.** TimesFM-3 forecasts for LZ_AEN and LZ_CPS now cover 2024 and 2025 as well (Cloud Run jobs).
+- **Full-year results for the 4 cities** (cloud backtest, lag 3, gross wholesale). The 2025 runs are the pitch set in `backtest_runs`.
+
+  | Strategy | 2025 per battery | 2025 fleet | 2024 per battery (out of sample) |
+  |---|---|---|---|
+  | **AI forecast (TimesFM-3)** | **$190.95** | **$3.82M** | **$271.45** |
+  | Evening peak | $136.70 | $2.73M | $150.51 |
+  | Simple rule (bands) | $123.67 | $2.47M | $113.71 |
+  | Best possible (hindsight) | $421.29 | $8.43M | $526.54 |
+  | Best possible, 1 cycle/day | $336.91 | $6.74M | $435.49 |
+
+- **Per city, AI forecast, 2025:** Houston $179.49, Dallas–Fort Worth $187.17, San Antonio $212.77, Austin $213.32 per battery.
+- **Presets.** All four cities spike together on the presets: 2025-07-11 at 9 pm is about $1,757/MWh in each, and 2025-05-16 and 2025-04-07 spike in all four too.

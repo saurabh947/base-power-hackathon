@@ -16,12 +16,12 @@ from src.backtest import service, store
 from src.backtest.engine import local_midnight_utc
 from src.backtest.results import build_results
 from src.backtest.runner import backtest_settings, run_backtest
-from src.config import REPO_ROOT
+from src.config import REPO_ROOT, load_config
 from src.feeds.memory import InMemoryPriceFeed
 from src.feeds.parquet import load_rt_rows
 
 pytestmark = pytest.mark.postgres
-LOCS = ("LZ_HOUSTON", "LZ_NORTH")
+LOCS = tuple(load_config().fleet.locations)
 
 
 @pytest.fixture
@@ -140,5 +140,5 @@ def test_pitch_results_reads_the_database(pg, tmp_path):
     assert [s["strategy"] for s in results["strategies"]] == ["bands", "peak"]
     assert results["ceiling"]["per_battery_usd_year"] > 0
     # jsonb reorders object keys; the Results keep config order
-    assert list(results["strategies"][0]["per_location_usd"]) == ["LZ_HOUSTON", "LZ_NORTH"]
-    assert any("split evenly between the Houston and Dallas–Fort Worth areas" in a for a in results["assumptions"])
+    assert list(results["strategies"][0]["per_location_usd"]) == list(LOCS)
+    assert any("in all four cities: Houston (7), Dallas–Fort Worth (8)" in a for a in results["assumptions"])

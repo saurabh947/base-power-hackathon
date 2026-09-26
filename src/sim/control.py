@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from src.sim import geo
 from src.sim.redis_layout import DEFAULT_MAXLEN, Keys, now_utc_iso, to_utc_iso
 
 UTC = timezone.utc
@@ -30,7 +31,6 @@ STRATEGY_LABELS = {
 }
 SPEEDS = (1, 2, 5, 10)
 EDITABLE = ("preset", "speed_tps", "strategy", "start_charge_level")
-AREA_NAMES = {"LZ_HOUSTON": "Houston area", "LZ_NORTH": "Dallas–Fort Worth area"}
 EVENT_KINDS = (
     "run_started", "run_paused", "run_resumed", "run_finished", "speed_changed", "run_reset", "worker_suspect",
     "worker_dead", "worker_adopted", "availability_changed", "price_spike", "action_changed", "forecast_issued",
@@ -57,7 +57,15 @@ class ControlError(Exception):
 
 
 def area(location: str) -> str:
-    return AREA_NAMES.get(location, location)
+    """The city people see for a location ('Dallas–Fort Worth' for LZ_NORTH), from src.sim.geo."""
+    return geo.city_name(location)
+
+
+def mid_sentence(label: str) -> str:
+    """A UI label inside a sentence: 'Simple rule' -> 'simple rule'; 'AI forecast (TimesFM-3)' keeps its acronym."""
+    if len(label) > 1 and label[0].isupper() and label[1].islower():
+        return label[0].lower() + label[1:]
+    return label
 
 
 def fmt_int(n: int | float) -> str:
@@ -94,8 +102,11 @@ def price_phrase(usd_mwh: float) -> str:
     return f"${usd_mwh:,.0f}/MWh ({small})"
 
 
+TIME_ZONE_PHRASE = "Central time"  # all four cities keep America/Chicago time
+
+
 def local_clock(ts: int | datetime) -> str:
-    """'May 16, 2025, 7:45 pm' in Houston time."""
+    """'May 16, 2025, 7:45 pm' in Central time (America/Chicago), which all four cities share."""
     if not isinstance(ts, datetime):
         ts = datetime.fromtimestamp(int(ts), UTC)
     t = ts.astimezone(CHICAGO)
@@ -128,13 +139,17 @@ ACTION_PHRASE = {"sell": "selling while prices are high", "charge": "charging wh
 
 
 def action_message(actions: Mapping[str, str]) -> str:
-    """'Batteries in both areas are now selling while prices are high.'"""
+    """'Batteries in all four cities are now selling while prices are high.', or per group of cities:
+    'Houston and Dallas–Fort Worth batteries are now selling while prices are high; San Antonio and Austin
+    batteries are now waiting.' (cities in fleet order, groups in order of their first city)."""
     kinds = set(actions.values())
     if len(kinds) == 1:
         (only,) = kinds
-        where = "both areas" if len(actions) == 2 else ("every area" if len(actions) > 2 else f"the {area(next(iter(actions)))}")
-        return f"Batteries in {where} are now {ACTION_PHRASE[only]}."
-    parts = [f"{area(loc)} batteries are now {ACTION_PHRASE[a]}" for loc, a in actions.items()]
+        return f"Batteries in {geo.cities_phrase(list(actions), total=len(actions))} are now {ACTION_PHRASE[only]}."
+    groups: dict[str, list[str]] = {}
+    for loc, a in actions.items():
+        groups.setdefault(a, []).append(loc)
+    parts = [f"{geo.cities_phrase(locs)} batteries are now {ACTION_PHRASE[a]}" for a, locs in groups.items()]
     return "; ".join(parts) + "."
 
 
@@ -307,7 +322,8 @@ class AvailabilityState:
                 self.offline_workers.discard(w)
             else:
                 self.offline_workers.add(w)
-            detail.update(worker_id=w, controller=w + 1, available=available, batteries=int(len(idx)))
+            detail.update(worker_id=w, controller=w + 1, available=available, batteries=int(len(idx)),
+                          by_location=self.layout.counts_by_location(idx))
         elif scope == "battery":
             bid = req.get("battery_id")
             try:
@@ -359,12 +375,15 @@ def availability_message(detail: Mapping, summary: Mapping) -> str:
     scope = detail.get("scope")
     if scope == "location":
         if detail["offline"] == 0:
-            return f"Every battery in the {area(detail['location'])} is back online; {online}"
+            return f"Every battery in {area(detail['location'])} is back online; {online}"
         return (f"{detail['offline_fraction']:.0%} of the {area(detail['location'])} batteries "
                 f"({fmt_int(detail['offline'])}) are now offline; {online}")
     if scope == "worker":
         verb = "back online" if detail["available"] else "offline"
-        return f"{controller(detail['worker_id'])}'s {fmt_int(detail['batteries'])} batteries are {verb}; {online}"
+        cities = list(detail.get("by_location") or ())
+        where = f" in {geo.cities_phrase(cities)}" if cities else ""
+        return (f"{controller(detail['worker_id'])}'s {fmt_int(detail['batteries'])} batteries{where} are {verb}; "
+                f"{online}")
     if scope == "battery":
         return f"Battery {detail['battery_id']} is {'back online' if detail['available'] else 'offline'}; {online}"
     return f"{'Every battery is back online' if detail.get('available', True) else 'Every battery is offline'}; {online}"

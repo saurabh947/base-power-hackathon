@@ -18,11 +18,11 @@ from src.backtest import runner, service, store
 from src.backtest.engine import local_midnight_utc
 from src.backtest.results import build_results
 from src.backtest.runner import backtest_settings, run_backtest
-from src.config import REPO_ROOT
+from src.config import REPO_ROOT, load_config
 from src.feeds.memory import InMemoryPriceFeed
 from src.feeds.parquet import load_rt_rows
 
-LOCS = ("LZ_HOUSTON", "LZ_NORTH")
+LOCS = tuple(load_config().fleet.locations)
 
 
 def mini_feed(first="2025-06-01", days=14, warmup=7) -> InMemoryPriceFeed:
@@ -100,6 +100,11 @@ def test_results_numbers_come_from_the_records(mini):
     assert "Held to 1 full cycle a day" in text
     assert "Prices were missing" in text  # the mini feed covers 3 weeks of the year
     assert "TimesFM 2.5" not in text  # licence note only when the forecast ran
+    # the fleet line names the four cities (src.sim.geo) with their batteries, in config order
+    assert "in all four cities: Houston (7), Dallas–Fort Worth (8), San Antonio (3) and Austin (2)." in text
+    # no forecasts cached here: the skip names every city that has none, in plain words
+    assert "AI forecast (TimesFM-3) method isn't in these results: its AI price forecasts for Houston, " \
+           "Dallas–Fort Worth, San Antonio and Austin aren't ready for 2025 yet." in text
 
 
 def test_forecast_is_the_headline_when_it_ran(mini):
@@ -130,6 +135,7 @@ def test_records_hold_the_required_outputs(mini):
     forecast = next(r for r in outcome.records if r["strategy"] == "forecast")
     # forecast is built now, but no forecasts are cached in a bare checkout: the coverage guard skips it
     assert forecast["metrics"]["skipped"] and "forecasts cover" in forecast["metrics"]["reason"]
+    assert all(f"at {loc}" in forecast["metrics"]["reason"] for loc in LOCS)  # every city is checked
     assert outcome.skipped == {"forecast": forecast["metrics"]["reason"]}
     assert set(outcome.run_ids) == {r["run_id"] for r in outcome.records if r["strategy"] in ("bands", "peak",
                                                                                                "hindsight")}
@@ -308,3 +314,31 @@ def test_cli_year_without_prices(tmp_path):
     assert runner.main(["--strategies", "peak", "--year", "2019", "--no-db", "--out", str(tmp_path),
                         "--status-file", str(status_file)]) == 2
     assert "no real ERCOT prices for 2019" in json.loads(status_file.read_text())["error"]
+
+
+def test_the_forecast_coverage_guard_checks_every_city():
+    """One headline number is one decision method for the whole fleet: 'forecast' runs only when every city's
+    forecasts cover the year (here: the mini feed's three weeks). The forecast books are synthetic test doubles."""
+    import numpy as np
+
+    from src.backtest.runner import ForecastsMissing, build_context, run_strategy
+    from src.forecast.provider import ForecastBook
+    from src.strategy.forecast import ForecastStrategy
+
+    ctx = build_context(2025, settings=mini_settings(), fleet_size=20, feed=mini_feed())
+    first = int(ctx.series[LOCS[0]].replayed[0].ts.timestamp()) - 3600
+    issued = (first + np.arange(22 * 24 + 2, dtype=np.int64) * 3600) * 10**9  # hourly, over all 21 days
+    shape = np.tile(np.linspace(20.0, 80.0, 96, dtype=np.float32), (len(issued), 1))
+
+    def books(locations):
+        return {loc: ForecastBook(loc, "rt_price", "synthetic", 15, issued, issued.copy(), shape - 5, shape,
+                                  shape + 5) for loc in locations}
+
+    some = books(LOCS[:2])
+    with pytest.raises(ForecastsMissing) as err:
+        run_strategy("forecast", ctx, strategies={loc: ForecastStrategy(some, duration_h=2.0) for loc in LOCS})
+    assert err.value.locations == list(LOCS[2:]) and "forecasts cover 0.0% at LZ_CPS, 0.0% at LZ_AEN" in str(err.value)
+    assert err.value.plain == "its AI price forecasts for San Antonio and Austin aren't ready for 2025 yet."
+    every = books(LOCS)
+    record = run_strategy("forecast", ctx, strategies={loc: ForecastStrategy(every, duration_h=2.0) for loc in LOCS})
+    assert list(record["per_location"]) == list(LOCS) and record["metrics"]["sold_kwh"] > 0

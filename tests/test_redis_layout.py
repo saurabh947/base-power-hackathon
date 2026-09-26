@@ -10,7 +10,7 @@ import pytest
 
 from src.config import load_config
 from src.core.ids import make_command_id
-from src.sim.fleet import assign_locations, generate_batteries
+from src.sim.fleet import assign_locations, generate_batteries, location_counts as split_counts
 from src.sim.redis_layout import (
     CommandIds, FleetLayout, Keys, fleet_battery_id, layout_index, location_counts, pack, parse_battery_id, resp,
     to_utc_iso, unpack,
@@ -45,23 +45,35 @@ def test_fast_command_ids_normalise_zones_and_accept_epoch_seconds():
 def test_layout_is_the_shared_fleet_split():
     cfg = load_config()
     layout = FleetLayout.build(cfg)
-    assert layout.size == 20000 and layout.workers == 20
-    assert layout.locations == ("LZ_HOUSTON", "LZ_NORTH") and layout.counts == (10000, 10000)
-    specs = generate_batteries(20000, cfg.battery, cfg.seed)
+    n, workers = cfg.fleet.size, cfg.fleet.workers
+    assert layout.size == n and layout.workers == workers
+    counts = split_counts(n, cfg.fleet.locations)
+    assert layout.locations == tuple(cfg.fleet.locations) and layout.counts == tuple(counts.values())
+    specs = generate_batteries(n, cfg.battery, cfg.seed)
     assert list(layout.ids) == [s.battery_id for s in specs]  # b00000..b19999, as generate_batteries names them
     split = assign_locations(specs, cfg.fleet.locations)
+    edges = []
     for li, (loc, block) in enumerate(split.items()):
         idx = layout.location_indices(li)
         assert [layout.ids[g] for g in idx] == [b.battery_id for b in block]
-    assert layout.location_of(9999) == "LZ_HOUSTON" and layout.location_of(10000) == "LZ_NORTH"
+        assert layout.location_of(int(idx[0])) == layout.location_of(int(idx[-1])) == loc
+        edges += [int(idx[0]), int(idx[-1])]
     assert np.array_equal(layout.capacity_kwh, [s.capacity_kwh for s in specs])
     assert np.array_equal(layout.power_kw, [s.power_kw for s in specs])
+    # cohorts: contiguous blocks of the fleet in id order, so a controller serves one city (two at a boundary)
     owners = layout.default_owners()
-    assert np.bincount(owners, minlength=20).tolist() == [1000] * 20
-    for w in range(20):  # 500 Houston + 500 Dallas-Fort Worth each
-        assert (layout.loc_of[owners == w] == 0).sum() == 500
+    per = n // workers
+    assert np.bincount(owners, minlength=workers).tolist() == [per] * workers
+    assert np.array_equal(owners, np.repeat(np.arange(workers), per))
+    for w in range(workers):
+        mine = np.flatnonzero(owners == w)
+        want = {loc: int(np.sum((mine >= layout.offsets[li]) & (mine < layout.offsets[li] + layout.counts[li])))
+                for li, loc in enumerate(layout.locations)}
+        assert layout.counts_by_location(mine) == {loc: c for loc, c in want.items() if c}
+    spans = [w for w in range(workers) if len(layout.counts_by_location(np.flatnonzero(owners == w))) > 1]
+    assert spans and len(spans) <= len(layout.locations) - 1  # at most one controller per city boundary
     public = json.loads(json.dumps(layout.public()))
-    for g in (0, 1, 9999, 10000, 19999):
+    for g in (0, 1, *edges, n - 1):
         assert layout.index_of(layout.ids[g]) == g
         assert layout_index(public, layout.ids[g]) == (g, layout.location_of(g))
     for bad in ("b20000", "b0001", "b000001", "LZ_HOUSTON-000001", "B00001", "b-0001", "nope", ""):
