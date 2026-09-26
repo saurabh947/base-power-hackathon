@@ -25,7 +25,7 @@ case "${1:?ingest|forecast}" in
       --service-account "$SA" --set-cloudsql-instances "$SQL" \
       --set-env-vars "$DB_ENV" --set-secrets "$DB_SECRET" \
       --cpu 4 --memory 8Gi --task-timeout 1800 --max-retries 0 \
-      --command python --args="-m,src.backtest.runner,--strategies,bands,forecast,peak,--year,2025,--pitch"
+      --command python --args="^;^-m;src.backtest.runner;--strategies;bands,forecast,peak;--year;2025;--pitch"  # ^;^ = ";" separates args
     JOB=fleet-sim-backtest ;;
   *) echo "usage: $0 ingest|forecast|backtest [--no-run]" >&2; exit 2 ;;
 esac
