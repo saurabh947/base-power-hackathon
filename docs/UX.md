@@ -94,12 +94,11 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **Button:** "Re-run the full year" (POST /backtest), showing progress. Next to it is a **Stop** button (POST /backtest/{id}/cancel). Stop is enabled only while a re-run is running; a stopped run keeps the previous results ("Stopped. The previous results are still shown.").
 - **"What the AI adds"** is a full-width section right under the big number (`GET /results/ai-gains`):
   - **Headline:** "+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet", computed from `uplift`.
-  - **Four cards**, each with bars and a "What this means" line:
+  - **Three cards**, each with bars and a "What this means" line:
     - *Earns more*
     - *Gets closer to perfect*: `share_of_best`
     - *Soaks up surplus power*: `surplus_mwh`
-    - *Ready for spikes*: always the 2024 figures, tagged "2024"
-  - **Year switch:** "2025 (headline year)" / "2024 (check year)" drives the headline and the first three cards.
+  - **Pitch year (2025) only.** The human removed the 2024 switch and, with it, the 2024-only "Ready for spikes" card.
   - No limitations line in this section (the human's call). The fine print stays in "How we got this number".
   - A 404 hides the section.
 
