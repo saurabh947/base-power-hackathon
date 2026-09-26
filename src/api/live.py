@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -90,6 +91,7 @@ class ForecastCache:
         self._slot: str | None = None
         self._value: dict = {}
         self._announced: set = set()
+        self._retry_import_at = 0.0
 
     def at(self, sim_time_utc: str | None, backend: Backend | None = None) -> dict:
         if not sim_time_utc:
@@ -103,9 +105,13 @@ class ForecastCache:
         with self._lock:
             if slot == self._slot:
                 return self._value
+            if time.monotonic() < self._retry_import_at:
+                return {}
         try:
             provider = importlib.import_module("src.forecast.provider")
-        except ImportError:
+        except ImportError:  # not built yet: don't retry the import on every frame
+            with self._lock:
+                self._retry_import_at = time.monotonic() + 60.0
             return {}
         out = {}
         for loc in (backend.cfg.fleet.locations if backend else ()):

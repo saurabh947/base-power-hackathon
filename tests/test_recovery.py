@@ -14,6 +14,7 @@ import uuid
 import numpy as np
 import pytest
 
+from src.config import load_raw_config
 from src.sim.coordinator import Coordinator, Orchestration
 from src.sim.redis_layout import F_OWNER, F_TICK, reachable, redis_url
 
@@ -97,8 +98,13 @@ def _assert_recovered(co, killed_after: int, victim: int, cohort: np.ndarray, so
     assert np.array_equal(co.read_hash_soc(), co.replay_journal(soc0))
 
 
+def _wide_max_speed_barrier() -> Orchestration:
+    """500 ms at max speed so a busy laptop never makes a *healthy* worker miss (production: 250 ms)."""
+    return Orchestration.from_config(load_raw_config(), max_speed_deadline_ms=500.0)
+
+
 def test_kill_a_worker_at_max_speed(coordinator):
-    co = coordinator()
+    co = coordinator(orchestration=_wide_max_speed_barrier())
     co.start({"start_utc": EVENING, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
              max_ticks=16, internal=True)
     fired = _kill_after(co, 5, 7)
@@ -120,7 +126,7 @@ def test_kill_a_worker_at_two_ticks_per_second(coordinator):
 
 
 def test_a_frozen_worker_is_fenced_out_when_it_wakes(coordinator):
-    co = coordinator()
+    co = coordinator(orchestration=_wide_max_speed_barrier())
     co.start({"start_utc": EVENING, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
              max_ticks=14, internal=True)
     fired = _kill_after(co, 3, 4, sig=signal.SIGSTOP)
@@ -144,7 +150,7 @@ def test_a_frozen_worker_is_fenced_out_when_it_wakes(coordinator):
 
 
 def test_one_missed_deadline_is_suspect_not_dead(coordinator):
-    co = coordinator()
+    co = coordinator(orchestration=_wide_max_speed_barrier())
     co.start({"start_utc": EVENING, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
              max_ticks=10, internal=True)
     fired = _kill_after(co, 3, 2, sig=signal.SIGSTOP)

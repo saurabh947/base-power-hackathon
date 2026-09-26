@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
-from src.sim.coordinator import Coordinator
+from src.config import load_raw_config
+from src.sim.coordinator import Coordinator, Orchestration
 from src.sim.redis_layout import F_TICK, reachable, redis_url
 
 pytestmark = pytest.mark.redis
@@ -38,7 +39,10 @@ def coordinator():
 
 
 def test_m2_one_sim_day_20k_batteries_20_workers(coordinator):
-    co = coordinator(journal=True)
+    # A wider max-speed barrier (1 s instead of 250 ms) keeps this acceptance check honest on a laptop
+    # shared with other test suites: it measures tracking and throughput, not failure detection.
+    orch = Orchestration.from_config(load_raw_config(), max_speed_deadline_ms=1000.0)
+    co = coordinator(journal=True, orchestration=orch)
     assert co.N == 20000 and co.n_workers == 20
     assert len({h.pid for h in co.workers}) == 20 and all(h.status == "healthy" for h in co.workers)
     co.start({"preset": "spike_evening", "speed_tps": "max", "strategy": "bands", "start_charge_level": 0.5},

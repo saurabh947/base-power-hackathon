@@ -148,3 +148,13 @@ def test_forecast_strategy_falls_back_to_bands_until_it_lands(cfg, monkeypatch):
     assert strategies["LZ_HOUSTON"] is not strategies["LZ_NORTH"]  # one instance per location
     peak, name, warning = build_strategies("peak", cfg, ["LZ_HOUSTON"])
     assert name == "peak" and warning is None and isinstance(peak["LZ_HOUSTON"], PeakStrategy)
+
+
+def test_coordinator_drops_control_requests_the_api_gave_up_on():
+    import time
+
+    from src.sim.coordinator import Coordinator
+
+    co = Coordinator(url="redis://127.0.0.1:1/0", prefix="test:stale:", fleet_size=10, workers=1)
+    stale = co.handle_control({"id": None, "cmd": "reset", "wall": time.time() - 60})
+    assert stale["error"] == "stale" and co.status == "idle"

@@ -198,6 +198,9 @@ def test_presenter_kill_flow(live):
     r = client.post("/chaos/kill?worker_id=1", headers=hdr)
     assert r.status_code == 200 and set(r.json()) == {"worker_id", "pid", "killed_at_utc"}
     assert r.json()["worker_id"] == 1 and r.json()["pid"] == co.workers[1].pid
+    # before the coordinator even notices, the kill already counts: no double kill, no dropping below 2
+    assert client.post("/chaos/kill?worker_id=1", headers=hdr).json()["error"] == "already_dead"
+    assert client.post("/chaos/kill?worker_id=2", headers=hdr).json()["error"] == "too_few_healthy"
     assert _wait(lambda: co.workers[1].status == "dead", timeout=10)
     r = client.post("/chaos/kill?worker_id=1", headers=hdr)
     assert r.status_code == 409 and r.json()["error"] == "already_dead"

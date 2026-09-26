@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Mapping
 
@@ -180,6 +181,12 @@ def kill_worker(backend: Backend, worker_id: int | None, rng=None) -> dict:
     workers = {int(w["worker_id"]): w for w in snap.get("workers", [])}
     if not workers:
         raise ctl.ControlError(503, "simulator_unavailable", "The simulator's controllers aren't running yet.")
+    # a worker killed moments ago still looks healthy until the coordinator notices (~2 ticks)
+    killed_key = backend.keys.prefix + "chaos:killed"
+    recently_killed = {int(p) for p in backend.r.zrangebyscore(killed_key, time.time() - 60, "+inf")}
+    for info in workers.values():
+        if info.get("pid") in recently_killed and info.get("status") != "dead":
+            info["status"] = "dead"
     healthy = sorted(w for w, info in workers.items() if info.get("status") == "healthy")
     if worker_id is None:
         if len(healthy) - 1 < 2:
@@ -206,4 +213,8 @@ def kill_worker(backend: Backend, worker_id: int | None, rng=None) -> dict:
         os.kill(int(pid), signal.SIGKILL)
     except ProcessLookupError:
         raise ctl.ControlError(409, "already_dead", f"Controller {worker_id} has already crashed.") from None
+    pipe = backend.r.pipeline(transaction=False)
+    pipe.zadd(killed_key, {str(int(pid)): time.time()})
+    pipe.zremrangebyscore(killed_key, "-inf", time.time() - 120)
+    pipe.execute()
     return {"worker_id": worker_id, "pid": int(pid), "killed_at_utc": now_utc_iso()}

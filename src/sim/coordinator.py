@@ -33,6 +33,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -80,6 +81,7 @@ class Orchestration:
     snapshot_interval_s: float = 0.25
     action_event_min_ticks: int = 12
     price_spike_usd_mwh: float = 1000.0
+    control_stale_s: float = 5.0
     maxlen: dict = field(default_factory=lambda: dict(DEFAULT_MAXLEN))
 
     @classmethod
@@ -99,6 +101,7 @@ class Orchestration:
             spawn_timeout_s=float(o.get("spawn_timeout_s", 30.0)),
             action_event_min_ticks=int(api.get("action_event_min_ticks", 12)),
             price_spike_usd_mwh=float(api.get("price_spike_usd_mwh", 1000.0)),
+            control_stale_s=float(api.get("control_timeout_s", 4.0)) + 1.0,
             maxlen={**DEFAULT_MAXLEN, **(o.get("stream_maxlen") or {})},
         )
         kw.update(overrides)
@@ -110,12 +113,18 @@ class Orchestration:
 # --- prices --------------------------------------------------------------------------------------
 
 _FEEDS: dict = {}
+_FEEDS_LOCK = threading.Lock()
 
 
 def price_feed(years: tuple[int, ...]):
     """The PriceFeed for a run. env PRICE_SOURCE=snapshot (default, data/snapshot) | postgres."""
     source = os.environ.get("PRICE_SOURCE", "snapshot")
     key = (source,) if source == "postgres" else (source, years)
+    with _FEEDS_LOCK:
+        return _price_feed_locked(source, key, years)
+
+
+def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...]):
     if key not in _FEEDS:
         if source == "postgres":
             from src.feeds.replay import PostgresReplayFeed  # built in parallel (M1); imported lazily
@@ -598,6 +607,11 @@ class Coordinator:
     def handle_control(self, op: Mapping) -> dict:
         op_id, cmd, args = op.get("id"), op.get("cmd"), op.get("args") or {}
         after = None
+        sent = op.get("wall")
+        if isinstance(sent, (int, float)) and time.time() - sent > self.orch.control_stale_s:
+            # the API stopped waiting long ago and told the visitor to retry: acting now would surprise them
+            _log(f"dropping stale control {cmd!r} ({time.time() - sent:.1f}s old)")
+            return {"ok": False, "status": 503, "error": "stale", "message": "Request expired."}
         handlers = {"start": self._ctl_start, "pause": self._ctl_pause, "resume": self._ctl_resume,
                     "speed": self._ctl_speed, "reset": self._ctl_reset, "availability": self._ctl_availability}
         try:
@@ -942,6 +956,7 @@ class Coordinator:
         run.k += 1
         run.ticks_done += 1
         run.last_ts = ts
+        self._snapshot_dirty = True  # totals moved: keep the snapshot within ~250 ms of the ticks
         record = self._tick_record(run, k, ts, decisions, feasible, actual, revenue)
         pipe = self.r.pipeline(transaction=False)
         pipe.xadd(self.keys.ticks, {"run": run.run_id, "k": k, "j": json.dumps(record)},
@@ -1507,7 +1522,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
     co.boot(wait_healthy=False)
-    _preload_prices(co)
+    threading.Thread(target=_preload_prices, args=(co,), name="price-preload", daemon=True).start()
     co.serve_forever()
     return 0
 

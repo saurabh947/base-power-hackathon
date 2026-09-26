@@ -85,6 +85,22 @@ def test_sigterm_stops_everything_cleanly(stack):
     assert _wait(lambda: not any(_alive(p) for p in workers + [coordinator]), 10)
 
 
+def test_a_killed_launcher_leaves_no_orphans(stack):
+    proc, base, workers, coordinator = stack
+    proc.send_signal(signal.SIGKILL)  # no chance to clean up: children must notice on their own
+    proc.wait(timeout=10)
+    assert _wait(lambda: not any(_alive(p) for p in workers + [coordinator]), 15)
+    assert _wait(lambda: not _responds(base), 15)  # the API followed its parent too
+
+
+def _responds(base: str) -> bool:
+    try:
+        httpx.get(f"{base}/health", timeout=1)
+        return True
+    except httpx.HTTPError:
+        return False
+
+
 def test_a_dead_coordinator_stops_the_stack_with_an_error(stack):
     proc, base, workers, coordinator = stack
     os.kill(coordinator, signal.SIGKILL)

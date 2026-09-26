@@ -30,6 +30,7 @@ import argparse
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -524,6 +525,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hb-ttl", type=float, default=6.0)
     ap.add_argument("--block-ms", type=int, default=1000)
     args = ap.parse_args(argv)
+    # Ctrl+C reaches the whole process group; the coordinator stops us cleanly (and SIGTERM/SIGKILL still work)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     worker = Worker(args.worker_id, args.epoch, url=args.redis_url, prefix=args.prefix,
                     parent_pid=args.parent_pid if args.parent_pid is not None else os.getppid(),
                     hb_interval_s=args.hb_interval, hb_ttl_s=args.hb_ttl, block_ms=args.block_ms)
