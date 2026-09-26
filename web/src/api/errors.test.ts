@@ -30,6 +30,14 @@ describe('friendlyError', () => {
     expect(noPasscode.unreachable).toBe(false);
   });
 
+  it('asks for a short wait when a Start comes while the controllers restart after a Reset', () => {
+    const f = friendlyError(new ApiError(503, 'simulator_restarting', 'The simulator is still restarting its controllers.', 5), 'start');
+    expect(f.title).toBe('The simulator is still restarting after a reset.');
+    expect(f.detail).toBe('Its 20 controllers are coming back up. Try again in 5 seconds.');
+    expect(f.retryAfterS).toBe(5); // the Start button counts down
+    expect(f.unreachable).toBe(false);
+  });
+
   it('covers network failures, timeouts and a missing base URL', () => {
     expect(friendlyError(new ApiError(0, 'network', null, null)).title).toBe("Can't reach the simulator.");
     expect(friendlyError(new ApiError(0, 'timeout', null, null)).title).toBe('The simulator is taking a long time to answer.');

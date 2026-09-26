@@ -7,6 +7,6 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'mock/**/*.test.ts'],
     environment: 'node',
     // The contrast test reads the design tokens as text (tokens.css?raw).
-    css: { include: [/tokens\.css/] },
+    css: { include: [/(tokens|map)\.css/] },
   },
 });

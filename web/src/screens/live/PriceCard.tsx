@@ -1,10 +1,11 @@
-import { LOCATIONS, type LocationId, type Tick } from '../../api/types.ts';
+import type { Tick } from '../../api/types.ts';
 import { PriceChart } from '../../components/charts/PriceChart.tsx';
 import { WINDOW_LABELS, type WindowKey } from '../../components/charts/model.ts';
 import { Panel } from '../../components/Panel.tsx';
 import { Segmented } from '../../components/Segmented.tsx';
 import { Term, TechOnly } from '../../components/Tech.tsx';
 import { useLive } from '../../live/liveStore.ts';
+import { byBatteries, useCities } from '../../lib/cities.ts';
 import { areaName, fmtPriceKwh, fmtPriceMwh, fmtTimeOfDay } from '../../lib/format.ts';
 import { useTechnical } from '../../state/prefs.ts';
 import { ActionChip } from './ActionChip.tsx';
@@ -14,11 +15,12 @@ const lastTick = (s: { history: Tick[] }) => s.history[s.history.length - 1] ?? 
 
 function Readouts() {
   const tick = useLive(lastTick);
+  const cities = useCities();
   const forecastModel = useLive((s) => Object.values(s.forecast)[0]?.model ?? null);
   const forecastIssued = useLive((s) => Object.values(s.forecast)[0]?.issued_utc ?? null);
   return (
     <div className="readouts" aria-live="off">
-      {LOCATIONS.map((loc) => {
+      {byBatteries(cities).map(({ location: loc }) => {
         const price = tick?.price?.[loc];
         const decision = tick?.decision_price?.[loc];
         return (
@@ -85,6 +87,7 @@ export function PriceCard() {
   const area = useView((v) => v.area);
   const windowKey = useView((v) => v.window);
   const technical = useTechnical();
+  const cities = useCities();
   return (
     <Panel
       title={<Term plain="Electricity price right now" tech="RT settlement point price" />}
@@ -99,11 +102,11 @@ export function PriceCard() {
       }
       actions={
         <>
-          <Segmented<LocationId>
+          <Segmented<string>
             label="Chart shows"
             value={area}
             onChange={(v) => setView({ area: v })}
-            options={LOCATIONS.map((l) => ({ value: l, label: areaName(l).replace(' area', '') }))}
+            options={byBatteries(cities).map((c) => ({ value: c.location, label: c.name }))}
           />
           <Segmented<WindowKey>
             label="Time shown"

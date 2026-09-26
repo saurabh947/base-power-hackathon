@@ -1,12 +1,15 @@
 // Plain-language formatting. Every number the site shows goes through here so it
 // carries a unit and, where it helps, a human translation (docs/UX.md principle 1):
 // "$120/MWh (12¢ per kWh)", "48.0 MW (about what 32,000 homes use)".
-// Market times are always shown in Houston time (America/Chicago).
+// Market times are always shown in Central time (America/Chicago), which all four cities share.
 
 import type { Preset, TickAction } from '../api/types.ts';
+import { cityName } from './cities.ts';
 
 export const LOCALE = 'en-US';
 export const MARKET_TZ = 'America/Chicago';
+/** What the site calls market time, as the backend's event messages do. */
+export const TIME_ZONE_PHRASE = 'Central time';
 export const TICK_MINUTES = 5;
 
 /**
@@ -62,18 +65,22 @@ export function roundSignificant(n: number, digits = 2): number {
 
 // ---- plain words -----------------------------------------------------------
 
-const AREA_NAMES: Record<string, string> = {
-  LZ_HOUSTON: 'Houston area',
-  LZ_NORTH: 'Dallas–Fort Worth area',
-};
-
+/** "Houston area", "Dallas–Fort Worth area" (names from GET /fleet/layout); unknown ids as they are. */
 export function areaName(location: string): string {
-  return AREA_NAMES[location] ?? location;
+  const name = cityName(location);
+  return name === location ? location : `${name} area`;
 }
 
-/** "Houston", "Dallas–Fort Worth" (for lists like "Houston & Dallas–Fort Worth"). */
+/** "Houston", "Dallas–Fort Worth" (for lists like "Dallas–Fort Worth, Houston, San Antonio, and Austin"). */
 export function areaShortName(location: string): string {
-  return areaName(location).replace(/ area$/, '');
+  return cityName(location);
+}
+
+const listFormat = new Intl.ListFormat(LOCALE, { style: 'long', type: 'conjunction' });
+
+/** "a, b, and c" */
+export function fmtList(items: string[]): string {
+  return listFormat.format(items);
 }
 
 /** "5–11.5" with an en dash; a single value when both ends match. */
@@ -171,6 +178,12 @@ export function fmtPriceKwh(usdPerMwh: number): string {
   return `${sign}${digits}¢ per kWh`;
 }
 
+/** The per-kWh translation for tight spaces: "12¢/kWh", "$1.76/kWh". */
+export function fmtPriceKwhShort(usdPerMwh: number): string {
+  if (!finite(usdPerMwh)) return '–';
+  return fmtPriceKwh(usdPerMwh).replace(' per kWh', '/kWh');
+}
+
 /** "$120/MWh (12¢ per kWh)" */
 export function fmtPrice(usdPerMwh: number): string {
   if (!finite(usdPerMwh)) return '–';
@@ -257,7 +270,7 @@ export function fmtDuration(totalSeconds: number): string {
   return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
 }
 
-// ---- dates and times (Houston time) -------------------------------------------
+// ---- dates and times (Central time) -------------------------------------------
 
 const timeFormat = new Intl.DateTimeFormat(LOCALE, {
   timeZone: MARKET_TZ,
@@ -310,20 +323,20 @@ export function fmtTimeOfDay(value: string | number | Date, options: { compact?:
   return `${hour}:${minute} ${period}`;
 }
 
-/** "May 16, 2025" for an instant, as a Houston calendar date. */
+/** "May 16, 2025" for an instant, as a Central-time calendar date. */
 export function fmtDate(value: string | number | Date): string {
   const d = toDate(value);
   return d ? dateFormat.format(d) : '–';
 }
 
-/** The replay clock: "May 16, 2025, 7:45 pm, Houston time". */
+/** The replay clock: "May 16, 2025, 7:45 pm, Central time" (all four cities keep America/Chicago time). */
 export function fmtClock(value: string | number | Date): string {
   const d = toDate(value);
   if (!d) return '–';
-  return `${fmtDate(d)}, ${fmtTimeOfDay(d)}, Houston time`;
+  return `${fmtDate(d)}, ${fmtTimeOfDay(d)}, ${TIME_ZONE_PHRASE}`;
 }
 
-/** Houston calendar date of an instant as YYYY-MM-DD. */
+/** Central-time calendar date of an instant as YYYY-MM-DD. */
 export function localDateOf(value: string | number | Date): string | null {
   const d = toDate(value);
   return d ? localDayFormat.format(d) : null;

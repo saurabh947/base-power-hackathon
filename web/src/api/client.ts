@@ -42,6 +42,8 @@ export interface RequestOptions {
   passcode?: string | null;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Fetch cache mode: 'no-store' (default) for live data; 'no-cache' revalidates with an ETag. */
+  cache?: RequestCache;
 }
 
 function parseRetryAfter(body: ApiErrorBody | null, header: string | null): number | null {
@@ -60,7 +62,7 @@ export async function request<T>(method: 'GET' | 'POST', path: string, options: 
   const controller = new AbortController();
   const headers: Record<string, string> = {};
   if (options.passcode) headers[PASSCODE_HEADER] = options.passcode;
-  const init: RequestInit = { method, headers, signal: controller.signal, cache: 'no-store' };
+  const init: RequestInit = { method, headers, signal: controller.signal, cache: options.cache ?? 'no-store' };
   if (options.body !== undefined && method === 'POST') {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(options.body);
@@ -110,13 +112,16 @@ export const api = {
   health: (signal?: AbortSignal) => request<HealthResponse>('GET', '/health', { signal, timeoutMs: 30_000 }),
   settings: (signal?: AbortSignal) => request<SettingsResponse>('GET', '/settings', { signal, timeoutMs: 30_000 }),
   state: (signal?: AbortSignal) => request<unknown>('GET', '/state', { signal }),
-  start: (settings: Partial<EditableSettings>) => request<StartResponse>('POST', '/run/start', { body: settings }),
+  // After a Reset the server holds a Start for up to 15 s while its controllers come back up.
+  start: (settings: Partial<EditableSettings>) => request<StartResponse>('POST', '/run/start', { body: settings, timeoutMs: 35_000 }),
   pause: () => request<{ status: RunStatus }>('POST', '/run/pause'),
   resume: () => request<{ status: RunStatus }>('POST', '/run/resume'),
   speed: (speed_tps: number) => request<{ speed_tps: number }>('POST', '/run/speed', { body: { speed_tps } }),
   reset: () => request<{ status: RunStatus }>('POST', '/run/reset'),
   availability: (change: AvailabilityRequest) => request<AvailabilityResponse>('POST', '/availability', { body: change }),
   battery: (batteryId: string) => request<BatteryInfo>('GET', `/batteries/${encodeURIComponent(batteryId)}`),
+  /** GET /fleet/layout, read defensively by src/map/layout.ts. */
+  layout: (signal?: AbortSignal) => request<unknown>('GET', '/fleet/layout', { signal, timeoutMs: 30_000, cache: 'no-cache' }),
   presenterCheck: (passcode: string) => request<{ ok: boolean }>('POST', '/presenter/check', { passcode }),
   kill: (passcode: string, workerId?: number) =>
     request<KillResponse>('POST', workerId === undefined ? '/chaos/kill' : `/chaos/kill?worker_id=${workerId}`, { passcode }),

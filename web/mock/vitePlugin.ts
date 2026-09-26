@@ -23,7 +23,7 @@ export function mockApiPlugin(basePath = '/__mock'): Plugin {
       });
       server.httpServer?.on('close', () => mock.close());
       server.config.logger.info(
-        `  ➜  Mock API: ${basePath} (simulated fleet; real ERCOT prices for May 16–17, 2025). Set VITE_API_BASE_URL to use a real backend.`,
+        `  ➜  Mock API: ${basePath} (simulated fleet; real ERCOT prices for the replay preset days). Set VITE_API_BASE_URL to use a real backend.`,
       );
     },
   };

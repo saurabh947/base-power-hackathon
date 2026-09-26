@@ -44,6 +44,11 @@ export interface LiveState {
   runChanged: number;
   /** From idle messages: the run that was replaced or reset, with its totals. */
   lastRun: LastRun | null;
+  /**
+   * battery_status of the latest snapshot or frame: base64 of packed 4-bit codes, one per
+   * battery (src/map/status.ts). Null when none arrived, e.g. after a reset (every battery online).
+   */
+  batteryStatus: string | null;
 }
 
 export interface LastRun {
@@ -74,6 +79,7 @@ export const initialLiveState: LiveState = Object.freeze({
   lastMessageAtMs: null,
   runChanged: 0,
   lastRun: null,
+  batteryStatus: null,
 });
 
 const STATUSES: ReadonlySet<string> = new Set(['idle', 'starting', 'running', 'paused', 'finished']);
@@ -200,6 +206,10 @@ function readLastRun(prev: LastRun | null, v: unknown): LastRun | null {
   return prev && prev.runId === next.runId && JSON.stringify(prev.totals) === JSON.stringify(next.totals) ? prev : next;
 }
 
+function statusOf(message: Json): string | null {
+  return typeof message.battery_status === 'string' && message.battery_status ? message.battery_status : null;
+}
+
 function runIdOf(message: Json, fallback: string | null): string | null {
   if (!('run_id' in message)) return fallback;
   return typeof message.run_id === 'string' ? message.run_id : null;
@@ -241,6 +251,7 @@ export function liveReducer(state: LiveState, message: unknown, nowMs: number = 
         availability: keep(state.availability, message.availability),
         events: mergeEvents(sameRun ? state.events : [], message.events),
         forecast: JSON.stringify(fc) === JSON.stringify(state.forecast) ? state.forecast : fc,
+        batteryStatus: statusOf(message),
       };
     }
 
@@ -269,6 +280,7 @@ export function liveReducer(state: LiveState, message: unknown, nowMs: number = 
         events: mergeEvents(newRun ? [] : state.events, message.events),
         forecast,
         runChanged: newRun ? state.runChanged + 1 : state.runChanged,
+        batteryStatus: statusOf(message),
       };
     }
 
@@ -291,6 +303,8 @@ export function liveReducer(state: LiveState, message: unknown, nowMs: number = 
         events: mergeEvents(state.events, message.events),
         forecast: EMPTY_FORECAST,
         lastRun: readLastRun(state.lastRun, message.last_run),
+        // A reset brings every battery back online; idle messages carry no battery_status.
+        batteryStatus: hadRun ? null : (statusOf(message) ?? state.batteryStatus),
       };
     }
 

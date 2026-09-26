@@ -230,6 +230,18 @@ describe('idle and junk', () => {
     expect(apply(s2, idle(null)).lastRun).toBeNull();
   });
 
+  it('keeps the latest battery_status, and forgets it when a reset brings every battery back', () => {
+    const s1 = apply(initialLiveState, snapshot({ battery_status: 'ERER' }));
+    expect(s1.batteryStatus).toBe('ERER');
+    const s2 = apply(s1, frame([tick(3)], { battery_status: 'IiIi' }));
+    expect(s2.batteryStatus).toBe('IiIi');
+    expect(apply(s2, frame([tick(4)])).batteryStatus).toBeNull(); // a frame without one: no stale colours
+    expect(apply(s2, idle(null)).batteryStatus).toBeNull();
+    // Idle from the start: the idle snapshot's status stays until something replaces it.
+    const i1 = apply(initialLiveState, snapshot({ run_id: null, status: 'idle', settings: null, history: [], battery_status: 'EREA' }));
+    expect(apply(i1, idle(null)).batteryStatus).toBe('EREA');
+  });
+
   it('treats a frame with status idle like an idle message', () => {
     const s = apply(initialLiveState, snapshot(), frame([], { status: 'idle' }));
     expect(s.status).toBe('idle');

@@ -6,6 +6,7 @@ import { PracticeBanner } from './components/PracticeBanner.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { useRoute, type Route } from './lib/router.ts';
 import { LiveScreen } from './screens/live/LiveScreen.tsx';
+import { useView } from './screens/live/viewStore.ts';
 import { ResultsScreen } from './screens/results/ResultsScreen.tsx';
 import { StartScreen } from './screens/start/StartScreen.tsx';
 import { checkBackend } from './state/backend.ts';
@@ -19,8 +20,11 @@ const TITLES: Record<Route, string> = {
 
 export function App() {
   const route = useRoute();
+  const liveMode = useView((v) => v.mode);
   const mainRef = useRef<HTMLElement>(null);
   const firstRender = useRef(true);
+  // The live map fills the window and is always dark (docs/UX.md, Live map).
+  const mapMode = route === 'live' && liveMode === 'map';
 
   useEffect(() => {
     void checkBackend();
@@ -36,6 +40,17 @@ export function App() {
     mainRef.current?.focus({ preventScroll: true });
   }, [route]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!mapMode) return;
+    root.dataset.theme = 'map';
+    root.classList.add('map-mode');
+    return () => {
+      delete root.dataset.theme;
+      root.classList.remove('map-mode');
+    };
+  }, [mapMode]);
+
   return (
     <>
       <a className="skip-link" href="#main">
@@ -43,13 +58,13 @@ export function App() {
       </a>
       <Header route={route} />
       <PracticeBanner />
-      <main id="main" tabIndex={-1} ref={mainRef}>
+      <main id="main" tabIndex={-1} ref={mainRef} className={mapMode ? 'main-map' : undefined}>
         {route === 'start' ? <StartScreen /> : null}
         {route === 'live' ? <LiveScreen /> : null}
         {route === 'results' ? <ResultsScreen /> : null}
         {route === 'notfound' ? <NotFound /> : null}
       </main>
-      <Footer />
+      {mapMode ? null : <Footer />}
       <Toasts />
     </>
   );

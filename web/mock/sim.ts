@@ -1,13 +1,18 @@
 // SIMULATED fleet for the mock API (dev and tests only; never shipped).
 //
-// Real: the LZ_HOUSTON / LZ_NORTH prices in ./data (ERCOT, each replay preset's
-// day and the day after). Simulated: everything else — batteries, controllers,
-// decisions, money, forecasts, failures and full-year results. The physics
-// follow RUNLOG.md loosely (grid-side metering, sqrt(eta) each way, 20% reserve)
-// so the site sees realistic shapes, but no number here is a real result.
+// Real: the prices in ./data (ERCOT real-time prices of the four Texas Triangle
+// load zones, each replay preset's day and the day after). Simulated:
+// everything else — batteries and where they sit, controllers, decisions,
+// money, forecasts, failures and full-year results. The physics follow
+// RUNLOG.md loosely (grid-side metering, sqrt(eta) each way, 20% reserve) so the
+// site sees realistic shapes, but no number here is a real result.
 //
 // Contract details (docs/API.md): worker_id 0-19 shown as "Controller N+1";
-// battery ids b00000-b19999 with Houston b00000-b09999; idle message every 5 s.
+// battery ids b00000-b19999 in city blocks (Houston b00000-b06999, Dallas–Fort
+// Worth b07000-b14999, San Antonio b15000-b17599, Austin b17600-b19999); the
+// fleet split into 20 contiguous controller blocks of 1,000, as the backend's
+// FleetLayout.default_owners does (controller 18, worker 17, spans San Antonio
+// and Austin); idle message every 5 s.
 
 import type {
   Availability,
@@ -17,10 +22,12 @@ import type {
   BatteryInfo,
   EditableSettings,
   FailedCommand,
+  FleetLayout,
   Forecast,
   FrameMessage,
   IdleMessage,
   LiveEvent,
+  LocationTotals,
   Preset,
   Results,
   RunStatus,
@@ -32,22 +39,24 @@ import type {
   Totals,
   Worker,
 } from '../src/api/types.ts';
+import { batteryRanges, DEFAULT_SHARES } from '../src/lib/fleet.ts';
+import { CHARGING, DOWN, OFFLINE, packStatus, SELLING, WAITING } from '../src/map/status.ts';
 import priceFixture from './data/ercot_rt_lz_preset_days_2025.json' with { type: 'json' };
+import { buildMockLayout } from './layout.ts';
 
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
 export const MOCK_MARKER = 'FLEET_SIM_MOCK_DO_NOT_SHIP';
-export const MOCK_VERSION = 'mock-0.2 (simulated data; real ERCOT prices for the replay preset days)';
+export const MOCK_VERSION = 'mock-0.3 (simulated data; real ERCOT prices for the replay preset days)';
 
-export const LOCS = ['LZ_HOUSTON', 'LZ_NORTH'] as const;
+/** The Texas Triangle load zones in config order. */
+export const LOCS = ['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN'] as const;
 export type Loc = (typeof LOCS)[number];
 
 const TICK_S = 300;
 const INTERVAL_S = 900;
 const DT_H = TICK_S / 3600;
 const FLEET = 20_000;
-const PER_AREA = 10_000;
 const WORKERS = 20;
-const PER_WORKER = 1_000;
 const SQRT_ETA = Math.sqrt(0.9);
 const SOC_MIN = 0.2;
 const SOC_MAX = 1.0;
@@ -58,6 +67,20 @@ const FORECAST_HORIZON_S = 4 * 3600;
 const IDLE_EVERY_S = 5;
 const TZ = 'America/Chicago';
 
+/** Same split as config.yaml / src/sim/fleet.location_counts: 7,000 / 8,000 / 2,600 / 2,400. */
+const RANGES = batteryRanges(FLEET, DEFAULT_SHARES);
+function rangeOf(loc: Loc) {
+  const r = RANGES.find((x) => x.location === loc);
+  if (!r) throw new Error(`no battery range for ${loc}`);
+  return r;
+}
+export const COUNT = Object.fromEntries(LOCS.map((l) => [l, rangeOf(l).last - rangeOf(l).first + 1])) as Record<Loc, number>;
+const BASE = Object.fromEntries(LOCS.map((l) => [l, rangeOf(l).first])) as Record<Loc, number>;
+const LOC_OF = new Uint8Array(FLEET);
+LOCS.forEach((loc, k) => LOC_OF.fill(k, BASE[loc], BASE[loc] + COUNT[loc]));
+
+const perLoc = <T>(f: (loc: Loc) => T): Record<Loc, T> => Object.fromEntries(LOCS.map((l) => [l, f(l)])) as Record<Loc, T>;
+
 /** Mirrors config.yaml presets.items (start_local added, as GET /settings sends it). */
 export const PRESETS: Preset[] = [
   {
@@ -66,7 +89,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-05-16',
     start_utc: '2025-05-16T21:00:00Z',
     start_local: '2025-05-16T16:00:00-05:00',
-    description: 'Prices jump above $2,000/MWh around 7:45 pm.',
+    description: 'All four cities jump above $2,000/MWh around 7:45 pm; San Antonio tops $3,000.',
   },
   {
     id: 'morning_spike',
@@ -74,7 +97,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-04-07',
     start_utc: '2025-04-07T08:00:00Z',
     start_local: '2025-04-07T03:00:00-05:00',
-    description: "The year's highest price, just before 7 am.",
+    description: "The year's highest prices: all four cities pass $3,500/MWh just before 7 am.",
   },
   {
     id: 'summer_spike',
@@ -82,7 +105,7 @@ export const PRESETS: Preset[] = [
     date_local: '2025-07-11',
     start_utc: '2025-07-11T23:00:00Z',
     start_local: '2025-07-11T18:00:00-05:00',
-    description: 'Both areas jump to about $1,750/MWh at 9 pm.',
+    description: 'All four cities jump to about $1,750/MWh at 9 pm.',
   },
   {
     id: 'ordinary_day',
@@ -90,20 +113,21 @@ export const PRESETS: Preset[] = [
     date_local: '2025-06-28',
     start_utc: '2025-06-28T05:00:00Z',
     start_local: '2025-06-28T00:00:00-05:00',
-    description: 'A typical day with small ups and downs.',
+    description: 'A typical day in all four cities, with small ups and downs.',
   },
 ];
 
+/** config.yaml presets.default is summer_spike. */
 export const DEFAULT_SETTINGS: Settings = {
-  preset: 'spike_evening',
-  start_utc: '2025-05-16T21:00:00Z',
+  preset: 'summer_spike',
+  start_utc: '2025-07-11T23:00:00Z',
   speed_tps: 2,
   strategy: 'forecast',
   start_charge_level: 0.9,
   fleet_size: FLEET,
   power_kw_range: [5.0, 11.5],
   capacity_kwh_range: [10.0, 20.0],
-  locations: { LZ_HOUSTON: 0.5, LZ_NORTH: 0.5 },
+  locations: { ...DEFAULT_SHARES },
 };
 
 export const SPEEDS = [1, 2, 5, 10];
@@ -131,12 +155,7 @@ export class MockError extends Error {
 
 // ---- real prices ---------------------------------------------------------------
 
-interface PriceRow {
-  ts_utc: string;
-  ts_local: string;
-  LZ_HOUSTON: number;
-  LZ_NORTH: number;
-}
+type PriceRow = { ts_utc: string; ts_local: string } & Record<Loc, number>;
 
 interface Segment {
   preset: string;
@@ -170,8 +189,8 @@ const SEGMENTS: Segment[] = priceFixture.segments.map((seg) => {
     preset: seg.preset,
     startS: toS(rows[0].ts_utc),
     endS: toS(rows[rows.length - 1].ts_utc) + INTERVAL_S,
-    cheap: { LZ_HOUSTON: percentile(of('LZ_HOUSTON'), 0.3), LZ_NORTH: percentile(of('LZ_NORTH'), 0.3) },
-    sellFloor: { LZ_HOUSTON: percentile(of('LZ_HOUSTON'), 0.85), LZ_NORTH: percentile(of('LZ_NORTH'), 0.85) },
+    cheap: perLoc((l) => percentile(of(l), 0.3)),
+    sellFloor: perLoc((l) => percentile(of(l), 0.85)),
   };
 });
 
@@ -182,7 +201,7 @@ function rowAt(tsS: number): PriceRow | null {
 /** 15-minute price, forward-filled within its own interval only; null where no data was loaded. */
 export function priceAt(loc: Loc, tsS: number): number | null {
   const row = rowAt(tsS);
-  return row ? row[loc] : null;
+  return row && typeof row[loc] === 'number' ? row[loc] : null;
 }
 
 function segmentAt(tsS: number): Segment | null {
@@ -256,12 +275,13 @@ const CAPACITY = new Float64Array(FLEET);
     CAPACITY[g] = c;
   }
 }
-const PERMUTATION: Record<Loc, Uint16Array> = { LZ_HOUSTON: shuffled(PER_AREA, 7), LZ_NORTH: shuffled(PER_AREA, 8) };
+const PERMUTATION = perLoc((l) => shuffled(COUNT[l], 7 + LOCS.indexOf(l)));
 const NAMEPLATE_KW = POWER.reduce((a, b) => a + b, 0);
+const CAPACITY_BY_LOC = perLoc((l) => CAPACITY.subarray(BASE[l], BASE[l] + COUNT[l]).reduce((a, b) => a + b, 0));
 
-/** Consecutive blocks in config order, as src/sim/fleet.assign_locations does: Houston b00000-b09999. */
-const areaOf = (g: number): Loc => (g < PER_AREA ? 'LZ_HOUSTON' : 'LZ_NORTH');
-const areaBase = (loc: Loc) => (loc === 'LZ_HOUSTON' ? 0 : PER_AREA);
+const LAYOUT = buildMockLayout(FLEET, DEFAULT_SHARES);
+
+const areaOf = (g: number): Loc => LOCS[LOC_OF[g]];
 export const batteryId = (g: number) => `b${String(g).padStart(5, '0')}`;
 
 export function batteryIndex(id: string): number | null {
@@ -269,6 +289,33 @@ export function batteryIndex(id: string): number | null {
   if (!m) return null;
   const n = Number(m[1]);
   return n < FLEET ? n : null;
+}
+
+/**
+ * Initial cohorts, as the backend's FleetLayout.default_owners: the fleet in id order split into 20
+ * contiguous chunks (numpy.array_split), so each controller serves one city, or two where a city
+ * boundary falls inside its chunk (worker 17: 600 San Antonio + 400 Austin).
+ */
+function defaultOwners(out: Uint8Array): void {
+  const small = Math.floor(FLEET / WORKERS);
+  const extra = FLEET % WORKERS;
+  let g = 0;
+  for (let w = 0; w < WORKERS; w++) {
+    const size = small + (w < extra ? 1 : 0);
+    out.fill(w, g, g + size);
+    g += size;
+  }
+}
+
+/** {location: batteries} among these battery indices, only locations that have some (event details). */
+function byLocation(idx: Iterable<number>): Record<string, number> {
+  const counts = new Uint32Array(LOCS.length);
+  for (const g of idx) counts[LOC_OF[g]]++;
+  const out: Record<string, number> = {};
+  LOCS.forEach((loc, k) => {
+    if (counts[k]) out[loc] = counts[k];
+  });
+  return out;
 }
 
 /** People count controllers from 1; worker_id counts from 0. */
@@ -279,8 +326,20 @@ const workerDetail = (w: { worker_id: number; pid: number | null }) => ({
   pid: w.pid,
 });
 
-const AREA_WORDS: Record<Loc, string> = { LZ_HOUSTON: 'Houston-area', LZ_NORTH: 'Dallas–Fort Worth-area' };
-const AREA_NAMES: Record<Loc, string> = { LZ_HOUSTON: 'Houston area', LZ_NORTH: 'Dallas–Fort Worth area' };
+const CITY_NAMES: Record<Loc, string> = {
+  LZ_HOUSTON: 'Houston',
+  LZ_NORTH: 'Dallas–Fort Worth',
+  LZ_CPS: 'San Antonio',
+  LZ_AEN: 'Austin',
+};
+const AREA_NAMES = perLoc((l) => `${CITY_NAMES[l]} area`);
+
+/** "Houston", "Houston and Austin", "Houston, Austin and San Antonio". */
+function cityList(locs: Loc[]): string {
+  const names = locs.map((l) => CITY_NAMES[l]);
+  if (locs.length === LOCS.length) return 'all four cities';
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
 
 function money(n: number): string {
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: n >= 100 ? 0 : 2, maximumFractionDigits: n >= 100 ? 0 : 2 })}`;
@@ -310,6 +369,7 @@ export interface MockSimOptions {
   resultsBeforeBacktest?: boolean;
 }
 
+const zeroLocTotals = (): Record<Loc, LocationTotals> => perLoc(() => ({ revenue_usd: 0, sold_kwh: 0, bought_kwh: 0 }));
 const zeroTotals = (): Totals => ({ revenue_usd: 0, sold_kwh: 0, bought_kwh: 0, ticks: 0 });
 
 export class MockSim {
@@ -328,6 +388,7 @@ export class MockSim {
   private tickIndex = 0;
   private history: Tick[] = [];
   private totals: Totals = zeroTotals();
+  private totalsBy: Record<Loc, LocationTotals> = zeroLocTotals();
   private lastRun: { run_id: string; totals: Totals } | null = null;
   private idleSeconds = 0;
   private soc = new Float64Array(FLEET);
@@ -336,6 +397,8 @@ export class MockSim {
   private offWorker = new Uint8Array(FLEET);
   private offBattery = new Uint8Array(FLEET);
   private lastSetpoint = new Float64Array(FLEET);
+  /** Each battery's code at the latest tick (docs/API.md battery_status), or null before the first tick. */
+  private tickCodes: Uint8Array | null = null;
   private workers: WorkerState[] = [];
   private offlineWorkers = new Set<number>();
   private failed: { count: number; recent: FailedCommand[] } = { count: 0, recent: [] };
@@ -345,8 +408,8 @@ export class MockSim {
   private forecast: Partial<Record<Loc, Forecast>> = {};
   private forecastLog: Forecast[] = [];
   private pendingForecast: Partial<Record<Loc, Forecast>> | null = null;
-  private lastAction: Record<Loc, TickAction> = { LZ_HOUSTON: 'hold', LZ_NORTH: 'hold' };
-  private spiked: Record<Loc, boolean> = { LZ_HOUSTON: false, LZ_NORTH: false };
+  private lastAction: Record<Loc, TickAction> = perLoc(() => 'hold');
+  private spiked: Record<Loc, boolean> = perLoc(() => false);
   private eventSeq = 0;
   private pidSeq = 4100;
   private jobs = new Map<string, Job>();
@@ -366,27 +429,29 @@ export class MockSim {
 
   private resetFleet(startCharge = DEFAULT_SETTINGS.start_charge_level): void {
     this.soc.fill(startCharge);
-    for (let g = 0; g < FLEET; g++) this.owner[g] = Math.floor(g / PER_WORKER);
+    defaultOwners(this.owner);
     this.offLocation.fill(0);
     this.offWorker.fill(0);
     this.offBattery.fill(0);
     this.lastSetpoint.fill(0);
+    this.tickCodes = null;
     this.offlineWorkers.clear();
     this.workers = Array.from({ length: WORKERS }, (_, i) => ({
       worker_id: i,
       status: 'healthy' as const,
       pid: this.pidSeq++,
-      batteries: PER_WORKER,
+      batteries: 0,
       last_tick_utc: null,
       adopted_from: [],
       killedAtTick: null,
       killedAtMs: null,
       missed: 0,
     }));
+    this.recountWorkers();
   }
 
   private rememberRun(): void {
-    if (this.runId) this.lastRun = { run_id: this.runId, totals: { ...this.totals } };
+    if (this.runId) this.lastRun = { run_id: this.runId, totals: this.publicTotals() };
   }
 
   start(partial: Partial<EditableSettings>): { run_id: string; settings: Settings } {
@@ -429,14 +494,15 @@ export class MockSim {
     this.history = [];
     this.pendingTicks = [];
     this.totals = zeroTotals();
+    this.totalsBy = zeroLocTotals();
     this.failed = { count: 0, recent: [] };
     this.events = [];
     this.pendingEvents = [];
     this.forecast = {};
     this.forecastLog = [];
     this.pendingForecast = null;
-    this.lastAction = { LZ_HOUSTON: 'hold', LZ_NORTH: 'hold' };
-    this.spiked = { LZ_HOUSTON: false, LZ_NORTH: false };
+    this.lastAction = perLoc(() => 'hold');
+    this.spiked = perLoc(() => false);
     this.resetFleet(next.start_charge_level);
     for (const w of this.workers) w.status = 'starting';
     return { run_id: this.runId, settings: this.settings };
@@ -477,6 +543,7 @@ export class MockSim {
     this.history = [];
     this.pendingTicks = [];
     this.totals = zeroTotals();
+    this.totalsBy = zeroLocTotals();
     this.failed = { count: 0, recent: [] };
     this.forecast = {};
     this.pendingForecast = null;
@@ -487,6 +554,33 @@ export class MockSim {
     return { status: 'idle' };
   }
 
+  // ---- the map ------------------------------------------------------------------
+
+  /** GET /fleet/layout: static per fleet. */
+  layout(): FleetLayout {
+    return LAYOUT.json;
+  }
+
+  /**
+   * battery_status codes: the latest tick's, like the backend (so, like the backend, a frame at
+   * 5-10 ticks a second can miss the two ticks a crashed controller's batteries are down). Offline
+   * batteries show at once, and while paused a controller that stops responding shows as down.
+   */
+  statusCodes(): Uint8Array {
+    const codes = this.status === 'idle' || !this.tickCodes ? new Uint8Array(FLEET).fill(WAITING) : this.tickCodes.slice();
+    const down = this.status === 'paused' ? new Set(this.workers.filter((w) => w.status === 'suspect').map((w) => w.worker_id)) : null;
+    for (let g = 0; g < FLEET; g++) {
+      if (!this.isAvailable(g)) codes[g] = OFFLINE;
+      else if (down?.has(this.owner[g])) codes[g] = DOWN;
+      else if (codes[g] === OFFLINE) codes[g] = WAITING; // back online since the last tick
+    }
+    return codes;
+  }
+
+  batteryStatus(): string {
+    return Buffer.from(packStatus(this.statusCodes())).toString('base64');
+  }
+
   // ---- availability ------------------------------------------------------------
 
   private isAvailable(g: number): boolean {
@@ -494,9 +588,9 @@ export class MockSim {
   }
 
   private countAvailable(): { total: number; byLoc: Record<Loc, number> } {
-    const byLoc: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
+    const byLoc = perLoc(() => 0);
     for (let g = 0; g < FLEET; g++) if (this.isAvailable(g)) byLoc[areaOf(g)]++;
-    return { total: byLoc.LZ_HOUSTON + byLoc.LZ_NORTH, byLoc };
+    return { total: LOCS.reduce((s, l) => s + byLoc[l], 0), byLoc };
   }
 
   availability(): Availability {
@@ -504,10 +598,7 @@ export class MockSim {
     return {
       available: total,
       total: FLEET,
-      by_location: {
-        LZ_HOUSTON: { available: byLoc.LZ_HOUSTON, total: PER_AREA },
-        LZ_NORTH: { available: byLoc.LZ_NORTH, total: PER_AREA },
-      },
+      by_location: perLoc((l) => ({ available: byLoc[l], total: COUNT[l] })),
       offline_workers: [...this.offlineWorkers].toSorted((a, b) => a - b),
     };
   }
@@ -519,17 +610,17 @@ export class MockSim {
       case 'location': {
         const loc = req.location as Loc;
         const f = Number(req.offline_fraction);
-        if (!LOCS.includes(loc)) throw new MockError(400, 'bad_location', 'Unknown area. Use LZ_HOUSTON or LZ_NORTH.');
+        if (!LOCS.includes(loc)) throw new MockError(400, 'bad_location', `Unknown area. Use one of ${LOCS.join(', ')}.`);
         if (!(f >= 0 && f <= 1)) throw new MockError(400, 'bad_fraction', 'The offline share must be between 0 and 1.');
-        const base = areaBase(loc);
-        for (let n = 0; n < PER_AREA; n++) this.offLocation[base + n] = 0;
-        affected = Math.round(f * PER_AREA);
+        const base = BASE[loc];
+        this.offLocation.fill(0, base, base + COUNT[loc]);
+        affected = Math.round(f * COUNT[loc]);
         const perm = PERMUTATION[loc];
         for (let n = 0; n < affected; n++) this.offLocation[base + perm[n]] = 1;
         message =
           affected === 0
             ? `All ${AREA_NAMES[loc]} batteries are available again.`
-            : `${affected.toLocaleString('en-US')} ${AREA_WORDS[loc]} batteries were taken offline, so the fleet's plan shrinks.`;
+            : `${affected.toLocaleString('en-US')} ${CITY_NAMES[loc]}-area batteries were taken offline, so the fleet's plan shrinks.`;
         break;
       }
       case 'worker': {
@@ -577,9 +668,12 @@ export class MockSim {
   battery(id: string): BatteryInfo {
     const g = batteryIndex(id);
     if (g === null) throw new MockError(404, 'unknown_battery', `No battery has the ID ${id}.`);
+    const loc = areaOf(g);
     return {
       battery_id: batteryId(g),
-      location: areaOf(g),
+      location: loc,
+      city: CITY_NAMES[loc],
+      lonlat: [LAYOUT.lonlat[2 * g], LAYOUT.lonlat[2 * g + 1]],
       worker_id: this.owner[g],
       capacity_kwh: round(CAPACITY[g]),
       power_kw: round(POWER[g]),
@@ -672,11 +766,12 @@ export class MockSim {
       sim_time_utc: this.simTimeUtc(),
       speed_tps: this.settings.speed_tps,
       ticks: this.pendingTicks.splice(0),
-      totals: { ...this.totals },
+      totals: this.publicTotals(),
       workers: this.publicWorkers(),
       failed_commands: { count: this.failed.count, recent: [...this.failed.recent] },
       availability: this.availability(),
       events: this.pendingEvents.splice(0),
+      battery_status: this.batteryStatus(),
     };
     if (forecast) frame.forecast = forecast;
     return frame;
@@ -692,23 +787,52 @@ export class MockSim {
       speed_tps: this.settings.speed_tps,
       settings: hasRun ? this.settings : null,
       history: this.history.slice(-HISTORY_CAP),
-      totals: { ...this.totals },
+      totals: this.publicTotals(),
       workers: this.publicWorkers(),
       failed_commands: { count: this.failed.count, recent: [...this.failed.recent] },
       availability: this.availability(),
       events: this.events.slice(-20),
       forecast: { ...this.forecast },
+      battery_status: this.batteryStatus(),
     };
   }
 
+  private publicTotals(): Totals {
+    return {
+      ...this.totals,
+      by_location: perLoc((l) => ({
+        revenue_usd: round(this.totalsBy[l].revenue_usd, 4),
+        sold_kwh: round(this.totalsBy[l].sold_kwh, 3),
+        bought_kwh: round(this.totalsBy[l].bought_kwh, 3),
+      })),
+    };
+  }
+
+  private recountWorkers(): void {
+    const counts = new Uint32Array(WORKERS * LOCS.length);
+    for (let g = 0; g < FLEET; g++) counts[this.owner[g] * LOCS.length + LOC_OF[g]]++;
+    for (const w of this.workers) {
+      let total = 0;
+      const byLoc: Record<string, number> = {};
+      LOCS.forEach((loc, k) => {
+        const n = counts[w.worker_id * LOCS.length + k];
+        if (n) byLoc[loc] = n;
+        total += n;
+      });
+      w.batteries = total;
+      w.by_location = byLoc;
+    }
+  }
+
   private publicWorkers(): Worker[] {
-    return this.workers.map(({ worker_id, status, pid, batteries, last_tick_utc, adopted_from }) => ({
+    return this.workers.map(({ worker_id, status, pid, batteries, last_tick_utc, adopted_from, by_location }) => ({
       worker_id,
       status,
       pid,
       batteries,
       last_tick_utc,
       adopted_from: [...adopted_from],
+      by_location: { ...by_location },
     }));
   }
 
@@ -769,20 +893,23 @@ export class MockSim {
     const index = this.tickIndex;
     const tsS = this.tickS(index);
     this.currentTickUtc = isoUtc(tsS);
-    this.detectAtTick();
+    const dying = this.detectAtTick();
 
-    const price: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
-    const decision: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
-    const action: Record<Loc, TickAction> = { LZ_HOUSTON: 'hold', LZ_NORTH: 'hold' };
-    const target: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
-    const actual: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
-    const revenue: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
-    const level: Record<Loc, number> = { LZ_HOUSTON: 0, LZ_NORTH: 0 };
+    const price = perLoc(() => 0);
+    const decision = perLoc(() => 0);
+    const action = perLoc<TickAction>(() => 'hold');
+    const target = perLoc(() => 0);
+    const actual = perLoc(() => 0);
+    const revenue = perLoc(() => 0);
+    const level = perLoc(() => 0);
+    const started: { loc: Loc; action: TickAction; price: number }[] = [];
+    const stopped: { loc: Loc; action: TickAction; offline: boolean }[] = [];
+    const spikes: { loc: Loc; price: number }[] = [];
 
-    // A controller that crashed misses this step's orders (the gap), which end up as failed commands.
-    const lost = new Set(
-      this.workers.filter((w) => w.killedAtTick !== null && w.status !== 'dead' && w.missed === 1).map((w) => w.worker_id),
-    );
+    // A controller that is not responding (or was just declared dead) sends no orders: its batteries
+    // miss them (the gap), they end up as failed commands, and the map shows them as "controller down".
+    const lost = new Set(this.workers.filter((w) => w.status === 'suspect').map((w) => w.worker_id));
+    for (const w of dying) lost.add(w.worker_id);
     const newlyFailed: FailedCommand[] = [];
 
     for (const loc of LOCS) {
@@ -791,11 +918,12 @@ export class MockSim {
       let want = this.decide(loc, tsS, decision[loc]);
 
       // Directional headroom of each available battery, grid-side kW.
-      const base = areaBase(loc);
+      const base = BASE[loc];
+      const count = COUNT[loc];
       let headroom = 0;
-      const h = new Float64Array(PER_AREA);
+      const h = new Float64Array(count);
       if (want !== 'hold') {
-        for (let n = 0; n < PER_AREA; n++) {
+        for (let n = 0; n < count; n++) {
           const g = base + n;
           if (!this.isAvailable(g)) continue;
           const energy =
@@ -808,14 +936,9 @@ export class MockSim {
       }
       if (want !== 'hold' && headroom < 1) {
         if (this.lastAction[loc] === want) {
-          this.emit(
-            'action_changed',
-            'info',
-            want === 'sell'
-              ? `${AREA_WORDS[loc]} batteries stopped selling: they are down to their 20% safety reserve.`
-              : `${AREA_WORDS[loc]} batteries stopped charging: they are full.`,
-            { location: loc, action: 'hold' },
-          );
+          let online = 0;
+          for (let n = 0; n < count; n++) if (this.isAvailable(base + n)) online++;
+          stopped.push({ loc, action: want, offline: online === 0 });
         }
         want = 'hold';
       }
@@ -824,20 +947,22 @@ export class MockSim {
       target[loc] = sign * headroom;
 
       let delivered = 0;
-      for (let n = 0; n < PER_AREA; n++) {
+      for (let n = 0; n < count; n++) {
         const g = base + n;
         const setpoint = headroom > 0 ? sign * h[n] : 0;
-        if (setpoint !== 0 && lost.has(this.owner[g])) {
+        if (lost.has(this.owner[g])) {
           this.lastSetpoint[g] = 0;
-          if (newlyFailed.length < 400) {
-            newlyFailed.push({
-              battery_id: batteryId(g),
-              worker_id: this.owner[g],
-              reason: `${controller(this.owner[g])} did not respond after 3 tries`,
-              tick_utc: isoUtc(tsS),
-            });
+          if (setpoint !== 0) {
+            if (newlyFailed.length < 400) {
+              newlyFailed.push({
+                battery_id: batteryId(g),
+                worker_id: this.owner[g],
+                reason: `${controller(this.owner[g])} did not respond after 3 tries`,
+                tick_utc: isoUtc(tsS),
+              });
+            }
+            this.failed.count++;
           }
-          this.failed.count++;
           continue;
         }
         const got = setpoint * (1 - 0.002 * this.random());
@@ -849,44 +974,53 @@ export class MockSim {
       }
       actual[loc] = delivered;
       revenue[loc] = ((delivered * DT_H) / 1000) * price[loc];
-      if (delivered > 0) this.totals.sold_kwh += delivered * DT_H;
-      else this.totals.bought_kwh += -delivered * DT_H;
+      const by = this.totalsBy[loc];
+      by.revenue_usd += revenue[loc];
+      if (delivered > 0) {
+        this.totals.sold_kwh += delivered * DT_H;
+        by.sold_kwh += delivered * DT_H;
+      } else {
+        this.totals.bought_kwh += -delivered * DT_H;
+        by.bought_kwh += -delivered * DT_H;
+      }
 
       let stored = 0;
-      let cap = 0;
-      for (let n = 0; n < PER_AREA; n++) {
-        stored += this.soc[base + n] * CAPACITY[base + n];
-        cap += CAPACITY[base + n];
-      }
-      level[loc] = stored / cap;
+      for (let n = 0; n < count; n++) stored += this.soc[base + n] * CAPACITY[base + n];
+      level[loc] = stored / CAPACITY_BY_LOC[loc];
 
-      this.noteAction(loc, want, decision[loc]);
-      this.noteSpike(loc, price[loc]);
+      const prev = this.lastAction[loc];
+      this.lastAction[loc] = want;
+      if (prev !== want && want !== 'hold') started.push({ loc, action: want, price: decision[loc] });
+      if (!this.spiked[loc] && price[loc] >= 1000 && this.segment) {
+        this.spiked[loc] = true;
+        spikes.push({ loc, price: price[loc] });
+      }
     }
+    this.noteActions(started, stopped);
+    this.noteSpikes(spikes);
 
     if (newlyFailed.length) this.failed.recent = newlyFailed.slice(-10).toReversed().concat(this.failed.recent).slice(0, 10);
 
-    const fleetTarget = target.LZ_HOUSTON + target.LZ_NORTH;
-    const fleetActual = actual.LZ_HOUSTON + actual.LZ_NORTH;
-    const fleetRevenue = revenue.LZ_HOUSTON + revenue.LZ_NORTH;
+    const sum = (r: Record<Loc, number>) => LOCS.reduce((s, l) => s + r[l], 0);
+    const fleetTarget = sum(target);
+    const fleetActual = sum(actual);
+    const fleetRevenue = sum(revenue);
+    const capTotal = sum(CAPACITY_BY_LOC);
     this.totals.revenue_usd += fleetRevenue;
     this.totals.ticks += 1;
-    const capH = CAPACITY.subarray(0, PER_AREA).reduce((a, b) => a + b, 0);
-    const capN = CAPACITY.subarray(PER_AREA).reduce((a, b) => a + b, 0);
     const t: Tick = {
       ts_utc: isoUtc(tsS),
       ts_local: isoLocal(tsS),
       price: { ...price },
       decision_price: { ...decision },
       action: { ...action },
-      target_kw: { LZ_HOUSTON: round(target.LZ_HOUSTON, 1), LZ_NORTH: round(target.LZ_NORTH, 1), fleet: round(fleetTarget, 1) },
-      actual_kw: { LZ_HOUSTON: round(actual.LZ_HOUSTON, 1), LZ_NORTH: round(actual.LZ_NORTH, 1), fleet: round(fleetActual, 1) },
+      target_kw: { ...perLoc((l) => round(target[l], 1)), fleet: round(fleetTarget, 1) },
+      actual_kw: { ...perLoc((l) => round(actual[l], 1)), fleet: round(fleetActual, 1) },
       error_pct: round((Math.abs(fleetActual - fleetTarget) / Math.max(Math.abs(fleetTarget), 0.005 * NAMEPLATE_KW)) * 100, 3),
-      revenue_usd: { LZ_HOUSTON: round(revenue.LZ_HOUSTON, 4), LZ_NORTH: round(revenue.LZ_NORTH, 4), fleet: round(fleetRevenue, 4) },
+      revenue_usd: { ...perLoc((l) => round(revenue[l], 4)), fleet: round(fleetRevenue, 4) },
       charge_level: {
-        LZ_HOUSTON: round(level.LZ_HOUSTON, 4),
-        LZ_NORTH: round(level.LZ_NORTH, 4),
-        fleet: round((level.LZ_HOUSTON * capH + level.LZ_NORTH * capN) / (capH + capN), 4),
+        ...perLoc((l) => round(level[l], 4)),
+        fleet: round(LOCS.reduce((s, l) => s + level[l] * CAPACITY_BY_LOC[l], 0) / capTotal, 4),
       },
       healthy_workers: this.workers.filter((w) => w.status === 'healthy').length,
     };
@@ -895,37 +1029,67 @@ export class MockSim {
     this.pendingTicks.push(t);
     for (const w of this.workers) if (w.status !== 'dead' && w.killedAtTick === null) w.last_tick_utc = t.ts_utc;
     if (index % FORECAST_EVERY_TICKS === 0) this.issueForecast(tsS);
+
+    // This tick's codes for battery_status; then the hand-over of controllers declared dead at it.
+    const codes = new Uint8Array(FLEET);
+    for (let g = 0; g < FLEET; g++) {
+      if (!this.isAvailable(g)) codes[g] = OFFLINE;
+      else if (lost.has(this.owner[g])) codes[g] = DOWN;
+      else if (this.lastSetpoint[g] > 1e-9) codes[g] = SELLING;
+      else if (this.lastSetpoint[g] < -1e-9) codes[g] = CHARGING;
+      else codes[g] = WAITING;
+    }
+    this.tickCodes = codes;
+    for (const w of dying) this.handOver(w);
+
     this.tickIndex += 1;
     this.currentTickUtc = null;
   }
 
-  private noteAction(loc: Loc, action: TickAction, decisionPrice: number): void {
-    const prev = this.lastAction[loc];
-    this.lastAction[loc] = action;
-    if (prev === action || action === 'hold') return;
-    if (action === 'sell') {
-      this.emit('action_changed', 'good', `${AREA_WORDS[loc]} batteries started selling at ${money(decisionPrice)}/MWh (${perKwh(decisionPrice)}).`, {
-        location: loc,
-        action,
-        decision_price: decisionPrice,
-      });
-    } else {
-      this.emit('action_changed', 'info', `${AREA_WORDS[loc]} batteries started charging: power is cheap at ${money(decisionPrice)}/MWh (${perKwh(decisionPrice)}).`, {
-        location: loc,
-        action,
-        decision_price: decisionPrice,
-      });
+  /** One event per new action, naming every city that switched at this step. */
+  private noteActions(
+    started: { loc: Loc; action: TickAction; price: number }[],
+    stopped: { loc: Loc; action: TickAction; offline: boolean }[],
+  ): void {
+    for (const act of ['sell', 'charge'] as const) {
+      const group = started.filter((s) => s.action === act);
+      if (!group.length) continue;
+      const locs = group.map((s) => s.loc);
+      const avg = group.reduce((s, x) => s + x.price, 0) / group.length;
+      const where = group.length === 1 ? `${CITY_NAMES[locs[0]]}-area batteries` : `Batteries in ${cityList(locs)}`;
+      const detail = { locations: locs, action: act, decision_price: Object.fromEntries(group.map((s) => [s.loc, s.price])) };
+      if (act === 'sell') {
+        this.emit('action_changed', 'good', `${where} started selling at ${group.length > 1 ? 'about ' : ''}${money(avg)}/MWh (${perKwh(avg)}).`, detail);
+      } else {
+        this.emit('action_changed', 'info', `${where} started charging: power is cheap at ${group.length > 1 ? 'about ' : ''}${money(avg)}/MWh (${perKwh(avg)}).`, detail);
+      }
+    }
+    for (const act of ['sell', 'charge'] as const) {
+      for (const offline of [false, true]) {
+        const group = stopped.filter((s) => s.action === act && s.offline === offline);
+        if (!group.length) continue;
+        const locs = group.map((s) => s.loc);
+        const where = group.length === 1 ? `${CITY_NAMES[locs[0]]}-area batteries` : `Batteries in ${cityList(locs)}`;
+        const why = offline ? 'they are all offline' : act === 'sell' ? 'they are down to their 20% safety reserve' : 'they are full';
+        this.emit('action_changed', 'info', `${where} stopped ${act === 'sell' ? 'selling' : 'charging'}: ${why}.`, {
+          locations: locs,
+          action: 'hold',
+        });
+      }
     }
   }
 
-  private noteSpike(loc: Loc, price: number): void {
-    if (this.spiked[loc] || price < 1000 || !this.segment) return;
-    this.spiked[loc] = true;
+  private noteSpikes(spikes: { loc: Loc; price: number }[]): void {
+    if (!spikes.length || !this.segment) return;
+    const seg = this.segment;
+    const top = Math.max(...spikes.map((s) => s.price));
+    const times = Math.round(spikes.reduce((s, x) => s + x.price / Math.max(1, seg.cheap[x.loc]), 0) / spikes.length);
+    const where = spikes.length === 1 ? `${AREA_NAMES[spikes[0].loc]} prices` : `Prices in ${cityList(spikes.map((s) => s.loc))}`;
     this.emit(
       'price_spike',
       'info',
-      `${AREA_NAMES[loc]} prices spiked to ${money(price)}/MWh (${perKwh(price)}), about ${Math.round(price / this.segment.cheap[loc])} times the overnight price.`,
-      { location: loc, price },
+      `${where} spiked to ${spikes.length > 1 ? 'up to ' : ''}${money(top)}/MWh (${perKwh(top)}), about ${times} times the overnight price.`,
+      { locations: spikes.map((s) => s.loc), price: Object.fromEntries(spikes.map((s) => [s.loc, s.price])) },
     );
   }
 
@@ -960,7 +1124,7 @@ export class MockSim {
       this.forecast[loc] = f;
       this.forecastLog.push(f);
     }
-    if (this.forecastLog.length > 200) this.forecastLog.splice(0, this.forecastLog.length - 200);
+    if (this.forecastLog.length > 400) this.forecastLog.splice(0, this.forecastLog.length - 400);
     if (Object.keys(issued).length) {
       this.pendingForecast = { ...this.pendingForecast, ...issued };
       if (this.forecastLog.length <= LOCS.length) {
@@ -980,23 +1144,31 @@ export class MockSim {
 
   // ---- failure detection -------------------------------------------------------------
 
-  /** A crashed controller misses this step's deadline: first "not responding", then crashed and adopted. */
-  private detectAtTick(): void {
+  /**
+   * A crashed controller misses this step's deadline: first "not responding", then, at the second
+   * miss, crashed. Its batteries are down for both steps and are handed over after the second one
+   * (the backend reassigns them for the next tick). Returns the controllers declared dead now.
+   */
+  private detectAtTick(): WorkerState[] {
+    const dying: WorkerState[] = [];
     for (const w of this.workers) {
       if (w.killedAtTick === null || w.status === 'dead') continue;
       w.missed += 1;
       if (w.missed === 1) {
         w.status = 'suspect';
+        const owned = this.ownedBy(w.worker_id);
         this.emit(
           'worker_suspect',
           'warn',
-          `${controller(w.worker_id)} stopped responding. Its batteries get no new orders while the others cover for it.`,
-          workerDetail(w),
+          `${controller(w.worker_id)} stopped responding. Its batteries${this.inCities(owned)} get no new orders while the others cover for it.`,
+          { ...workerDetail(w), by_location: byLocation(owned) },
         );
       } else if (w.missed >= 2) {
-        this.adopt(w);
+        this.declareDead(w);
+        dying.push(w);
       }
     }
+    return dying;
   }
 
   private detectWhilePaused(nowMs: number): void {
@@ -1006,17 +1178,44 @@ export class MockSim {
       if (w.status !== 'suspect' && age >= 2000) {
         w.status = 'suspect';
         w.missed = 1;
-        this.emit('worker_suspect', 'warn', `${controller(w.worker_id)} stopped sending its heartbeat.`, workerDetail(w));
+        const owned = this.ownedBy(w.worker_id);
+        this.emit('worker_suspect', 'warn', `${controller(w.worker_id)} stopped sending its heartbeat.`, {
+          ...workerDetail(w),
+          by_location: byLocation(owned),
+        });
       }
-      if (age >= 6000) this.adopt(w);
+      if (age >= 6000) {
+        this.declareDead(w);
+        this.handOver(w);
+      }
     }
   }
 
-  private adopt(dead: WorkerState): void {
+  private ownedBy(workerId: number): number[] {
+    const out: number[] = [];
+    for (let g = 0; g < FLEET; g++) if (this.owner[g] === workerId) out.push(g);
+    return out;
+  }
+
+  /** " in Houston", " in San Antonio and Austin" for these batteries. */
+  private inCities(idx: number[]): string {
+    const locs = Object.keys(byLocation(idx)) as Loc[];
+    return locs.length ? ` in ${cityList(locs)}` : '';
+  }
+
+  private declareDead(dead: WorkerState): void {
     dead.status = 'dead';
+    this.emit('worker_dead', 'warn', `${controller(dead.worker_id)} crashed: it missed two 5-minute steps in a row.`, {
+      ...workerDetail(dead),
+      missed_ticks: 2,
+    });
+  }
+
+  /** Round-robin in id order over the healthy controllers, as coordinator._reassign does. */
+  private handOver(dead: WorkerState): void {
     const survivors = this.workers.filter((w) => w.status === 'healthy');
-    const moved: number[] = [];
-    for (let g = 0; g < FLEET; g++) if (this.owner[g] === dead.worker_id) moved.push(g);
+    const moved = this.ownedBy(dead.worker_id);
+    if (!survivors.length) return;
     moved.forEach((g, i) => {
       const to = survivors[i % survivors.length];
       this.owner[g] = to.worker_id;
@@ -1025,19 +1224,19 @@ export class MockSim {
     for (const s of survivors) {
       if (!s.adopted_from.includes(dead.worker_id)) s.adopted_from.push(dead.worker_id);
     }
-    const counts = new Map<number, number>();
-    for (let g = 0; g < FLEET; g++) counts.set(this.owner[g], (counts.get(this.owner[g]) ?? 0) + 1);
-    for (const w of this.workers) w.batteries = counts.get(w.worker_id) ?? 0;
+    this.recountWorkers();
     const ms = 1 + Math.round(this.random() * 3);
-    this.emit('worker_dead', 'warn', `${controller(dead.worker_id)} crashed: it missed two 5-minute steps in a row.`, {
-      ...workerDetail(dead),
-      missed_ticks: 2,
-    });
     this.emit(
       'worker_adopted',
       'good',
-      `${controller(dead.worker_id)}'s ${moved.length.toLocaleString('en-US')} batteries were handed to the other ${survivors.length} controllers in ${ms} ms.`,
-      { ...workerDetail(dead), batteries: moved.length, adopted_by: survivors.map((s) => s.worker_id), ms },
+      `${controller(dead.worker_id)}'s ${moved.length.toLocaleString('en-US')} batteries${this.inCities(moved)} were handed to the other ${survivors.length} controllers in ${ms} ms.`,
+      {
+        ...workerDetail(dead),
+        batteries: moved.length,
+        adopted_by: survivors.map((s) => s.worker_id),
+        ms,
+        by_location: byLocation(moved),
+      },
     );
   }
 
@@ -1072,6 +1271,7 @@ export class MockSim {
     const energyMwh = CAPACITY.reduce((a, b) => a + b, 0) / 1000;
     const avgKw = NAMEPLATE_KW / FLEET;
     const avgKwh = (energyMwh * 1000) / FLEET;
+    const factor: Record<Loc, number> = { LZ_HOUSTON: 1.04, LZ_NORTH: 0.96, LZ_CPS: 1.02, LZ_AEN: 0.99 };
     const strategy = (key: string, label: string, perBattery: number, cycles: number, headline: boolean, days: number[]) => ({
       strategy: key,
       label,
@@ -1082,10 +1282,7 @@ export class MockSim {
       usd_per_kwh_year: round(perBattery / avgKwh),
       usd_per_kw_year: round(perBattery / avgKw),
       cycles_per_year: cycles,
-      per_location_usd: {
-        LZ_HOUSTON: Math.round(perBattery * PER_AREA * 1.04),
-        LZ_NORTH: Math.round(perBattery * PER_AREA * 0.96),
-      },
+      per_location_usd: perLoc((l) => Math.round(perBattery * COUNT[l] * factor[l])),
       top_days: TOP_DAY_DATES.map((date_local, i) => ({ date_local, usd: days[i] })),
     });
     return {

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import 'uplot/dist/uPlot.min.css';
 import './styles/tokens.css';
 import './styles/app.css';
+import './styles/map.css';
 import { App } from './App.tsx';
 
 const root = document.getElementById('root');

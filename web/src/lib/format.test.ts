@@ -10,6 +10,7 @@ import {
   fmtEnergy,
   fmtHomesDay,
   fmtHomesPower,
+  fmtList,
   fmtLocalDate,
   fmtPercent,
   fmtPercentValue,
@@ -18,6 +19,7 @@ import {
   fmtPresetLabel,
   fmtPrice,
   fmtPriceKwh,
+  fmtPriceKwhShort,
   fmtPriceMwh,
   fmtRange,
   fmtSpeed,
@@ -43,6 +45,12 @@ describe('prices carry a unit and a per-kWh translation', () => {
     expect(fmtPrice(2250.15)).toBe('$2,250/MWh ($2.25 per kWh)');
     expect(fmtPriceMwh(99.99)).toBe('$99.99/MWh');
     expect(fmtPriceKwh(1000)).toBe('$1.00 per kWh');
+  });
+
+  it('has a short per-kWh form for tight spaces', () => {
+    expect(fmtPriceKwhShort(120)).toBe('12¢/kWh');
+    expect(fmtPriceKwhShort(1757.28)).toBe('$1.76/kWh');
+    expect(fmtPriceKwhShort(Number.NaN)).toBe('–');
   });
 
   it('shows negative prices with a real minus sign', () => {
@@ -107,13 +115,13 @@ describe('speed', () => {
   });
 });
 
-describe('Houston time', () => {
+describe('Central time', () => {
   it('formats the replay clock like the UX guide', () => {
-    expect(fmtClock('2025-05-17T00:45:00Z')).toBe('May 16, 2025, 7:45 pm, Houston time');
+    expect(fmtClock('2025-05-17T00:45:00Z')).toBe('May 16, 2025, 7:45 pm, Central time');
   });
 
   it('handles standard time (CST) as well as daylight time', () => {
-    expect(fmtClock('2025-01-15T13:30:00Z')).toBe('Jan 15, 2025, 7:30 am, Houston time');
+    expect(fmtClock('2025-01-15T13:30:00Z')).toBe('Jan 15, 2025, 7:30 am, Central time');
   });
 
   it('drops :00 in compact times, and says midnight and noon in words', () => {
@@ -157,8 +165,13 @@ describe('plain words', () => {
   it('names areas, methods and actions per the glossary', () => {
     expect(areaName('LZ_HOUSTON')).toBe('Houston area');
     expect(areaName('LZ_NORTH')).toBe('Dallas–Fort Worth area');
+    expect(areaName('LZ_CPS')).toBe('San Antonio area');
+    expect(areaName('LZ_AEN')).toBe('Austin area');
     expect(areaShortName('LZ_NORTH')).toBe('Dallas–Fort Worth');
     expect(areaName('HB_WEST')).toBe('HB_WEST');
+    expect(fmtList(['Dallas–Fort Worth', 'Houston', 'San Antonio', 'Austin'])).toBe(
+      'Dallas–Fort Worth, Houston, San Antonio, and Austin',
+    );
     expect(strategyName('bands')).toBe('Simple rule');
     expect(strategyName('forecast')).toBe('AI forecast (TimesFM-3)');
     expect(strategyName('peak')).toBe('Evening peak');

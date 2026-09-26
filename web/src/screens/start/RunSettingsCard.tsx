@@ -5,6 +5,7 @@ import { TechBlock } from '../../components/Tech.tsx';
 import {
   areaShortName,
   fmtCount,
+  fmtList,
   fmtPercent,
   fmtPresetLabel,
   fmtRange,
@@ -30,7 +31,10 @@ export function RunSettingsCard({ model, origin, draft, onDraft, editing, onEdit
   const d = model.defaults;
   const preset = presetById(model.presets, draft.preset);
   const strategy = model.strategies.find((s) => s.value === draft.strategy);
-  const areas = Object.keys(d.locations ?? {});
+  // Biggest share first: Dallas–Fort Worth, Houston, San Antonio, and Austin.
+  const areas = Object.entries(d.locations ?? {})
+    .toSorted((a, b) => b[1] - a[1])
+    .map(([loc]) => loc);
 
   return (
     <section className="panel run-card" aria-labelledby={headingId}>
@@ -67,7 +71,10 @@ export function RunSettingsCard({ model, origin, draft, onDraft, editing, onEdit
         </dd>
 
         <dt>Where</dt>
-        <dd>{areas.length ? areas.map(areaShortName).join(' & ') : 'Houston & Dallas–Fort Worth'}</dd>
+        <dd>
+          {areas.length ? fmtList(areas.map(areaShortName)) : 'Dallas–Fort Worth, Houston, San Antonio, and Austin'}
+          {areas.length > 2 ? <div className="muted small">The Texas Triangle, weighted by how many people live in each metro area.</div> : null}
+        </dd>
 
         <dt>Replay</dt>
         <dd>

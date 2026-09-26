@@ -4,7 +4,8 @@
 //   config order (src/sim/fleet.py: location_counts + assign_locations).
 
 export const DEFAULT_FLEET_SIZE = 20_000;
-export const DEFAULT_SHARES: Record<string, number> = { LZ_HOUSTON: 0.5, LZ_NORTH: 0.5 };
+/** config.yaml fleet.locations: the Texas Triangle by metro population, in config (battery id) order. */
+export const DEFAULT_SHARES: Record<string, number> = { LZ_HOUSTON: 0.35, LZ_NORTH: 0.4, LZ_CPS: 0.13, LZ_AEN: 0.12 };
 
 /** "Controller 8" for worker_id 7. */
 export function controllerName(workerId: number): string {

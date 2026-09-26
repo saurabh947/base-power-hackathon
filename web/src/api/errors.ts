@@ -81,6 +81,14 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
         detail: server ?? 'The simulator does not support this yet. Everything else still works.',
       };
     case 503:
+      if (err.code === 'simulator_restarting') {
+        const wait = err.retryAfterS != null ? `Try again in ${seconds(err.retryAfterS)}.` : 'Try again in a few seconds.';
+        return {
+          ...base,
+          title: 'The simulator is still restarting after a reset.',
+          detail: `Its 20 controllers are coming back up. ${wait}`,
+        };
+      }
       if (err.code === 'presenter_passcode_not_set') {
         return {
           ...base,
