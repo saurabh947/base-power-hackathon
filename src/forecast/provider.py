@@ -144,14 +144,14 @@ def with_virtual(df: pd.DataFrame, location: str, model: str, source: str, start
     if not periods:
         return df
     cfg = load_settings().rt_price
-    parts = [df] if not df.empty else []
+    real, virtual = df, []
     for cutoff, year_end in periods:
         path = predictions.load(location, max_cutoff=cutoff.to_pydatetime(), model=model, source=source)
         if path is None:
             continue
-        if parts:
-            issued = pd.to_datetime(parts[0]["issued_at"], utc=True)
-            parts[0] = parts[0][~((issued >= cutoff) & (issued < year_end))]
+        if not real.empty:  # a real forecast issued after the cutoff would have seen stale context
+            issued = pd.to_datetime(real["issued_at"], utc=True)
+            real = real[~((issued >= cutoff) & (issued < year_end))]
         lo = cutoff if start is None else max(cutoff, pd.Timestamp(start).tz_convert("UTC"))
         hi = year_end if end is None else min(year_end, pd.Timestamp(end).tz_convert("UTC"))
         if lo >= hi:
@@ -159,9 +159,10 @@ def with_virtual(df: pd.DataFrame, location: str, model: str, source: str, start
         v = predictions.virtual_forecasts(path, start=lo, end=hi, horizon_steps=cfg.horizon_steps,
                                           every_minutes=cfg.every_minutes)
         if not v.empty:
-            parts.append(v)
+            virtual.append(v)
+    parts = ([real] if not real.empty else []) + virtual
     if not parts:
-        return df
+        return real
     out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
     return out.sort_values("issued_at").reset_index(drop=True)
 

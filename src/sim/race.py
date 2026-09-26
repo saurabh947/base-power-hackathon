@@ -19,8 +19,9 @@ comparison strategy side by side with the live one, inside the coordinator's pro
 The potential (docs/API.md race.potential) is a second shadow fleet of the same class: the LIVE strategy (the
 live run's own Strategy instances, which are pure) with every battery online and no controller crashes. It
 books its revenue in the live ledger's order (per tick, city by city in config order: `running_usd`), so with no
-outage it earns exactly the live fleet's totals.revenue_usd, to the bit (tests/test_race.py,
-tests/test_race_fleet.py). shortfall_usd = potential - live: what the outages cost.
+outage it earns exactly the live fleet's totals.revenue_usd, to the bit (tests/test_race_fleet.py, and the
+20,000-battery bench). shortfall_usd = potential - live: what the outages cost (negative if an outage happened to
+save charge for a later, higher price).
 
 Plain-language events (docs/UX.md tone), at most one start and one end per price spike: a spike begins when any
 city's 5-minute price reaches the spike threshold ($1,000/MWh) and ends once every city is back below half of

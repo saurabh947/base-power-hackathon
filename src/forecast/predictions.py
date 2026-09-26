@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -94,12 +95,14 @@ class PredictionPath:
 # --- where ---------------------------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=1)
 def default_model() -> str:
     from src.forecast.settings import load_settings
 
     return load_settings().model
 
 
+@lru_cache(maxsize=1)
 def default_cache_dir() -> Path:
     from src.config import REPO_ROOT, load_raw_config
 

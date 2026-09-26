@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -65,12 +66,15 @@ def local_year(ts: datetime) -> int:
 # --- config -------------------------------------------------------------------------------------
 
 
-def _section(raw: Mapping | None) -> dict:
-    if raw is None:
-        from src.config import load_raw_config
+@lru_cache(maxsize=1)
+def _default_raw() -> Mapping:
+    from src.config import load_raw_config
 
-        raw = load_raw_config()
-    return dict(raw.get("years") or {})
+    return load_raw_config()
+
+
+def _section(raw: Mapping | None) -> dict:
+    return dict((_default_raw() if raw is None else raw).get("years") or {})
 
 
 def configured_years(raw: Mapping | None = None) -> list[int]:
@@ -84,6 +88,7 @@ def default_year(raw: Mapping | None = None) -> int:
     return int(section.get("default") or configured_years(raw)[0])
 
 
+@lru_cache(maxsize=1)
 def fleet_locations() -> tuple[str, ...]:
     from src.config import load_config
 
@@ -123,8 +128,9 @@ def info(year: int, *, locations: Sequence[str] | None = None, source: str | Non
         first, last = _common_range_snapshot(int(year), locations, snap)
     a, b = year_window(int(year))
     result = YearInfo(int(year), a, b, first, None if last is None else last + INTERVAL)
+    complete = result.available and result.real_until_utc is None  # a whole real year can't change: keep it
     with _lock:
-        _cache[key] = (now + CACHE_S, result)
+        _cache[key] = (float("inf") if complete else now + CACHE_S, result)
     return result
 
 
@@ -150,15 +156,32 @@ def real_until_ahead(start: datetime, raw: Mapping | None = None, **kwargs) -> d
     return None
 
 
-def _common_range_db(year: int, locations: tuple[str, ...]) -> tuple[datetime | None, datetime | None]:
-    """(first, last) interval START present for every location, from the prices table."""
-    from src.db import connect
+_COMMON_SQL = ("SELECT min(ts), max(ts) FROM (SELECT ts FROM prices WHERE market = 'RT' AND location = ANY(%s) "
+               "AND ts >= %s AND ts < %s GROUP BY ts HAVING count(DISTINCT location) = %s) t")
 
+
+def _common_range_db(year: int, locations: tuple[str, ...], conn=None) -> tuple[datetime | None, datetime | None]:
+    """(first, last) interval START present for every location, from the prices table.
+
+    Fast path: each city's own first and last interval come from the (location, market, ts) index, and only the
+    two days at either end are grouped; the whole year is grouped only if those windows hold no common interval."""
+    if conn is None:
+        from src.db import connect
+
+        with connect() as own:
+            return _common_range_db(year, locations, own)
     a, b = year_window(year)
-    sql = ("SELECT min(ts), max(ts) FROM (SELECT ts FROM prices WHERE market = 'RT' AND location = ANY(%s) "
-           "AND ts >= %s AND ts < %s GROUP BY ts HAVING count(DISTINCT location) = %s) t")
-    with connect() as conn:
-        first, last = conn.execute(sql, (list(locations), a, b, len(locations))).fetchone()
+    locs, n = list(locations), len(locations)
+    ends = [conn.execute("SELECT min(ts), max(ts) FROM prices WHERE market = 'RT' AND location = %s "
+                         "AND ts >= %s AND ts < %s", (loc, a, b)).fetchone() for loc in locs]
+    if any(lo is None for lo, _ in ends):
+        return None, None
+    lo_edge, hi_edge = max(lo for lo, _ in ends), min(hi for _, hi in ends)
+    pad = timedelta(days=2)
+    first = conn.execute(_COMMON_SQL, (locs, lo_edge, min(b, lo_edge + pad), n)).fetchone()[0]
+    last = conn.execute(_COMMON_SQL, (locs, max(a, hi_edge - pad), hi_edge + INTERVAL, n)).fetchone()[1]
+    if first is None or last is None:  # holes right at the edges: group the whole year
+        first, last = conn.execute(_COMMON_SQL, (locs, a, b, n)).fetchone()
     return (None if first is None else first.astimezone(UTC), None if last is None else last.astimezone(UTC))
 
 

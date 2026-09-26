@@ -77,6 +77,40 @@ def test_db_paths_round_trip_and_the_same_cutoff_replaces_its_rows():
         assert conn.execute("SELECT count(*) FROM price_predictions WHERE ts < cutoff").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("case", ["one_city_stops_early", "hole_at_the_last_interval", "long_holes_at_the_end"])
+def test_real_until_is_the_last_interval_every_city_has(case):
+    """SYNTHETIC prices in a scratch schema: the fast edge query agrees with grouping the whole year."""
+    from src.data.years import _COMMON_SQL, _common_range_db, year_window
+
+    locs = ("LZ_HOUSTON", "LZ_NORTH", "LZ_CPS", "LZ_AEN")
+    start = pd.Timestamp("2026-01-01T06:00Z")
+    n = 96 * 10
+    ts = pd.date_range(start, periods=n, freq="15min", tz="UTC")
+    rows = {loc: set(range(n)) for loc in locs}
+    if case == "one_city_stops_early":
+        rows["LZ_CPS"] -= set(range(n - 3, n))
+        want = ts[n - 4]
+    elif case == "hole_at_the_last_interval":
+        rows["LZ_AEN"] -= {n - 1}
+        rows["LZ_NORTH"] -= {n - 1}
+        want = ts[n - 2]
+    else:  # every city misses a different stretch of the last 3 days: the fast windows find nothing in common
+        for k, loc in enumerate(locs):
+            rows[loc] -= set(range(n - 96 * 3 + k, n, 4))
+        want = None
+    with scratch() as conn:
+        with conn.cursor() as cur, cur.copy("COPY prices (ts, location, market, price_usd_mwh) FROM STDIN") as copy:
+            for loc in locs:
+                for i in sorted(rows[loc]):
+                    copy.write_row((ts[i].to_pydatetime(), loc, "RT", 20.0))
+        first, last = _common_range_db(2026, locs, conn)
+        a, b = year_window(2026)
+        full = conn.execute(_COMMON_SQL, (list(locs), a, b, 4)).fetchone()
+    assert (first, last) == (full[0], full[1]) and first == start
+    if want is not None:
+        assert last == want
+
+
 def test_real_until_from_postgres_matches_the_snapshot_when_they_hold_the_same_publication():
     snap = years.info(2026, source="snapshot", refresh=True)
     pg = years.info(2026, source="postgres", refresh=True)
