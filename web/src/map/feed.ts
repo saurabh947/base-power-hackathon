@@ -2,6 +2,11 @@
 // kept by version) and, for every snapshot or frame, the decoded battery_status
 // with counts per city. Decoded once here and shared by the canvas and the
 // corner panels. Runs while a map is on screen (holdMapFeed).
+//
+// While the timeline shows an earlier moment (src/live/timeTravel.ts), the codes
+// are the battery_status this page recorded for that moment; before the page
+// was opened there is none, and each city's dots show that city's action then
+// (city totals only).
 
 import { api } from '../api/client.ts';
 import { API_BASE } from '../api/config.ts';
@@ -9,10 +14,13 @@ import type { LiveEvent, Tick } from '../api/types.ts';
 import { setCities } from '../lib/cities.ts';
 import { createStore, useStore } from '../lib/store.ts';
 import { liveStore } from '../live/liveStore.ts';
+import { indexAt } from '../live/past.ts';
+import type { FrameRecord } from '../live/recorder.ts';
 import type { LiveState } from '../live/reducer.ts';
+import { provideFleetCities, recorder, viewingStore } from '../live/timeTravel.ts';
 import { ControllerFlash } from './flash.ts';
 import { readLayout, type MapLayout } from './layout.ts';
-import { countCodes, decodeStatus, synthesizeStatus, WAITING, type CodeCounts } from './status.ts';
+import { countCodes, decodePacked, decodeStatus, synthesizeStatus, WAITING, type CodeCounts } from './status.ts';
 
 export interface LayoutState {
   layout: MapLayout | null;
@@ -24,16 +32,25 @@ export interface LayoutState {
 
 export const layoutStore = createStore<LayoutState>({ layout: null, phase: 'idle', positionsChars: 0, loadMs: null });
 
+// The timeline rebuilds past controllers per city from where the batteries are.
+provideFleetCities(() => {
+  const l = layoutStore.get().layout;
+  return l ? { size: l.size, cityOf: l.cityOf, locations: l.cities.map((c) => c.location) } : undefined;
+});
+
 export function useLayoutState(): LayoutState {
   return useStore(layoutStore, (s) => s);
 }
 
-export type StatusSource = 'battery_status' | 'from_actions' | 'none';
+/**
+ * battery_status from the server (live) or as recorded by this page (an earlier moment); each city's action
+ * when there is none (an older backend, or a moment before the page was opened); or nothing yet.
+ */
+export type StatusSource = 'battery_status' | 'recorded' | 'from_actions' | 'city_level' | 'none';
 
 export interface StatusView {
   /** A code for every battery (src/map/status.ts), or null before the layout arrives. */
   codes: Uint8Array | null;
-  /** battery_status from the server; a stand-in from each city's action when it is missing; or nothing yet. */
   source: StatusSource;
   fleet: CodeCounts;
   /** Indexed like layout.cities. */
@@ -117,8 +134,55 @@ interface Seen {
 let seen: Seen = { status: null, tick: null, layout: null, events: null, synthetic: false };
 const flash = new ControllerFlash();
 let flashKey = '';
+/** What the last update showed: live, or an earlier moment (with the record and layout it used). */
+let shown: { tMs: number; record: FrameRecord | null; layout: MapLayout | null } | null = null;
 
 function refreshStatus(force = false): void {
+  const viewing = viewingStore.get();
+  if (viewing !== null) {
+    refreshPast(viewing, force);
+    return;
+  }
+  // Back from an earlier moment: decode the live status afresh.
+  refreshLive(force || shown !== null);
+  shown = null;
+}
+
+function emptyView(statusChars: number): StatusView {
+  return { codes: null, source: 'none', fleet: EMPTY_COUNTS, byCity: [], statusChars, decodeMs: 0, fromEvents: 0 };
+}
+
+/** An earlier moment: the battery_status recorded then, or each city's action then (before the page was opened). */
+function refreshPast(tMs: number, force: boolean): void {
+  const layout = layoutStore.get().layout;
+  const record = recorder.at(tMs);
+  if (!force && shown && shown.tMs === tMs && shown.record === record && shown.layout === layout) return;
+  shown = { tMs, record, layout };
+  if (!layout) {
+    statusStore.set(emptyView(0));
+    return;
+  }
+  const t0 = performance.now();
+  const state = liveStore.get();
+  let codes: Uint8Array | null = record?.status ? decodePacked(record.status, layout.size) : null;
+  let source: StatusSource = codes ? 'recorded' : 'city_level';
+  if (!codes) {
+    const tick = state.history[Math.max(0, indexAt(state.history, tMs))] ?? null;
+    codes = synthesizeStatus(layout.size, layout.cityOf, layout.cities.map((c) => c.location), tick);
+    if (!tick) source = 'none';
+  }
+  statusStore.set({
+    codes,
+    source,
+    fleet: countCodes(codes, null, null),
+    byCity: layout.cities.map((_, k) => countCodes(codes, layout.cityOf, k)),
+    statusChars: record?.status ? record.status.length : 0,
+    decodeMs: performance.now() - t0,
+    fromEvents: 0,
+  });
+}
+
+function refreshLive(force = false): void {
   const state = liveStore.get();
   const layout = layoutStore.get().layout;
   const tick = state.history.length ? state.history[state.history.length - 1] : null;
@@ -134,15 +198,7 @@ function refreshStatus(force = false): void {
   }
   seen = { status: state.batteryStatus, tick, layout, events: state.events, synthetic: false };
   if (!layout) {
-    statusStore.set({
-      codes: null,
-      source: 'none',
-      fleet: EMPTY_COUNTS,
-      byCity: [],
-      statusChars: state.batteryStatus?.length ?? 0,
-      decodeMs: 0,
-      fromEvents: 0,
-    });
+    statusStore.set(emptyView(state.batteryStatus?.length ?? 0));
     return;
   }
   maybeReload(state, layout);
@@ -186,7 +242,12 @@ let unsubscribe: (() => void) | null = null;
 export function holdMapFeed(): () => void {
   holders += 1;
   if (!unsubscribe) {
-    unsubscribe = liveStore.subscribe(() => refreshStatus());
+    const offLive = liveStore.subscribe(() => refreshStatus());
+    const offViewing = viewingStore.subscribe(() => refreshStatus());
+    unsubscribe = () => {
+      offLive();
+      offViewing();
+    };
     refreshStatus(true);
   }
   const phase = layoutStore.get().phase;

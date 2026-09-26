@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
-import { editablePart, FALLBACK_SETTINGS, readSettingsResponse, type SettingsModel } from '../../api/settings.ts';
-import type { EditableSettings, Settings } from '../../api/types.ts';
+import { draftFrom, editablePart, FALLBACK_SETTINGS, readSettingsResponse, type SettingsModel } from '../../api/settings.ts';
+import type { EditableSettings } from '../../api/types.ts';
 import { Icon } from '../../components/Icon.tsx';
 import { Link } from '../../components/Link.tsx';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
@@ -13,15 +13,11 @@ import { useRetryAfter } from '../../lib/useCountdown.ts';
 import { checkBackend, useBackend } from '../../state/backend.ts';
 import { RunSettingsCard } from './RunSettingsCard.tsx';
 
-function draftFrom(d: Settings): EditableSettings {
-  return { preset: d.preset, speed_tps: d.speed_tps, strategy: d.strategy, start_charge_level: d.start_charge_level };
-}
-
 export function StartScreen() {
   const backend = useBackend();
   const [model, setModel] = useState<SettingsModel>(FALLBACK_SETTINGS);
   const [origin, setOrigin] = useState<'loading' | 'server' | 'fallback'>('loading');
-  const [draft, setDraft] = useState<EditableSettings>(() => draftFrom(FALLBACK_SETTINGS.defaults));
+  const [draft, setDraft] = useState<EditableSettings>(() => draftFrom(FALLBACK_SETTINGS));
   // Once the visitor edits the draft, arriving server defaults must not overwrite it.
   const touched = useRef(false);
   const [editing, setEditing] = useState(false);
@@ -49,7 +45,7 @@ export function StartScreen() {
         const next = readSettingsResponse(raw);
         setModel(next);
         setOrigin(next.fallback ? 'fallback' : 'server');
-        if (!touched.current) setDraft(draftFrom(next.defaults));
+        if (!touched.current) setDraft(draftFrom(next));
       },
       () => {
         if (controller.signal.aborted) return;

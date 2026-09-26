@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from '../../components/Link.tsx';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { holdLiveFeed, reconnectNow, useConnection, useLive } from '../../live/liveStore.ts';
+import { projectedMoney } from '../../live/past.ts';
+import { holdTimeline } from '../../live/timeTravel.ts';
 import { fmtClock, fmtDuration, fmtEnergy, fmtUsd } from '../../lib/format.ts';
 import { onSelectionChange } from '../../map/selection.ts';
 import { useBackend } from '../../state/backend.ts';
@@ -82,6 +84,8 @@ function useHasNotice(): boolean {
 function FinishedNotice() {
   const totals = useLive((s) => s.totals);
   const finishedAt = useLive((s) => s.events.find((e) => e.kind === 'run_finished')?.sim_utc ?? s.simTimeUtc);
+  const projected = useLive((s) => projectedMoney(s.history, null)?.usd ?? null);
+  const exact = useLive((s) => projectedMoney(s.history, null)?.exact ?? true);
   return (
     <Notice
       kind="info"
@@ -97,9 +101,14 @@ function FinishedNotice() {
         </>
       }
     >
-      The replay reached the end of its recorded prices{finishedAt ? ` at ${fmtClock(finishedAt)}` : ''}. The fleet
+      The replay reached the end of its prices{finishedAt ? ` at ${fmtClock(finishedAt)}` : ''}. The fleet
       earned <strong>{fmtUsd(totals.revenue_usd)}</strong> in gross wholesale value, selling{' '}
       {fmtEnergy(totals.sold_kwh)} and buying {fmtEnergy(totals.bought_kwh)}.
+      {projected !== null
+        ? exact
+          ? ` Of that, ${fmtUsd(projected)} is projected: it was earned on the AI's predicted prices.`
+          : ' Part of it is projected: it was earned on the AI’s predicted prices.'
+        : null}
     </Notice>
   );
 }
@@ -148,6 +157,8 @@ export function LiveScreen() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const hasNotice = useHasNotice();
   useEffect(() => holdLiveFeed(), []);
+  // Record the frames this page sees, for the map's timeline.
+  useEffect(() => holdTimeline(), []);
   // A city picked on the map becomes the price chart's area in the detailed layout.
   useEffect(() => {
     onSelectionChange((location) => {

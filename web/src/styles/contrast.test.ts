@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import indexHtml from '../../index.html?raw';
 import { contrastRatio } from '../lib/contrast.ts';
+import { PALETTE, type Rgb } from '../map/looks.ts';
 import { OUTLINE_COLOR } from '../map/renderer.ts';
-import { PALETTE, type Rgb } from '../map/style.ts';
 import appCss from './app.css?raw';
 import mapCss from './map.css?raw';
 import tokensCss from './tokens.css?raw';
@@ -83,6 +83,10 @@ const TEXT_PAIRS: [string, string][] = [
   ['text-muted', 'card'],
   ['money', 'card'],
   ['ok', 'ok-soft'],
+  // "Predicted" (2026's predicted prices), and the prediction's words in the corners and the feed.
+  ['forecast', 'forecast-soft'],
+  ['forecast', PANEL],
+  ['text', 'forecast-soft'],
 ];
 
 const UI_PAIRS: [string, string][] = [
@@ -118,8 +122,13 @@ const UI_PAIRS: [string, string][] = [
   // "What the AI adds": the AI's bar and the battery gauges' outline inside a card.
   ['bar-headline', 'card'],
   ['border-strong', 'card'],
-  // The red Texas outline on the page.
+  // The red Texas outline on the page, and the red of offline and crashed batteries on the page and panels.
   ['map-outline', 'bg'],
+  ['outage', 'bg'],
+  ['outage', PANEL],
+  // The timeline's selling and buying bands, and its ▲/▼ markers, on the panel.
+  ['sell', PANEL],
+  ['charge', PANEL],
 ];
 
 describe('the site theme', () => {
@@ -171,33 +180,46 @@ describe('always dark', () => {
 });
 
 const hex = ([r, g, b]: Rgb) => `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
-const rgbOf = (cls: string) =>
-  new RegExp(`\\.${cls}\\s*\\{[^}]*background:\\s*rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)`).exec(mapCss)?.slice(1).map(Number);
+/** The first rgb(…) of a property in a legend class of map.css. */
+const cssRgb = (cls: string, prop: string) =>
+  new RegExp(`\\.${cls}\\s*\\{[^}]*${prop}:[^;]*?rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)`).exec(mapCss)?.slice(1).map(Number);
 
 describe('the live map', () => {
-  it.each(['text', 'text-muted', 'accent', 'ok', 'warn', 'fail', 'sell', 'charge', 'hold', 'info'])('keeps %s readable on its panels', (fg) => {
+  it.each(['text', 'text-muted', 'accent', 'ok', 'warn', 'fail', 'sell', 'charge', 'hold', 'info', 'forecast'])('keeps %s readable on its panels', (fg) => {
     expect(contrastRatio(tokens[fg], tokens[PANEL])).toBeGreaterThanOrEqual(4.5);
   });
 
-  it.each(['waiting', 'selling', 'charging', 'offline'] as const)('draws %s dots at 3:1 or better against the dark gray page', (key) => {
+  it.each(['waiting', 'selling', 'charging', 'outage'] as const)('draws %s dots at 3:1 or better against the dark gray page', (key) => {
     expect(contrastRatio(hex(PALETTE[key]), tokens.bg)).toBeGreaterThanOrEqual(3);
   });
 
-  it('draws the red outline at 3:1 or better, and selling dots brighter than waiting ones', () => {
+  it('tells the states apart by more than hue: selling is brighter than charging, and waiting is quieter than both', () => {
+    const onPage = (key: keyof typeof PALETTE) => contrastRatio(hex(PALETTE[key]), tokens.bg);
+    expect(onPage('selling')).toBeGreaterThan(onPage('charging') + 3);
+    expect(onPage('waiting')).toBeLessThan(onPage('charging'));
+    // The outage red and the Texas outline are both red, but the dots are lighter than the line.
+    expect(onPage('outage')).toBeGreaterThan(contrastRatio(OUTLINE_COLOR, tokens.bg));
+  });
+
+  it('draws the red outline at 3:1 or better', () => {
     expect(contrastRatio(OUTLINE_COLOR, tokens.bg)).toBeGreaterThanOrEqual(3);
     expect(tokens['map-outline']).toBe(OUTLINE_COLOR);
-    expect(contrastRatio(hex(PALETTE.selling), tokens.bg)).toBeGreaterThan(contrastRatio(hex(PALETTE.waiting), tokens.bg));
   });
 
-  it('uses the same dot colours in the legend as on the canvas', () => {
-    expect(rgbOf('code-selling')).toEqual([...PALETTE.selling]);
-    expect(rgbOf('code-charging')).toEqual([...PALETTE.charging]);
-    expect(rgbOf('code-waiting')).toEqual([...PALETTE.waiting]);
-    expect(rgbOf('code-offline')).toEqual([...PALETTE.offline]);
-    expect(rgbOf('code-down')).toEqual([...PALETTE.down]);
+  it('uses the same dot colours and shapes in the legend as on the canvas', () => {
+    expect(cssRgb('code-selling', 'background')).toEqual([...PALETTE.selling]);
+    expect(cssRgb('code-charging', 'background')).toEqual([...PALETTE.charging]);
+    expect(cssRgb('code-waiting', 'background')).toEqual([...PALETTE.waiting]);
+    // Offline is a hollow red ring; a crashed controller's batteries are solid red; the red edge is red.
+    expect(cssRgb('code-offline', 'border')).toEqual([...PALETTE.outage]);
+    expect(mapCss).toMatch(/\.code-offline\s*\{[^}]*background:\s*transparent/);
+    expect(cssRgb('code-down', 'background')).toEqual([...PALETTE.outage]);
+    expect(cssRgb('code-edge', 'box-shadow')).toEqual([...PALETTE.outage]);
+    expect(tokens.outage.toLowerCase()).toBe(hex(PALETTE.outage));
   });
 
-  it('shows the selling green as the big results number', () => {
+  it('uses the map’s greens and blues for selling and charging everywhere else', () => {
+    expect(tokens.charge.toLowerCase()).toBe(hex(PALETTE.charging));
     expect(tokens.money.toLowerCase()).toBe(hex(PALETTE.selling));
   });
 });

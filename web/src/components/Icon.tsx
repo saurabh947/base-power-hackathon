@@ -16,7 +16,6 @@ const PATHS = {
   stop: 'M6 6h12v12H6z',
   reset: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5',
   plug: 'M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0V8zM12 18v4',
-  search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',
   chevron: 'M9 18l6-6-6-6',
   spinner: 'M21 12a9 9 0 1 1-6.2-8.6',
   clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2',
@@ -32,6 +31,9 @@ const PATHS = {
   bolt: 'M13 2 3 14h9l-1 8 10-12h-9l1-8z',
   /** The race against the comparison fleet (race_update events). */
   flag: 'M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7',
+  /** The AI's prediction (prediction_started, the "Predicted" badge). */
+  ai: 'M11 3l1.9 4.6L17.5 9.5l-4.6 1.9L11 16l-1.9-4.6L4.5 9.5l4.6-1.9L11 3zM18.5 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1z',
+  plus: 'M12 5v14M5 12h14',
 } as const;
 
 export type IconName = keyof typeof PATHS;

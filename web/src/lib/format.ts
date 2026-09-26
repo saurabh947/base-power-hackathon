@@ -363,11 +363,28 @@ export function fmtLocalDate(dateLocal: string, options: { weekday?: boolean } =
   return (options.weekday ? utcWeekdayDateFormat : utcDateFormat).format(d);
 }
 
-/** "Price-spike evening, May 16, 2025, from 4 pm" */
+const monthLong = new Intl.DateTimeFormat(LOCALE, { timeZone: 'UTC', month: 'long', day: 'numeric' });
+
+/** Does the label already name its own date ("From January 1" for 2026-01-01)? */
+function labelNamesDate(label: string, dateLocal: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateLocal);
+  if (!m) return false;
+  const day = monthLong.format(new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))); // "January 1"
+  return label.toLowerCase().includes(day.toLowerCase());
+}
+
+/**
+ * "Price-spike evening, May 16, 2025, from 4 pm". A label that already names its date only adds the year
+ * (and the start time unless it is midnight): "From January 1, 2026".
+ */
 export function fmtPresetLabel(preset: Preset): string {
   const date = preset.date_local ?? (preset.start_utc ? localDateOf(preset.start_utc) : null);
+  const time = preset.start_utc ? fmtTimeOfDay(preset.start_utc, { compact: true, words: true }) : null;
+  if (date && labelNamesDate(preset.label, date)) {
+    return [`${preset.label}, ${date.slice(0, 4)}`, ...(time && time !== 'midnight' ? [`from ${time}`] : [])].join(', ');
+  }
   const bits = [preset.label];
   if (date) bits.push(fmtLocalDate(date));
-  if (preset.start_utc) bits.push(`from ${fmtTimeOfDay(preset.start_utc, { compact: true, words: true })}`);
+  if (time) bits.push(`from ${time}`);
   return bits.join(', ');
 }

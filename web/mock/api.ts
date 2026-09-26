@@ -14,8 +14,6 @@ export { MOCK_MARKER };
 export interface MockApiOptions {
   /** Path prefix, e.g. "/__mock" inside the Vite dev server; "" for the standalone server. */
   basePath?: string;
-  /** Presenter passcode; null or "" means "not set" (POST /chaos/kill answers 503). */
-  passcode?: string | null;
   /** Simulate a Cloud Run cold start: hold requests (and refuse WebSockets) for this long after boot. */
   coldStartMs?: number;
   /** false refuses WebSocket upgrades so the site falls back to polling GET /state. */
@@ -30,7 +28,6 @@ export interface MockApiOptions {
 
 export function mockOptionsFromEnv(env: NodeJS.ProcessEnv): MockApiOptions {
   return {
-    passcode: env.MOCK_PRESENTER_PASSCODE ?? 'presenter',
     coldStartMs: Number(env.MOCK_COLD_START_MS ?? 0) || 0,
     websocket: env.MOCK_WS !== 'off',
     noResultsUntilBacktest: env.MOCK_NO_RESULTS === '1',
@@ -59,7 +56,7 @@ class RateLimiter {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-Presenter-Passcode',
+  'Access-Control-Allow-Headers': 'Content-Type',
   'Access-Control-Expose-Headers': 'Retry-After, ETag',
   'Access-Control-Max-Age': '600',
 };
@@ -104,7 +101,6 @@ export interface MockApi {
 
 export function createMockApi(options: MockApiOptions = {}): MockApi {
   const base = (options.basePath ?? '').replace(/\/+$/, '');
-  const passcode = options.passcode ?? null;
   const bootAt = Date.now();
   const coldStartMs = options.coldStartMs ?? 0;
   const sim = new MockSim({
@@ -116,7 +112,8 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
   const clients = new Set<WebSocket>();
   const runLimit = new RateLimiter(1, 5000);
   const availabilityLimit = new RateLimiter(10, 1000);
-  const wrongPasscodes = new Map<string, RateLimiter>();
+  // docs/API.md: POST /chaos/kill is public, one call per 2 s for everyone together.
+  const killLimit = new RateLimiter(1, 2000);
 
   // A frame every second while a run exists; an idle message every 5 s when none does.
   const timer = setInterval(() => {
@@ -136,27 +133,9 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 
   const cold = () => Math.max(0, coldStartMs - (Date.now() - bootAt));
 
-  const limited = (limiter: RateLimiter) => {
+  const limited = (limiter: RateLimiter, message = 'Everyone shares one fleet, so this button is rate-limited. Try again shortly.') => {
     const wait = limiter.check(Date.now());
-    if (wait !== null) {
-      throw new MockError(429, 'rate_limited', 'Everyone shares one fleet, so this button is rate-limited. Try again shortly.', wait);
-    }
-  };
-
-  const requirePresenter = (req: IncomingMessage) => {
-    if (!passcode) throw new MockError(503, 'presenter_passcode_not_set', 'No presenter passcode is set on this server.');
-    const given = req.headers['x-presenter-passcode'];
-    if (given !== passcode) {
-      const ip = req.socket.remoteAddress ?? 'unknown';
-      let limiter = wrongPasscodes.get(ip);
-      if (!limiter) {
-        limiter = new RateLimiter(5, 60_000);
-        wrongPasscodes.set(ip, limiter);
-      }
-      const wait = limiter.check(Date.now());
-      if (wait !== null) throw new MockError(429, 'rate_limited', 'Too many wrong passcodes. Wait a minute.', wait);
-      throw new MockError(403, 'forbidden', 'That passcode is not right.');
-    }
+    if (wait !== null) throw new MockError(429, 'rate_limited', message, wait);
   };
 
   async function route(req: IncomingMessage, res: ServerResponse, path: string, url: URL): Promise<void> {
@@ -203,11 +182,8 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
         const body = (await readJson(req)) as AvailabilityRequest;
         return send(res, 200, sim.setAvailability(body));
       }
-      case 'POST /presenter/check':
-        requirePresenter(req);
-        return send(res, 200, { ok: true });
       case 'POST /chaos/kill': {
-        requirePresenter(req);
+        limited(killLimit, 'Only one controller can be crashed every 2 seconds. Try again shortly.');
         const raw = url.searchParams.get('worker_id');
         return send(res, 200, sim.kill(raw === null || raw === '' ? undefined : Number(raw)));
       }

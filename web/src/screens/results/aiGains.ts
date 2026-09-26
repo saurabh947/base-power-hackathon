@@ -1,29 +1,19 @@
 // "What the AI adds" on the Results page, from GET /results/ai-gains (docs/API.md). Pure, so the uplift
-// maths, the wording, the year switch and the spike card (always 2024) are unit tested.
+// maths and the wording are unit tested.
 //
-// The headline and the first three cards follow the year switch; the spike card always shows 2024, the
-// year with many price spikes, and says so. Nothing here is hardcoded: every figure comes from the API.
+// It shows the pitch year only (2025): the first entry of `years` with `is_pitch: true`. Other years the API
+// may send are ignored (the human: no 2024 switch, no spike card). Nothing here is hardcoded: every figure
+// comes from the API.
 
-import type { AiGains, AiGainsYear, StrategyGains, Uplift } from '../../api/types.ts';
-import {
-  fmtCount,
-  fmtHomesDay,
-  fmtNumber,
-  fmtPercent,
-  fmtPriceKwh,
-  fmtPriceMwh,
-  fmtUsd,
-  fmtUsdLarge,
-  lowerFirst,
-  plural,
-  shortLabel,
-  strategyName,
-} from '../../lib/format.ts';
+import type { AiGainsYear, StrategyGains, Uplift } from '../../api/types.ts';
+import { fmtCount, fmtHomesDay, fmtNumber, fmtPercent, fmtUsd, fmtUsdLarge, lowerFirst, shortLabel, strategyName } from '../../lib/format.ts';
 
-/** The spike card always shows this year (the human's choice): 2024 had many price spikes. */
-export const SPIKE_YEAR = 2024;
-/** docs/API.md: spikes are 5-minute prices at or above $1,000/MWh. */
-export const SPIKE_PRICE_USD_MWH = 1000;
+/** GET /results/ai-gains as the site uses it: the AI, the baseline, and the pitch year. */
+export interface PitchGains {
+  ai: string;
+  baseline: string;
+  year: AiGainsYear;
+}
 
 type Json = Record<string, unknown>;
 
@@ -81,53 +71,24 @@ function readYear(v: unknown, ai: string, baseline: string): AiGainsYear | null 
 }
 
 /**
- * GET /results/ai-gains, read defensively: years without the AI or the baseline are skipped, a repeated
- * year keeps its first entry, and the pitch year comes first. Null when nothing usable is left.
+ * GET /results/ai-gains, read defensively. The pitch year is the first entry with `is_pitch: true`; other years
+ * are ignored. With no entry flagged (older data), the first usable one stands in. Null (the section is hidden)
+ * when the pitch year lacks the AI or the baseline, or nothing usable is there.
  */
-export function readAiGains(raw: unknown): AiGains | null {
+export function readAiGains(raw: unknown): PitchGains | null {
   if (!isObject(raw) || !Array.isArray(raw.years)) return null;
   const ai = typeof raw.ai === 'string' && raw.ai ? raw.ai : 'forecast';
   const baseline = typeof raw.baseline === 'string' && raw.baseline ? raw.baseline : 'bands';
-  const years: AiGainsYear[] = [];
-  for (const y of raw.years) {
-    const read = readYear(y, ai, baseline);
-    if (read && !years.some((x) => x.year === read.year)) years.push(read);
+  const pitch = raw.years.find((y) => isObject(y) && y.is_pitch === true);
+  if (pitch !== undefined) {
+    const year = readYear(pitch, ai, baseline);
+    return year ? { ai, baseline, year } : null;
   }
-  if (!years.length) return null;
-  // Stable: the pitch year first, then the others in the server's order.
-  return { ai, baseline, years: years.toSorted((a, b) => Number(b.is_pitch) - Number(a.is_pitch)) };
-}
-
-// ---- the year switch ----------------------------------------------------------------------------------
-
-export interface YearOption {
-  year: number;
-  /** "2025 (headline year)", "2024 (check year)". */
-  label: string;
-  isPitch: boolean;
-}
-
-/** One option per year, the pitch year first. On a phone a label breaks after the year, never inside the note. */
-export function yearOptions(gains: AiGains): YearOption[] {
-  return gains.years.map((y) => ({
-    year: y.year,
-    label: `${y.year} (${y.is_pitch ? 'headline year' : 'check year'})`,
-    isPitch: y.is_pitch,
-  }));
-}
-
-/** The chosen year's entry; the pitch year (or the first) when that year is not in the data. */
-export function pickYear(gains: AiGains, year: number | null): AiGainsYear {
-  return gains.years.find((y) => y.year === year) ?? gains.years.find((y) => y.is_pitch) ?? gains.years[0];
-}
-
-/** "The headline number above is for 2025. 2024 is a second full year, to check that the gain holds." */
-export function yearsNote(gains: AiGains): string | null {
-  const pitch = gains.years.find((y) => y.is_pitch);
-  const others = gains.years.filter((y) => y !== pitch).map((y) => y.year);
-  if (!pitch || !others.length) return null;
-  const list = others.length === 1 ? String(others[0]) : `${others.slice(0, -1).join(', ')} and ${others.at(-1)}`;
-  return `The headline number above is for ${pitch.year}. ${list} ${others.length === 1 ? 'is a second full year' : 'are other full years'}, to check that the gain holds.`;
+  for (const y of raw.years) {
+    const year = readYear(y, ai, baseline);
+    if (year) return { ai, baseline, year };
+  }
+  return null;
 }
 
 // ---- formatting -------------------------------------------------------------------------------------------
@@ -215,7 +176,7 @@ export interface GainsHeadline extends UpliftNumbers {
   sentence: string;
 }
 
-export function gainsHeadline(gains: AiGains, year: AiGainsYear, knownFleetSize: number | null): GainsHeadline | null {
+export function gainsHeadline(gains: PitchGains, year: AiGainsYear, knownFleetSize: number | null): GainsHeadline | null {
   const fleetSize = fleetSizeOf(year, gains.ai, knownFleetSize);
   const up = upliftOf(year, gains.ai, gains.baseline, fleetSize);
   if (!up) return null;
@@ -267,7 +228,7 @@ export interface EarnsCard extends Pair {
   fleetDiffText: string | null;
 }
 
-export function earnsCard(gains: AiGains, year: AiGainsYear, knownFleetSize: number | null): EarnsCard | null {
+export function earnsCard(gains: PitchGains, year: AiGainsYear, knownFleetSize: number | null): EarnsCard | null {
   const a = year.strategies[gains.ai];
   const b = year.strategies[gains.baseline];
   if (!finite(a.per_battery_usd_year) || !finite(b.per_battery_usd_year)) return null;
@@ -303,7 +264,7 @@ export interface PerfectCard {
   bestText: string | null;
 }
 
-export function perfectCard(gains: AiGains, year: AiGainsYear): PerfectCard | null {
+export function perfectCard(gains: PitchGains, year: AiGainsYear): PerfectCard | null {
   const best = year.best_possible_per_battery_usd_year;
   const others = Object.keys(year.strategies)
     .filter((id) => id !== gains.ai && id !== gains.baseline)
@@ -332,7 +293,7 @@ export interface SurplusCard extends Pair {
   homes: string;
 }
 
-export function surplusCard(gains: AiGains, year: AiGainsYear): SurplusCard | null {
+export function surplusCard(gains: PitchGains, year: AiGainsYear): SurplusCard | null {
   const a = year.strategies[gains.ai].surplus_mwh;
   const b = year.strategies[gains.baseline].surplus_mwh;
   if (!finite(a) || !finite(b)) return null;
@@ -347,52 +308,7 @@ export function surplusCard(gains: AiGains, year: AiGainsYear): SurplusCard | nu
   };
 }
 
-/** (d) Ready for spikes: always 2024, labelled with its year; null (card hidden) without a 2024 entry. */
-export interface SpikeCard {
-  year: number;
-  ai: Side;
-  base: Side;
-  /** 0-1 charge levels when the spikes began, averaged. */
-  aiCharge: number;
-  baseCharge: number;
-  /** "52%" and "24%" */
-  aiChargeText: string;
-  baseChargeText: string;
-  /** "611 MWh" and "76 MWh" sold during the spikes. */
-  aiMwhText: string;
-  baseMwhText: string;
-  /** "8×" */
-  times: string | null;
-  /** "2024 had 53 price spikes of $1,000/MWh or more ($1.00 per kWh)." Null when the count is missing. */
-  eventsText: string | null;
-}
-
-export function spikeCard(gains: AiGains): SpikeCard | null {
-  const year = gains.years.find((y) => y.year === SPIKE_YEAR);
-  if (!year) return null;
-  const a = year.strategies[gains.ai];
-  const b = year.strategies[gains.baseline];
-  if (![a.spike_charge_level, b.spike_charge_level, a.spike_mwh, b.spike_mwh].every(finite)) return null;
-  const events = finite(a.spike_events) ? a.spike_events : b.spike_events;
-  if (finite(events) && events <= 0) return null;
-  return {
-    year: year.year,
-    ai: side(year, gains.ai),
-    base: side(year, gains.baseline),
-    aiCharge: clampShare(a.spike_charge_level),
-    baseCharge: clampShare(b.spike_charge_level),
-    aiChargeText: fmtPercent(a.spike_charge_level, 0),
-    baseChargeText: fmtPercent(b.spike_charge_level, 0),
-    aiMwhText: fmtMwh(a.spike_mwh),
-    baseMwhText: fmtMwh(b.spike_mwh),
-    times: fmtTimes(a.spike_mwh, b.spike_mwh),
-    eventsText: finite(events)
-      ? `${year.year} had ${fmtCount(events)} price ${plural(events, 'spike', 'spikes')} of ${fmtPriceMwh(SPIKE_PRICE_USD_MWH)} or more (${fmtPriceKwh(SPIKE_PRICE_USD_MWH)}).`
-      : null,
-  };
-}
-
-// ---- everything the section shows for one position of the switch ---------------------------------------------------
+// ---- everything the section shows -------------------------------------------------------------------------
 
 export interface GainsView {
   year: AiGainsYear;
@@ -400,18 +316,16 @@ export interface GainsView {
   earns: EarnsCard | null;
   perfect: PerfectCard | null;
   surplus: SurplusCard | null;
-  /** Always 2024, whatever the switch says. */
-  spike: SpikeCard | null;
 }
 
-export function gainsView(gains: AiGains, year: number | null, knownFleetSize: number | null): GainsView {
-  const y = pickYear(gains, year);
+/** The headline and the three cards, all for the pitch year. */
+export function gainsView(gains: PitchGains, knownFleetSize: number | null): GainsView {
+  const y = gains.year;
   return {
     year: y,
     headline: gainsHeadline(gains, y, knownFleetSize),
     earns: earnsCard(gains, y, knownFleetSize),
     perfect: perfectCard(gains, y),
     surplus: surplusCard(gains, y),
-    spike: spikeCard(gains),
   };
 }

@@ -265,8 +265,8 @@ main:focus {
   outline: none;
 }
 
-/* Header, right: the technical line (API and backend version), the presenter link, the switch. Only the
-   technical line gives way when the header is full; the brand, the nav, the link and the switch keep their size. */
+/* Header, right: the technical line (API and backend version) and the switch. Only the technical line gives
+   way when the header is full; the brand, the nav and the switch keep their size. */
 .header-tools {
   display: flex;
   flex: 0 1 auto;
@@ -288,12 +288,6 @@ main:focus {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.header-presenter {
-  flex: none;
-  font-size: 14px;
   white-space: nowrap;
 }
 
@@ -871,6 +865,29 @@ legend {
   border-color: var(--fail);
 }
 
+/* "Predicted": this moment's prices are the AI's prediction (2026 after its real prices end). */
+.chip-predicted {
+  background: var(--forecast-soft);
+  color: var(--forecast);
+  border-color: var(--forecast);
+  vertical-align: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Money earned on predicted prices is a projection: say so, in the prediction's violet. */
+.projected-line {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.projected-line > svg {
+  flex: none;
+  align-self: center;
+  color: var(--forecast);
+}
+
 .status-line {
   display: inline-flex;
   align-items: center;
@@ -1001,6 +1018,20 @@ main.main-start {
   gap: 20px;
 }
 
+/* Year: 2025 / 2026, above the presets it filters; 2026's one-line note under it. */
+.editor-year {
+  display: grid;
+  gap: 6px;
+}
+
+.editor-year .toolbar-label {
+  font-weight: 650;
+}
+
+.year-note {
+  margin: 0;
+}
+
 .choice-list {
   display: grid;
   gap: 8px;
@@ -1121,7 +1152,7 @@ main.main-start {
   gap: 2px;
   margin-right: auto;
   min-width: 0;
-  /* Shrinks before the controls do, so the buttons stay on one row at 1280 px, even in presenter mode. */
+  /* Shrinks before the controls do, so the buttons stay on one row at 1280 px. */
   flex: 1 1 300px;
 }
 
@@ -1183,6 +1214,51 @@ main.main-start {
   gap: 6px;
   font-size: 14px;
   font-weight: 600;
+}
+
+/* "Crash a controller" keeps its width while it counts down ("Next crash in 2 s"). */
+.crash-button-label {
+  min-width: 8.6em;
+  text-align: left;
+}
+
+/* "Crash controller 7?": a small confirmation above a controller tile. */
+.crash-pop {
+  position: absolute;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px 12px;
+  border: 1px solid color-mix(in srgb, var(--fail) 55%, var(--panel-border));
+  border-radius: 10px;
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-raised);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.crash-pop:focus {
+  outline: none;
+}
+
+.crash-pop-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.crash-pop-text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.crash-pop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .speed-control select {
@@ -1313,6 +1389,14 @@ main.main-start {
   border-color: var(--forecast);
 }
 
+/* The AI's predicted prices: a lighter violet wash with a solid left edge, as on the chart. */
+.swatch-predicted {
+  background: var(--forecast-soft);
+  border-color: transparent;
+  border-left: 2px solid var(--forecast);
+  border-radius: 0;
+}
+
 .swatch-line {
   width: 22px;
   height: 0;
@@ -1440,15 +1524,35 @@ main.main-start {
   list-style: none;
 }
 
+.tiles-wrap {
+  position: relative;
+}
+
+/* Each tile is a button: a working controller can be crashed from it ("Crash controller 7?"). */
 .tile {
   display: grid;
   gap: 1px;
+  width: 100%;
   padding: 7px 9px;
   border: 1px solid var(--border);
   border-left-width: 4px;
   border-radius: 8px;
   background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
   min-width: 0;
+  cursor: pointer;
+}
+
+.tile:hover:not(:disabled),
+.tile.is-asking {
+  border-color: var(--fail);
+  border-left-color: var(--fail);
+}
+
+.tile:disabled {
+  cursor: default;
 }
 
 .tile-name {
@@ -1653,6 +1757,59 @@ main.main-start {
   color: var(--money);
 }
 
+/* The third bar: the live strategy with every battery online, a projection, so hatched like "Best possible". */
+.race-name-note {
+  display: block;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.race-row.is-potential {
+  align-items: center;
+}
+
+.race-row.is-potential .race-name {
+  white-space: normal;
+  line-height: 1.15;
+}
+
+.race-row.is-potential .race-fill {
+  background: repeating-linear-gradient(135deg, rgba(74, 222, 128, 0.7) 0 2px, rgba(74, 222, 128, 0.18) 2px 5px);
+  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.7);
+}
+
+/* The map corner's note under the third bar: "projected · Outages cost $790 so far". */
+.race-note {
+  margin: -1px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.race-shortfall-text.is-cost {
+  color: var(--fail);
+}
+
+/* "Outages cost $790 so far": red, the colour of failures, with the plug of "Take batteries offline". */
+.race-shortfall {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 1px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.race-shortfall.is-cost {
+  color: var(--fail);
+}
+
 .race-foot {
   display: flex;
   flex-wrap: wrap;
@@ -1744,6 +1901,10 @@ main.main-start {
   color: var(--info);
 }
 
+.feed-predict > svg {
+  color: var(--forecast);
+}
+
 .feed-time {
   color: var(--text-muted);
   font-size: 13px;
@@ -1784,6 +1945,31 @@ dialog::backdrop {
   margin: 0 0 0 auto;
   border-radius: 0;
   border-width: 0 0 0 1px;
+}
+
+/* "Take batteries offline" opens on the left, over West Texas, so the four cities stay in view. */
+.drawer.drawer-left {
+  width: min(400px, 100vw);
+  margin: 0 auto 0 0;
+  border-width: 0 1px 0 0;
+}
+
+dialog.backdrop-light::backdrop {
+  background: rgba(8, 9, 11, 0.18);
+}
+
+.drawer-top {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.drawer-top p {
+  margin: 0;
 }
 
 .dialog-inner {
@@ -1840,32 +2026,6 @@ dialog::backdrop {
 
 .inline-form .field {
   flex: 1 1 140px;
-}
-
-.battery-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  font-size: 14.5px;
-}
-
-.battery-card dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
-  margin: 0;
-}
-
-.battery-card dt {
-  color: var(--text-muted);
-}
-
-.battery-card dd {
-  margin: 0;
-  font-weight: 600;
 }
 
 .offline-list {
@@ -2239,14 +2399,9 @@ dialog::backdrop {
   gap: 8px;
 }
 
-/* What the AI adds: a headline, then four cards. The spike card always shows 2024 and wears the year. */
+/* What the AI adds: the pitch year's headline, then three cards side by side. */
 .ai-gains .panel-head {
   row-gap: 10px;
-}
-
-.ai-gains .segmented span {
-  padding: 5px 11px;
-  font-size: 13.5px;
 }
 
 .gains-headline {
@@ -2302,16 +2457,11 @@ dialog::backdrop {
   font-weight: 650;
 }
 
-.gains-note {
-  color: var(--text-muted);
-  font-size: 13.5px;
-}
-
-/* Four cards whose parts line up across the row (subgrid): head, figure, details, meaning. */
+/* Three cards whose parts line up across the row (subgrid): head, figure, details, meaning. */
 .gains-cards {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  column-gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 14px;
   /* The cards' own bottom margin spaces wrapped rows; the last row's is taken back here. */
   margin: 18px 0 -12px;
   padding: 0;
@@ -2346,18 +2496,6 @@ dialog::backdrop {
 .gains-card-head svg {
   flex: none;
   color: var(--money);
-}
-
-.gains-year-tag {
-  margin-left: auto;
-  padding: 0 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  line-height: 1.6;
 }
 
 /* Labelled bars: the AI's green, the others gray. */
@@ -2417,33 +2555,6 @@ dialog::backdrop {
 
 .gains-row.is-ai .gains-row-value {
   color: var(--money);
-}
-
-/* Charge levels as battery gauges: an outlined battery with a terminal nub, filled to its level. */
-.gains-rows.is-battery .gains-row-track {
-  position: relative;
-  height: 16px;
-  margin-right: 4px;
-  padding: 2px;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 4px;
-  background: transparent;
-  overflow: visible;
-}
-
-.gains-rows.is-battery .gains-row-track::after {
-  content: '';
-  position: absolute;
-  top: 3px;
-  right: -5px;
-  width: 3px;
-  height: 7px;
-  border-radius: 0 2px 2px 0;
-  background: var(--border-strong);
-}
-
-.gains-rows.is-battery .gains-row-fill {
-  border-radius: 2px;
 }
 
 /* The bars and what they measure. */
@@ -2524,9 +2635,10 @@ dialog::backdrop {
   }
 }
 
-@media (max-width: 1100px) {
+/* Below this, three cards side by side get too narrow: they stack, one full-width card each. */
+@media (max-width: 860px) {
   .gains-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 }
 
@@ -2553,33 +2665,6 @@ dialog::backdrop {
 
   .big-number {
     font-size: 48px;
-  }
-
-  .gains-cards {
-    grid-template-columns: 1fr;
-  }
-
-  /* The year switch takes the full width, each year's label on up to two lines. */
-  .ai-gains .panel-actions,
-  .ai-gains .panel-actions > span {
-    width: 100%;
-    margin-left: 0;
-  }
-
-  .ai-gains .segmented {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .ai-gains .segmented label {
-    flex: 1 1 0;
-    min-width: 0;
-  }
-
-  .ai-gains .segmented span {
-    width: 100%;
-    white-space: normal;
-    text-align: center;
   }
 
   .gains-big {
@@ -2630,7 +2715,7 @@ dialog::backdrop {
     padding-bottom: 8px;
   }
 
-  /* The presenter link and the switch get a row of their own, from the left. */
+  /* The switch gets a row of its own, from the left. */
   .header-spacer {
     display: none;
   }

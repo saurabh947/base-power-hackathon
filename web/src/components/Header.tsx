@@ -5,7 +5,6 @@ import { useBackend } from '../state/backend.ts';
 import { setTechnical, useTechnical } from '../state/prefs.ts';
 import { Icon } from './Icon.tsx';
 import { Link } from './Link.tsx';
-import { PresenterLink } from './PresenterLink.tsx';
 import { Switch } from './Switch.tsx';
 
 const ACTIVE = new Set(['running', 'starting', 'paused']);
@@ -62,7 +61,6 @@ export function Header({ route }: { route: Route }) {
               {apiLine}
             </span>
           ) : null}
-          <PresenterLink />
           <Switch checked={technical} onChange={setTechnical} label="Show technical details" />
         </div>
       </div>

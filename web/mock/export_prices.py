@@ -1,11 +1,17 @@
 """Export the mock API's price fixture: REAL ERCOT prices, nothing simulated.
 
-For every replay preset in config.yaml (presets.items), reads the real-time
+For every 2025 replay preset in config.yaml (presets.items), reads the real-time
 15-minute settlement point prices of the fleet's load zones (config.yaml
 fleet.locations: LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN) for the preset's local
 date and the day after (America/Chicago) from the committed snapshot
 (data/snapshot/ercot_rt_2025_hubs.parquet, ERCOT MIS report 13061) and writes
 them to web/mock/data/ercot_rt_lz_preset_days_2025.json, one segment per preset.
+
+It also exports the mock-only days in MOCK_ONLY: January 1-2, 2025 (the 2025
+"From January 1" preset) and September 14-20, 2025. The mock has no 2026 data,
+so its 2026 replays use 2025's real prices from the same dates, a year on, and
+simulate the AI's prediction after Sep 20 from the week before (web/mock/sim.ts).
+Presets of other years (2026 in config.yaml) are skipped: the snapshot is 2025.
 
 Run from the repo root (after `make setup`):
     uv run python web/mock/export_prices.py        # or: make web-prices
@@ -25,11 +31,17 @@ CONFIG = ROOT / "config.yaml"
 OUT = Path(__file__).resolve().parent / "data" / "ercot_rt_lz_preset_days_2025.json"
 TZ = "America/Chicago"
 DAYS = 2  # the preset's day and the next, so every replay has room to run
+YEAR = 2025  # the snapshot's year
+# Days the mock needs beyond config.yaml's presets (see the module docstring).
+MOCK_ONLY = [
+    {"id": "jan1_2025", "date_local": "2025-01-01", "days": 2},
+    {"id": "stand_in_2026_sep", "date_local": "2025-09-14", "days": 7},
+]
 
 
 def segment(df: pd.DataFrame, preset: dict, locations: list[str]) -> dict:
     start_local = pd.Timestamp(preset["date_local"]).tz_localize(TZ)
-    end_local = start_local + pd.Timedelta(days=DAYS)
+    end_local = start_local + pd.Timedelta(days=int(preset.get("days", DAYS)))
     start_utc, end_utc = start_local.tz_convert("UTC"), end_local.tz_convert("UTC")
     part = df[(df["ts"] >= start_utc) & (df["ts"] < end_utc)]
     wide = part.pivot(index="ts", columns="location", values="price_usd_mwh").sort_index()
@@ -40,7 +52,7 @@ def segment(df: pd.DataFrame, preset: dict, locations: list[str]) -> dict:
         raise SystemExit(f"{preset['id']}: expected {expected} complete 15-min rows for {locations}, got {len(wide)} (missing {missing})")
     return {
         "preset": preset["id"],
-        "local_dates": [(start_local + pd.Timedelta(days=d)).strftime("%Y-%m-%d") for d in range(DAYS)],
+        "local_dates": [(start_local + pd.Timedelta(days=d)).strftime("%Y-%m-%d") for d in range(int(preset.get("days", DAYS)))],
         "rows": [
             {
                 "ts_utc": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -54,7 +66,9 @@ def segment(df: pd.DataFrame, preset: dict, locations: list[str]) -> dict:
 
 def main() -> None:
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    presets = config["presets"]["items"]
+    presets = [p for p in config["presets"]["items"] if str(p["date_local"]).startswith(f"{YEAR}-")]
+    seen = {p["id"] for p in presets} | {str(p["date_local"]) for p in presets}
+    presets += [m for m in MOCK_ONLY if m["id"] not in seen]
     locations = list(config["fleet"]["locations"])  # config order: the battery id blocks run in it
     df = pd.read_parquet(SRC)
     df = df[df["location"].isin(locations)]
@@ -62,9 +76,10 @@ def main() -> None:
     header = {
         "source_note": (
             "REAL DATA. ERCOT real-time settlement point prices (MIS report 13061, 15-minute "
-            f"intervals), load zones {', '.join(locations)}, for each replay preset's Chicago-local "
-            "date and the day after. Exported from data/snapshot/ercot_rt_2025_hubs.parquet by "
-            "web/mock/export_prices.py. Everything else the mock API serves is simulated."
+            f"intervals), load zones {', '.join(locations)}, for each 2025 replay preset's Chicago-local "
+            "date and the day after, plus the mock-only days (Jan 1-2 and Sep 14-20, 2025). Exported from "
+            "data/snapshot/ercot_rt_2025_hubs.parquet by web/mock/export_prices.py. Everything else the "
+            "mock API serves is simulated, including its 2026 prices (2025's, a year on) and prediction."
         ),
         "report_type_id": 13061,
         "market": "RT",

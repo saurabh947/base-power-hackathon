@@ -1,11 +1,15 @@
-// The live map's four corner panels (docs/UX.md, Live map > Corners). Each one
-// shows the selected city's numbers, or the whole fleet's for "All of Texas".
+// The live map's four corner panels (docs/UX.md, Live map > Corners, and "Live map v2"). Each one shows the
+// selected city's numbers, or the whole fleet's for "All of Texas". The clock, money and fleet corners follow
+// the timeline: they read useLiveData, which is the moment being viewed inside the map (src/live/timeTravel.ts).
+// The controls always act on the live run.
 
 import type { Tick, Worker, WorkerStatus } from '../../../api/types.ts';
 import { AnimatedNumber } from '../../../components/AnimatedNumber.tsx';
 import { Icon } from '../../../components/Icon.tsx';
 import { TechBlock, TechOnly, Term } from '../../../components/Tech.tsx';
 import { useLive } from '../../../live/liveStore.ts';
+import { projectedMoney } from '../../../live/past.ts';
+import { useLiveData, useViewing } from '../../../live/timeTravel.ts';
 import { byBatteries, cityName, useCities } from '../../../lib/cities.ts';
 import { controllerName } from '../../../lib/fleet.ts';
 import {
@@ -26,15 +30,16 @@ import {
 } from '../../../lib/format.ts';
 import { useLayoutState, useMapStatus } from '../../../map/feed.ts';
 import { CHARGING, DOWN, OFFLINE, SELLING, WAITING } from '../../../map/status.ts';
-import { useIsPresenter } from '../../../state/presenter.ts';
 import { useTechnical } from '../../../state/prefs.ts';
 import { ActionChip, ActionIcon } from '../ActionChip.tsx';
-import { CrashControl, PauseResume, ResetButton, SpeedSelect } from '../controls.tsx';
+import { CrashButton, CrashPopover, PauseResume, ResetButton, SpeedSelect } from '../controls.tsx';
+import { useCrashAsk } from '../crash.ts';
 import { eventClass, eventIcon, eventSpoken } from '../eventLook.ts';
 import { RaceBars } from '../RaceBars.tsx';
-import { ConnectionStatus, ReplayLabel, RunStatus, TechCounters } from '../TopBar.tsx';
+import { ConnectionStatus, PredictedBadge, RunStatus, TechCounters } from '../TopBar.tsx';
 import { MiniPowerChart, MiniPriceChart } from './MiniCharts.tsx';
 import { ON_TARGET_PCT, scopeAvailability, scopeTotals, scopeTracking, workerShare, type Scope } from './scope.ts';
+import { Timeline } from './Timeline.tsx';
 
 const lastTick = (s: { history: Tick[] }) => s.history[s.history.length - 1] ?? null;
 
@@ -43,16 +48,24 @@ function scopeLabel(scope: Scope): string {
   return scope === null ? 'All of Texas' : cityName(scope);
 }
 
-// ---- top left: clock and price ------------------------------------------------------
+/** "right now", or "at 7:45 pm" while the timeline shows an earlier moment. */
+function useWhen(): string {
+  const viewing = useViewing();
+  return viewing === null ? 'right now' : `at ${fmtTimeOfDay(viewing)}`;
+}
+
+// ---- top left: clock, timeline and price ----------------------------------------------------
 
 function MapClock() {
-  const simTime = useLive((s) => s.simTimeUtc);
-  const status = useLive((s) => s.status);
+  const simTime = useLiveData((s) => s.simTimeUtc);
+  const status = useLiveData((s) => s.status);
+  const predicted = useLiveData((s) => lastTick(s)?.predicted === true);
+  const viewing = useViewing() !== null;
   if (!simTime) return <p className="map-clock">{status === 'idle' ? 'No simulation running' : 'Replay clock'}</p>;
   const [when, zone] = fmtClock(simTime).split(/, (?=Central time$)/);
   return (
     <p className="map-clock">
-      <span className="sr-only">Replay time: </span>
+      <span className="sr-only">{viewing ? 'Viewing an earlier moment: ' : 'Replay time: '}</span>
       <span className="nowrap">{when}</span>
       {zone ? (
         <>
@@ -60,19 +73,27 @@ function MapClock() {
           <span className="map-clock-zone nowrap">{zone}</span>
         </>
       ) : null}
+      {predicted ? (
+        <>
+          {' '}
+          <PredictedBadge />
+        </>
+      ) : null}
     </p>
   );
 }
 
 function CityPrice({ location }: { location: string }) {
-  const tick = useLive(lastTick);
-  const hasForecast = useLive((s) => !!s.forecast[location]);
+  const tick = useLiveData(lastTick);
+  const hasForecast = useLiveData((s) => !!s.forecast[location]);
+  const anyPredicted = useLiveData((s) => s.history.some((t) => t.predicted));
+  const when = useWhen();
   const price = tick?.price?.[location];
   const decision = tick?.decision_price?.[location];
   return (
     <div className="corner-block">
       <h3 className="corner-label">
-        <Term plain={`Price right now · ${cityName(location)}`} tech="RT settlement point price" />
+        <Term plain={`Price ${when} · ${cityName(location)}`} tech="RT settlement point price" />
       </h3>
       {typeof price === 'number' ? (
         <>
@@ -91,6 +112,12 @@ function CityPrice({ location }: { location: string }) {
           <span className="key-swatch key-line" aria-hidden="true" />
           Real price, last 6 h
         </li>
+        {anyPredicted ? (
+          <li>
+            <span className="key-swatch key-predicted" aria-hidden="true" />
+            AI prediction
+          </li>
+        ) : null}
         <li>
           <span className="key-swatch key-band" aria-hidden="true" />
           {hasForecast ? 'AI forecast, likely range' : 'AI forecast (none yet)'}
@@ -100,6 +127,7 @@ function CityPrice({ location }: { location: string }) {
         <p className="tech">
           {location}
           {typeof decision === 'number' ? ` · acted on ${fmtPriceMwh(decision)} (15 min late)` : ''}
+          {tick?.predicted ? ' · predicted: true' : ''}
         </p>
       </TechOnly>
     </div>
@@ -107,12 +135,13 @@ function CityPrice({ location }: { location: string }) {
 }
 
 function AllPrices({ onSelect }: { onSelect: (location: string) => void }) {
-  const tick = useLive(lastTick);
+  const tick = useLiveData(lastTick);
   const cities = useCities();
+  const when = useWhen();
   return (
     <div className="corner-block">
       <h3 className="corner-label">
-        <Term plain="Electricity price right now" tech="RT settlement point price" />
+        <Term plain={`Electricity price ${when}`} tech="RT settlement point price" />
       </h3>
       <ul className="price-rows">
         {byBatteries(cities).map((c) => {
@@ -145,15 +174,13 @@ function AllPrices({ onSelect }: { onSelect: (location: string) => void }) {
 
 export function ClockCorner({ scope, onSelect }: { scope: Scope; onSelect: (location: string) => void }) {
   return (
-    <section className="corner corner-tl" aria-label="Replay clock and electricity price">
+    <section className="corner corner-tl" aria-label="Replay clock, timeline and electricity price">
       <div className="corner-status">
         <RunStatus />
         <ConnectionStatus />
       </div>
       <MapClock />
-      <p className="corner-sub">
-        <ReplayLabel />
-      </p>
+      <Timeline scope={scope} />
       <TechCounters />
       <hr className="corner-rule" />
       {scope === null ? <AllPrices onSelect={onSelect} /> : <CityPrice location={scope} />}
@@ -161,22 +188,51 @@ export function ClockCorner({ scope, onSelect }: { scope: Scope; onSelect: (loca
   );
 }
 
-// ---- top right: money and power ------------------------------------------------------
+// ---- top right: money, the race and power ------------------------------------------------------
 
 const formatMoney = (n: number) => fmtUsd(n, 2);
 
 /** Average battery power, for a city's "on target" floor (0.5% of its nameplate). */
 function useAvgPowerKw(): number {
-  return useLive((s) => {
+  return useLiveData((s) => {
     const r = s.settings?.power_kw_range;
     return r ? (r[0] + r[1]) / 2 : 8.25;
   });
 }
 
+const WHOLESALE =
+  'Gross wholesale value: what the power the fleet sold was worth, minus what the power it bought cost.';
+
+/**
+ * "$6,790 of it is projected, on the AI's predicted prices" (docs/API.md Tick.predicted). In a short window the
+ * reason moves to the tooltip (css: .projected-why), so the line stays one line.
+ */
+function ProjectedLine({ scope }: { scope: Scope }) {
+  const usd = useLiveData((s) => projectedMoney(s.history, scope)?.usd ?? null);
+  const exact = useLiveData((s) => projectedMoney(s.history, scope)?.exact ?? true);
+  if (usd === null) return null;
+  const why = <span className="projected-why">, on the AI’s predicted prices</span>;
+  return (
+    <p className="corner-sub projected-line" title="Money earned while the prices are the AI's prediction, not real ERCOT data, is a projection.">
+      <Icon name="ai" size={13} />
+      {!exact ? (
+        <span>Part of it is projected{why}</span>
+      ) : Math.abs(usd) >= 0.005 ? (
+        <span>
+          <strong className="num">{fmtUsd(usd, Math.abs(usd) < 100 ? 2 : 0)}</strong> of it is projected{why}
+        </span>
+      ) : (
+        <span>From here on it is projected{why}</span>
+      )}
+    </p>
+  );
+}
+
 export function MoneyCorner({ scope }: { scope: Scope }) {
-  const totals = useLive((s) => s.totals);
-  const received = useLive((s) => s.received);
-  const tick = useLive(lastTick);
+  const totals = useLiveData((s) => s.totals);
+  const received = useLiveData((s) => s.received);
+  const tick = useLiveData(lastTick);
+  const viewing = useViewing();
   const cities = useCities();
   const avgKw = useAvgPowerKw();
   const technical = useTechnical();
@@ -186,10 +242,13 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
   const onTarget = track.errorPct !== null ? track.errorPct <= ON_TARGET_PCT : null;
   const gap = track.target !== null && track.actual !== null ? Math.abs(track.target - track.actual) : null;
   const where = scope === null ? 'in this replay' : `in ${cityName(scope)}`;
+  const by = viewing === null ? 'so far' : `by ${fmtTimeOfDay(viewing)}`;
 
   return (
     <section className="corner corner-tr" aria-label={`Money and power, ${scopeLabel(scope)}`}>
-      <h2 className="corner-label">Earned so far {where}</h2>
+      <h2 className="corner-label">
+        Earned {by} {where}
+      </h2>
       <p className="corner-money num">
         {received && money ? (
           <>
@@ -202,16 +261,18 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
           <span className="muted">–</span>
         )}
       </p>
-      <p className="corner-sub">
+      <p className="corner-sub" title={money ? WHOLESALE : undefined}>
         {money ? (
           <>
-            Gross wholesale value. Sold <strong>{fmtEnergy(money.sold_kwh)}</strong> · Bought{' '}
-            <strong>{fmtEnergy(money.bought_kwh)}</strong>
+            {/* In a short window only the tooltip says it (css: .corner-sub-def), so both right-hand corners fit. */}
+            <span className="corner-sub-def">Gross wholesale value. </span>
+            Sold <strong>{fmtEnergy(money.sold_kwh)}</strong> · Bought <strong>{fmtEnergy(money.bought_kwh)}</strong>
           </>
         ) : (
           'This simulator does not report money per city.'
         )}
       </p>
+      <ProjectedLine scope={scope} />
       <RaceBars scope={scope} />
       <hr className="corner-rule" />
       <h3 className="corner-label">Power: asked for vs delivered</h3>
@@ -264,10 +325,9 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
   );
 }
 
-// ---- bottom left: controls (the presenter link is in the header) ------------------------
+// ---- bottom left: controls (always the live run) ---------------------------------------------
 
 export function ControlsCorner({ onOpenAvailability, onShowCharts }: { onOpenAvailability: () => void; onShowCharts: () => void }) {
-  const presenter = useIsPresenter();
   return (
     <section className="corner corner-bl" aria-label="Simulation controls">
       <div className="corner-buttons">
@@ -278,7 +338,10 @@ export function ControlsCorner({ onOpenAvailability, onShowCharts }: { onOpenAva
           <Icon name="plug" />
           Take batteries offline
         </button>
-        {presenter ? <CrashControl /> : null}
+        <span className="crash-with-hint">
+          <CrashButton />
+          <span className="corner-hint">or click a controller</span>
+        </span>
       </div>
       <div className="corner-foot">
         <button type="button" className="btn btn-quiet" onClick={onShowCharts}>
@@ -299,7 +362,17 @@ const TILE: Record<WorkerStatus, { label: string; glyph: string }> = {
   starting: { label: 'starting', glyph: '…' },
 };
 
-function MiniTile({ worker, scope, offline }: { worker: Worker; scope: Scope; offline: boolean }) {
+interface TileProps {
+  worker: Worker;
+  scope: Scope;
+  offline: boolean;
+  /** Why this tile cannot be crashed now, or null when it can. */
+  blocked: string | null;
+  asking: boolean;
+  onAsk: (workerId: number, button: HTMLElement) => void;
+}
+
+function MiniTile({ worker, scope, offline, blocked, asking, onAsk }: TileProps) {
   const t = TILE[worker.status] ?? TILE.starting;
   const share = workerShare(worker, scope);
   const serving = share > 0;
@@ -308,27 +381,36 @@ function MiniTile({ worker, scope, offline }: { worker: Worker; scope: Scope; of
     worker.status === 'dead' && worker.batteries === 0
       ? `${controllerName(worker.worker_id)}: ${t.label}, its batteries were handed to the others`
       : `${controllerName(worker.worker_id)}: ${t.label}, runs ${fmtCount(share)}${where} ${plural(share, 'battery', 'batteries')}${offline ? ' (offline)' : ''}`;
+  const hint = blocked ?? 'Click to crash it';
   return (
-    <li
-      className={`mini-tile mini-tile-${worker.status}${scope !== null ? (serving ? ' is-serving' : ' is-idle') : ''}${offline ? ' is-offline' : ''}`}
-      title={text}
-    >
-      <span aria-hidden="true">{t.glyph || worker.worker_id + 1}</span>
-      <span className="sr-only">{text}</span>
+    <li>
+      <button
+        type="button"
+        className={`mini-tile mini-tile-${worker.status}${scope !== null ? (serving ? ' is-serving' : ' is-idle') : ''}${offline ? ' is-offline' : ''}${asking ? ' is-asking' : ''}`}
+        title={`${text}. ${hint}.`}
+        aria-label={`${text}.${blocked ? '' : ' Press to crash it.'}`}
+        aria-haspopup="dialog"
+        aria-expanded={asking}
+        disabled={blocked !== null}
+        onClick={(e) => onAsk(worker.worker_id, e.currentTarget)}
+      >
+        <span aria-hidden="true">{t.glyph || worker.worker_id + 1}</span>
+      </button>
     </li>
   );
 }
 
+/** Legend rows: the same looks as on the map (src/map/looks.ts), doubling as the battery counts. */
 const CODE_ROWS: { code: number; label: string; className: string }[] = [
   { code: SELLING, label: 'selling', className: 'code-selling' },
   { code: CHARGING, label: 'charging', className: 'code-charging' },
   { code: WAITING, label: 'waiting', className: 'code-waiting' },
   { code: OFFLINE, label: 'offline', className: 'code-offline' },
-  { code: DOWN, label: 'waiting for a controller', className: 'code-down' },
+  { code: DOWN, label: 'controller crashed', className: 'code-down' },
 ];
 
 function BatteryCounts({ scope }: { scope: Scope }) {
-  const availability = useLive((s) => s.availability);
+  const availability = useLiveData((s) => s.availability);
   const byCity = useMapStatus((s) => s.byCity);
   const fleet = useMapStatus((s) => s.fleet);
   const source = useMapStatus((s) => s.source);
@@ -339,6 +421,8 @@ function BatteryCounts({ scope }: { scope: Scope }) {
   const index = scope === null ? -1 : layoutCities.findIndex((c) => c.location === scope);
   const counts = scope === null ? fleet : (byCity[index] ?? null);
   const a = scopeAvailability(availability, scope);
+  // Before this page was opened only each city's overall action is known: no per-battery counts.
+  const cityLevel = source === 'city_level';
   return (
     <div className="corner-block">
       <h3 className="corner-label corner-label-row">
@@ -351,17 +435,30 @@ function BatteryCounts({ scope }: { scope: Scope }) {
       </h3>
       {counts && counts.some((n) => n > 0) ? (
         <ul className="code-legend" aria-label="What the dots show">
-          {CODE_ROWS.filter((r) => r.code !== DOWN || counts[DOWN] > 0).map((r) => (
-            <li key={r.code} className={counts[r.code] ? '' : 'is-zero'}>
+          {CODE_ROWS.map((r) => (
+            <li key={r.code} className={counts[r.code] || cityLevel ? '' : 'is-zero'}>
               <span className={`code-dot ${r.className}`} aria-hidden="true" />
-              <span className="num">{fmtCount(counts[r.code])}</span> {r.label}
+              {cityLevel ? null : <span className="num">{fmtCount(counts[r.code])}</span>} {r.label}
             </li>
           ))}
+          <li className="code-edge-row">
+            <span className="code-dot code-edge" aria-hidden="true" />
+            red edge: some offline or crashed
+          </li>
         </ul>
       ) : null}
       <TechOnly>
         <p className="tech">
-          battery_status: {source === 'battery_status' ? `${fmtCount(statusChars)} base64 chars` : source === 'from_actions' ? 'missing, colours from each city action' : 'none yet'}
+          battery_status:{' '}
+          {source === 'battery_status'
+            ? `${fmtCount(statusChars)} base64 chars`
+            : source === 'recorded'
+              ? `recorded by this page (${fmtCount(statusChars)} bytes)`
+              : source === 'city_level'
+                ? 'not recorded (before this page opened): each city action'
+                : source === 'from_actions'
+                  ? 'missing, colours from each city action'
+                  : 'none yet'}
           {counts ? ` · codes 0-4 [${counts.join(', ')}]` : ''}
           {fromEvents ? ` · ${fmtCount(fromEvents)} shown down from the controller events (the frame missed code 4)` : ''}
         </p>
@@ -371,7 +468,7 @@ function BatteryCounts({ scope }: { scope: Scope }) {
 }
 
 function LastEvents() {
-  const events = useLive((s) => s.events);
+  const events = useLiveData((s) => s.events);
   const visible = events.slice(0, 3);
   return (
     <div className="corner-block">
@@ -404,13 +501,24 @@ function LastEvents() {
 }
 
 export function FleetCorner({ scope }: { scope: Scope }) {
-  const workers = useLive((s) => s.workers);
-  const offlineWorkers = useLive((s) => s.availability?.offline_workers);
+  const workers = useLiveData((s) => s.workers);
+  const offlineWorkers = useLiveData((s) => s.availability?.offline_workers);
+  const runStatus = useLive((s) => s.status);
+  const viewing = useViewing();
+  const crash = useCrashAsk();
   const offline = new Set(offlineWorkers ?? []);
   const healthy = workers.filter((w) => w.status === 'healthy').length;
   const suspect = workers.filter((w) => w.status === 'suspect').length;
   const dead = workers.filter((w) => w.status === 'dead').length;
   const serving = scope === null ? 0 : workers.filter((w) => workerShare(w, scope) > 0).length;
+  const running = runStatus === 'running' || runStatus === 'paused';
+  const blockedFor = (w: Worker): string | null => {
+    if (viewing !== null) return 'Go back to live to crash a controller';
+    if (!running) return 'Start a simulation first';
+    if (w.status !== 'healthy') return `It is ${TILE[w.status]?.label ?? 'not working'}`;
+    if (healthy <= 2) return 'At least 2 controllers must keep working';
+    return null;
+  };
   return (
     <section className="corner corner-br" aria-label={`Controllers and batteries, ${scopeLabel(scope)}`}>
       <h2 className="corner-label corner-label-row">
@@ -441,14 +549,25 @@ export function FleetCorner({ scope }: { scope: Scope }) {
               ) : null}
             </p>
           ) : null}
-          <ul className="mini-tiles" aria-label="Controllers">
-            {workers.map((w) => (
-              <MiniTile key={w.worker_id} worker={w} scope={scope} offline={offline.has(w.worker_id)} />
-            ))}
-          </ul>
+          <div className="mini-tiles-wrap">
+            <ul className="mini-tiles" aria-label="Controllers (click one to crash it)">
+              {workers.map((w) => (
+                <MiniTile
+                  key={w.worker_id}
+                  worker={w}
+                  scope={scope}
+                  offline={offline.has(w.worker_id)}
+                  blocked={blockedFor(w)}
+                  asking={crash.target?.workerId === w.worker_id}
+                  onAsk={crash.ask}
+                />
+              ))}
+            </ul>
+            {crash.target ? <CrashPopover key={crash.target.workerId} target={crash.target} onClose={crash.close} /> : null}
+          </div>
           {scope !== null ? (
             <p className="corner-sub">
-              Highlighted: the {serving} {plural(serving, 'controller', 'controllers')} running {cityName(scope)} batteries.
+              Highlighted: the {serving} serving {cityName(scope)}.
             </p>
           ) : null}
         </>

@@ -54,11 +54,14 @@ html.map-mode main.main-map {
 
 /* ---- the scope chip, the caption and notices --------------------------------------------- */
 
-/* Over Oklahoma: just right of the panhandle, level with its top. */
+/*
+ * Over Oklahoma, level with the panhandle's top: it ends just left of the money corner, whatever its hint
+ * says, so it never runs under that corner (it holds the zoom buttons too).
+ */
 .map-scope {
   position: absolute;
   top: 10px;
-  left: calc(var(--map-left, 35%) + var(--map-width, 600px) * 0.535);
+  right: calc(var(--corner-width, 296px) + 26px);
   z-index: 3;
   display: flex;
   align-items: center;
@@ -102,6 +105,59 @@ html.map-mode main.main-map {
   color: var(--text);
 }
 
+/* On a phone the chip keeps "All of Texas" and the zoom buttons; the hint gives way. */
+@media (max-width: 480px) {
+  .scope-hint {
+    display: none;
+  }
+}
+
+/* Zoom: one level, all of Texas or the Texas Triangle. */
+.zoom-control {
+  display: inline-flex;
+  margin-left: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.zoom-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.zoom-btn + .zoom-btn {
+  border-left: 1px solid var(--border-strong);
+}
+
+.zoom-btn:hover:not(:disabled) {
+  background: var(--panel-hover);
+}
+
+.zoom-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.45;
+  cursor: default;
+}
+
+.zoom-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* The labels wait while the map zooms, then take their new places. */
+.livemap.is-zooming .city-label {
+  opacity: 0;
+  transition: none;
+}
+
 .map-caption {
   position: absolute;
   left: 50%;
@@ -131,6 +187,41 @@ html.map-mode main.main-map {
 .map-notice .notice {
   background: var(--surface);
   box-shadow: var(--shadow-raised);
+}
+
+/*
+ * Zoomed in, the Texas Triangle fills the middle: a notice shrinks to its title and buttons, low in the
+ * middle, between San Antonio and Houston (the city labels keep clear of it). Its full text is one "−" away.
+ */
+@media (min-width: 861px) {
+  .livemap.is-zoomed .map-notice {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 34px;
+    width: max-content;
+    max-width: min(390px, calc(100% - 2 * var(--corner-width, 296px) - 60px));
+    margin: 0 auto;
+  }
+
+  .livemap.is-zoomed .map-notice .notice {
+    padding: 8px 12px;
+  }
+
+  .livemap.is-zoomed .map-notice .notice-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+  }
+
+  .livemap.is-zoomed .map-notice .notice-body > div:not(.notice-title, .notice-actions) {
+    display: none;
+  }
+
+  .livemap.is-zoomed .map-notice .notice-actions {
+    margin-top: 0;
+  }
 }
 
 /* Toasts sit bottom-centre on the map, clear of the controls corner. */
@@ -351,6 +442,11 @@ html.map-mode .toasts {
   font-size: 12.5px;
 }
 
+/* "On target" and "about what 5,700 homes use" share one line. */
+.corner-tr .corner-line .small {
+  font-size: 11.5px;
+}
+
 .corner-sub strong {
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -497,12 +593,14 @@ html.map-mode .toasts {
 }
 
 /*
- * Short windows (1280 × 800 and the like): the money corner also holds the race, so the corners are a
- * little tighter and its power line lower, and both right-hand corners fit with a city selected.
+ * Short windows (1280 × 800 and the like): the money corner also holds the race (and in 2026 the projected
+ * line), so the corners are a little tighter, its power line lower and its notes one line each, and both
+ * right-hand corners fit with a city selected.
  */
 @media (max-height: 860px) and (min-width: 861px) {
   .corner {
     gap: 4px;
+    padding: 9px 12px 10px;
   }
 
   .corner-rule {
@@ -510,7 +608,29 @@ html.map-mode .toasts {
   }
 
   .corner-tr .mini-chart {
-    height: 34px;
+    height: 28px;
+  }
+
+  .corner-tr {
+    gap: 3px;
+  }
+
+  .corner .race {
+    margin-top: 1px;
+  }
+
+  .corner .race-row {
+    line-height: 1.2;
+  }
+
+  .corner .race-rows {
+    gap: 1px;
+  }
+
+  /* One line each: the money's definition and the projection's reason are in their tooltips here. */
+  .corner .corner-sub-def,
+  .corner .projected-why {
+    display: none;
   }
 }
 
@@ -559,6 +679,17 @@ html.map-mode .toasts {
   stroke-width: 1;
   stroke-dasharray: 2 3;
   vector-effect: non-scaling-stroke;
+}
+
+/* The AI's predicted prices (2026 after its real prices end): dashed, in the prediction's violet. */
+.mini-predicted {
+  stroke: var(--forecast);
+  stroke-dasharray: 4 3;
+}
+
+.key-predicted {
+  height: 0;
+  border-top: 2px dashed var(--forecast);
 }
 
 .mini-asked {
@@ -670,7 +801,227 @@ html.map-mode .toasts {
   margin-left: -6px;
 }
 
-/* Controllers: 20 mini tiles. Status is in the glyph and the text too, never colour alone. */
+/* "Crash a controller", and beside it the hint that a tile crashes that one. */
+.crash-with-hint {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.corner-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ---- the timeline (top-left corner) ------------------------------------------------------ */
+
+.timeline {
+  display: grid;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.timeline-track {
+  position: relative;
+  height: 30px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 0 0 1px var(--panel-border);
+  cursor: ew-resize;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.timeline-track:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.timeline-track svg {
+  display: block;
+}
+
+.timeline-fill.is-sell {
+  fill: var(--sell-fill);
+}
+
+.timeline-fill.is-buy {
+  fill: var(--charge-fill);
+}
+
+.timeline-band.is-sell {
+  fill: var(--sell);
+}
+
+.timeline-band.is-buy {
+  fill: var(--charge);
+}
+
+.timeline-predicted {
+  fill: url(#timeline-hatch);
+}
+
+.timeline-predicted-bg {
+  fill: rgba(167, 139, 250, 0.1);
+}
+
+.timeline-predicted-line {
+  stroke: rgba(196, 181, 253, 0.35);
+  stroke-width: 2;
+}
+
+/* After the moment being viewed: faded, it has not happened yet at that moment. */
+.timeline-later {
+  fill: rgba(22, 24, 27, 0.55);
+}
+
+.timeline-line {
+  fill: none;
+  stroke: var(--chart-price);
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+}
+
+.timeline-marker.is-high {
+  fill: var(--sell);
+}
+
+.timeline-marker.is-low {
+  fill: var(--charge);
+}
+
+.timeline-thumb {
+  stroke: var(--text);
+  stroke-width: 2;
+}
+
+.timeline-knob {
+  fill: var(--text);
+}
+
+.timeline.is-live .timeline-thumb {
+  stroke: var(--ok);
+}
+
+.timeline.is-live .timeline-knob {
+  fill: var(--ok);
+}
+
+.timeline.is-past .timeline-thumb,
+.timeline.is-past .timeline-knob {
+  stroke: var(--info);
+  fill: var(--info);
+}
+
+.timeline-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timeline-start {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-key-predicted {
+  color: var(--forecast);
+}
+
+.timeline-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.timeline.is-past .timeline-now {
+  color: var(--info);
+}
+
+.timeline-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* ---- viewing an earlier moment ------------------------------------------------------------ */
+
+/* A blue frame around the whole map says "this is not live", with the chip at the top. */
+.livemap.is-past::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border: 2px solid rgba(138, 180, 255, 0.55);
+  pointer-events: none;
+}
+
+/* Centred with margins, not a transform, so the labels can measure it (offsetLeft) and keep clear. */
+.viewing-chip {
+  position: absolute;
+  top: 54px;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  width: max-content;
+  max-width: min(520px, calc(100% - 24px));
+  margin: 0 auto;
+  padding: 6px 14px 7px;
+  border: 1px solid rgba(138, 180, 255, 0.6);
+  border-radius: 14px;
+  background: var(--panel);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: 13.5px;
+}
+
+.viewing-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.viewing-chip-row > svg {
+  color: var(--info);
+}
+
+.viewing-sep {
+  color: var(--text-muted);
+}
+
+.viewing-back {
+  font-weight: 700;
+}
+
+.viewing-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/*
+ * Controllers: 20 mini tiles. Status is in the glyph and the text too, never colour alone. Each tile is a
+ * button: clicking a working one asks "Crash controller 7?" just above it.
+ */
+.mini-tiles-wrap {
+  position: relative;
+}
+
 .mini-tiles {
   display: grid;
   grid-template-columns: repeat(10, minmax(0, 1fr));
@@ -683,15 +1034,33 @@ html.map-mode .toasts {
 .mini-tile {
   display: grid;
   place-items: center;
+  width: 100%;
   height: 22px;
+  padding: 0;
   border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
   border-radius: 5px;
   background: var(--ok-soft);
   color: var(--ok);
+  font: inherit;
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  transition: opacity 0.2s;
+  cursor: pointer;
+  transition:
+    opacity 0.2s,
+    border-color 0.15s,
+    background-color 0.15s;
+}
+
+.mini-tile:hover:not(:disabled),
+.mini-tile.is-asking {
+  border-color: var(--fail);
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+
+.mini-tile:disabled {
+  cursor: default;
 }
 
 .mini-tile-suspect {
@@ -721,11 +1090,20 @@ html.map-mode .toasts {
   opacity: 0.35;
 }
 
+/* A disabled button must not look faded unless it is a controller outside the selected city. */
+.mini-tile:disabled:not(.is-idle) {
+  opacity: 1;
+}
+
 .mini-tile.is-offline {
   background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255, 255, 255, 0.14) 3px 5px);
 }
 
-/* Battery counts double as the legend for the dots. Keep these in step with src/map/style.ts PALETTE. */
+/*
+ * Battery counts double as the legend for the dots, drawn the same way (src/map/looks.ts; the colours are
+ * tested against PALETTE): green solid selling, blue solid charging, small gray waiting, a hollow red ring
+ * offline, red pulsing when the controller crashed, and a red edge around a dot with some of those.
+ */
 .code-legend {
   display: flex;
   flex-wrap: wrap;
@@ -747,34 +1125,56 @@ html.map-mode .toasts {
   color: var(--text-muted);
 }
 
+.code-legend .code-edge-row {
+  color: var(--text-muted);
+}
+
 .code-dot {
   flex: none;
-  width: 9px;
-  height: 9px;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
 }
 
 .code-selling {
   background: rgb(128, 255, 166);
-  box-shadow: 0 0 6px rgba(96, 255, 150, 0.8);
+  box-shadow: 0 0 6px rgba(96, 255, 150, 0.7);
 }
 
 .code-charging {
-  background: rgb(84, 204, 128);
-  box-shadow: 0 0 0 1.5px rgba(222, 255, 232, 0.85);
+  background: rgb(84, 160, 255);
 }
 
+/* Waiting is small: a 6 px dot in a 10 px slot, so the counts still line up. */
 .code-waiting {
-  background: rgb(64, 168, 104);
+  background: rgb(132, 140, 150);
+  background-clip: content-box;
+  padding: 2px;
 }
 
 .code-offline {
-  background: rgb(112, 118, 126);
+  border: 2px solid rgb(255, 90, 90);
+  background: transparent;
 }
 
 .code-down {
-  background: rgb(9, 11, 13);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
+  background: rgb(255, 90, 90);
+  animation: outage-throb 0.9s ease-in-out infinite;
+}
+
+.code-edge {
+  background: rgb(132, 140, 150);
+  box-shadow: 0 0 0 1.5px rgb(255, 90, 90);
+  width: 8px;
+  height: 8px;
+  margin: 0 1px;
+}
+
+@keyframes outage-throb {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* What just happened: the last 3, two lines each at most (the full text is in the tooltip). */
@@ -896,8 +1296,19 @@ html.map-mode .toasts {
   }
 
   .map-scope {
+    right: auto;
     left: 50%;
+    max-width: calc(100% - 16px);
     transform: translateX(-50%);
+  }
+
+  /* The notice follows the map in the column, instead of covering it. */
+  .map-notice,
+  .livemap.is-zoomed .map-notice {
+    position: static;
+    order: -1;
+    width: auto;
+    max-height: none;
   }
 
   .map-caption {

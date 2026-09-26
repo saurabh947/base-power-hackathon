@@ -2,8 +2,9 @@
 //
 // These are the REAL measured numbers, copied from RUNLOG.md: "What the AI adds, measured" (2026-09-26,
 // `python -m src.backtest.insights`) and the Texas Triangle full-year results (20,000 batteries, lag 3,
-// gross wholesale). The mock serves them as the backend would; it does not compute them. The count of 2025
-// spikes (21) is the one in docs/API.md's example; 2024's (53) is the measured count.
+// gross wholesale). The mock serves them as the backend would; it does not compute them. Only the pitch year,
+// 2025: the site shows no other year (the human: no 2024 switch). The count of 2025 spikes (21) is the one in
+// docs/API.md's example.
 
 import type { AiGains, AiGainsYear, StrategyGains } from '../src/api/types.ts';
 
@@ -47,17 +48,6 @@ export const MEASURED: readonly MeasuredYear[] = [
       bands: { perBattery: 123.67, avgSell: 77.63, avgBuy: 17.32, soldMwh: 42_332, surplusMwh: 1_239, spikeMwh: 27.9, spikeCharge: 0.24 },
       forecast: { perBattery: 190.95, avgSell: 66.58, avgBuy: 17.02, soldMwh: 80_168.1, surplusMwh: 7_011.3, spikeMwh: 25.2, spikeCharge: 0.231 },
       peak: { perBattery: 136.7, avgSell: 56.03, avgBuy: 20.87, soldMwh: 83_203, surplusMwh: 5_365, spikeMwh: 36.9, spikeCharge: 0.35 },
-    },
-  },
-  {
-    year: 2024,
-    isPitch: false,
-    bestPerBattery: 526.54,
-    spikeEvents: 53,
-    strategies: {
-      bands: { perBattery: 113.71, avgSell: 64.17, avgBuy: 12.69, soldMwh: 45_406, surplusMwh: 905, spikeMwh: 76.3, spikeCharge: 0.24 },
-      forecast: { perBattery: 271.45, avgSell: 76.76, avgBuy: 12.13, soldMwh: 85_786, surplusMwh: 6_361, spikeMwh: 610.9, spikeCharge: 0.52 },
-      peak: { perBattery: 150.51, avgSell: 55.35, avgBuy: 17.36, soldMwh: 83_430, surplusMwh: 3_552, spikeMwh: 298.4, spikeCharge: 0.64 },
     },
   },
 ];

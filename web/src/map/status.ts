@@ -16,7 +16,12 @@ export const CODES = 5;
 /** Codes for `size` batteries into `out` (reused when it fits); null if the field is malformed or short. */
 export function decodeStatus(b64: string, size: number, out?: Uint8Array): Uint8Array | null {
   const bytes = base64ToBytes(b64);
-  if (!bytes || bytes.length < (size + 1) >> 1) return null;
+  return bytes ? decodePacked(bytes, size, out) : null;
+}
+
+/** The same from the packed bytes (as the timeline keeps them); null if they are too short. */
+export function decodePacked(bytes: Uint8Array, size: number, out?: Uint8Array): Uint8Array | null {
+  if (bytes.length < (size + 1) >> 1) return null;
   const codes = out && out.length === size ? out : new Uint8Array(size);
   for (let i = 0; i < size; i++) {
     const byte = bytes[i >> 1];

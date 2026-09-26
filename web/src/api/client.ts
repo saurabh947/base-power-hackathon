@@ -1,6 +1,6 @@
 // A small fetch wrapper for the REST endpoints in docs/API.md. Every failure
 // becomes an ApiError so screens can turn it into a friendly sentence
-// (src/api/errors.ts). Nothing here stores the presenter passcode: callers pass it.
+// (src/api/errors.ts). Every endpoint is public: requests carry no credentials.
 
 import { API_BASE } from './config.ts';
 import type {
@@ -8,7 +8,6 @@ import type {
   AvailabilityRequest,
   AvailabilityResponse,
   BacktestStatus,
-  BatteryInfo,
   EditableSettings,
   Forecast,
   HealthResponse,
@@ -18,8 +17,6 @@ import type {
   SettingsResponse,
   StartResponse,
 } from './types.ts';
-
-export const PASSCODE_HEADER = 'X-Presenter-Passcode';
 
 export class ApiError extends Error {
   readonly status: number; // HTTP status, or 0 when the server could not be reached
@@ -39,7 +36,6 @@ export class ApiError extends Error {
 
 export interface RequestOptions {
   body?: unknown;
-  passcode?: string | null;
   timeoutMs?: number;
   signal?: AbortSignal;
   /** Fetch cache mode: 'no-store' (default) for live data; 'no-cache' revalidates with an ETag. */
@@ -61,7 +57,6 @@ export async function request<T>(method: 'GET' | 'POST', path: string, options: 
   if (!API_BASE) throw new ApiError(0, 'not_configured', null, null);
   const controller = new AbortController();
   const headers: Record<string, string> = {};
-  if (options.passcode) headers[PASSCODE_HEADER] = options.passcode;
   const init: RequestInit = { method, headers, signal: controller.signal, cache: options.cache ?? 'no-store' };
   if (options.body !== undefined && method === 'POST') {
     headers['Content-Type'] = 'application/json';
@@ -119,12 +114,11 @@ export const api = {
   speed: (speed_tps: number) => request<{ speed_tps: number }>('POST', '/run/speed', { body: { speed_tps } }),
   reset: () => request<{ status: RunStatus }>('POST', '/run/reset'),
   availability: (change: AvailabilityRequest) => request<AvailabilityResponse>('POST', '/availability', { body: change }),
-  battery: (batteryId: string) => request<BatteryInfo>('GET', `/batteries/${encodeURIComponent(batteryId)}`),
   /** GET /fleet/layout, read defensively by src/map/layout.ts. */
   layout: (signal?: AbortSignal) => request<unknown>('GET', '/fleet/layout', { signal, timeoutMs: 30_000, cache: 'no-cache' }),
-  presenterCheck: (passcode: string) => request<{ ok: boolean }>('POST', '/presenter/check', { passcode }),
-  kill: (passcode: string, workerId?: number) =>
-    request<KillResponse>('POST', workerId === undefined ? '/chaos/kill' : `/chaos/kill?worker_id=${workerId}`, { passcode }),
+  /** Crash a controller (public; one per 2 s for everyone): a random healthy one, or `workerId` (0-19). */
+  kill: (workerId?: number) =>
+    request<KillResponse>('POST', workerId === undefined ? '/chaos/kill' : `/chaos/kill?worker_id=${encodeURIComponent(workerId)}`),
   backtest: (strategies: string[], year: number) =>
     request<{ job_id: string }>('POST', '/backtest', { body: { strategies, year } }),
   backtestStatus: (jobId: string) => request<BacktestStatus>('GET', `/backtest/${encodeURIComponent(jobId)}`),

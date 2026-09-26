@@ -1,7 +1,9 @@
 import { AnimatedNumber } from '../../components/AnimatedNumber.tsx';
+import { Icon } from '../../components/Icon.tsx';
 import { Panel } from '../../components/Panel.tsx';
 import { TechBlock } from '../../components/Tech.tsx';
 import { useLive } from '../../live/liveStore.ts';
+import { projectedMoney } from '../../live/past.ts';
 import { fmtEnergy, fmtHomesDay, fmtNumber, fmtUsd } from '../../lib/format.ts';
 import { RaceBars } from './RaceBars.tsx';
 
@@ -11,6 +13,8 @@ export function MoneyCard() {
   const totals = useLive((s) => s.totals);
   const received = useLive((s) => s.received);
   const fleetSize = useLive((s) => s.settings?.fleet_size ?? null);
+  const projected = useLive((s) => projectedMoney(s.history, null)?.usd ?? null);
+  const exact = useLive((s) => projectedMoney(s.history, null)?.exact ?? true);
   const perBattery = fleetSize ? totals.revenue_usd / fleetSize : null;
   return (
     <Panel
@@ -48,6 +52,18 @@ export function MoneyCard() {
           Sold <strong>{fmtEnergy(totals.sold_kwh)}</strong> · Bought <strong>{fmtEnergy(totals.bought_kwh)}</strong>
         </span>
         {totals.sold_kwh > 0 ? <span>Power sold: {fmtHomesDay(totals.sold_kwh)}.</span> : null}
+        {projected !== null ? (
+          <span className="projected-line">
+            <Icon name="ai" size={14} />
+            {exact ? (
+              <span>
+                Of that, <strong>{fmtUsd(projected)}</strong> is projected: it was earned on the AI’s predicted prices.
+              </span>
+            ) : (
+              <span>Part of it is projected: it was earned on the AI’s predicted prices.</span>
+            )}
+          </span>
+        ) : null}
         {totals.revenue_usd < 0 ? (
           <span>Below zero means the fleet has spent more buying power than it has earned so far.</span>
         ) : null}

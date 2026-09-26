@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
-import type { AiGains, Results } from '../../api/types.ts';
+import type { Results } from '../../api/types.ts';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { Term } from '../../components/Tech.tsx';
 import { useBackend } from '../../state/backend.ts';
 import { AiGainsSection } from './AiGainsSection.tsx';
-import { readAiGains } from './aiGains.ts';
+import { readAiGains, type PitchGains } from './aiGains.ts';
 import { headlineOf } from './model.ts';
 import { BigNumber, ComparisonBars, HowWeGotThis, TopDays } from './ResultPanels.tsx';
 import { RerunPanel } from './RerunPanel.tsx';
@@ -33,7 +33,7 @@ interface Loaded {
 const GAINS_PATIENCE_MS = 1500;
 
 interface Gains {
-  data: AiGains | null;
+  data: PitchGains | null;
   /** The first answer (or failure) is in. */
   settled: boolean;
 }

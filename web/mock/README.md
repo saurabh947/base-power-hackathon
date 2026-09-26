@@ -5,32 +5,45 @@ one. It implements the REST endpoints and the WebSocket `/live` messages from [`
 including the pinned details: `worker_id` 0–19 shown as "Controller N+1", battery ids `b00000`–`b19999`, the
 `GET /settings` item shapes, the idle message every 5 s, `run_finished`, the worker event details, the live
 map fields (`GET /fleet/layout`, `battery_status`, `totals.by_location`, `workers[].by_location` and battery
-`city`/`lonlat`), the race (`race` in snapshots and frames, `race_update` events) and `GET /results/ai-gains`.
+`city`/`lonlat`), the race (`race` in snapshots and frames, with `potential` and `shows_potential`, and
+`race_update` events), the years (`years` and each preset's `year` in `GET /settings`, `year` in settings,
+`predicted` ticks and the `prediction_started` event), the public `POST /chaos/kill` and `GET /results/ai-gains`.
 
 ## What is real and what is simulated
 
 | | |
 |---|---|
-| **Real** | Electricity prices: ERCOT real-time settlement point prices for the four Texas Triangle load zones (LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN), 15-minute intervals, for every replay preset's local date and the day after (`data/ercot_rt_lz_preset_days_2025.json`, 192 rows per preset). |
-| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of `GET /results/ai-gains`, and in `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. |
-| **Simulated** | Everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
+| **Real** | 2025 electricity prices: ERCOT real-time settlement point prices for the four Texas Triangle load zones (LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN), 15-minute intervals, for every 2025 replay preset's local date and the day after (192 rows each), plus September 14–20, 2025 (672 rows), in `data/ercot_rt_lz_preset_days_2025.json`. |
+| **Stand-ins** | 2026's "real" prices: the mock has no 2026 data, so its 2026 replays use 2025's real prices from the same dates, a year on (January 1–2, and September 14–20 as 2026's last real week). |
+| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of `GET /results/ai-gains` (2025 only, the pitch year: the site shows no other year), and in `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. |
+| **Simulated** | The AI's 2026 prediction after the real prices end (2026-09-21T05:00Z, midnight on Sep 21 in Texas): for each 15 minutes, the median of the same time of day over the last 7 real days, pulled a little towards their mean and smoothed over an hour, for two days. Plausible practice data, not TimesFM. And everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
 
 The site shows a "Practice data" banner whenever it is connected to this mock (its `GET /health` version starts
 with `mock`), the mock's forecasts are labelled `mock (simulated, not TimesFM)`, and its full-year results list
 "SIMULATED practice data …" as their first assumption, saying which figures are copied and which are made up.
 
-The presets mirror `config.yaml` (`presets.items`; `summer_spike` is the default, as there):
+The years are 2025 (real prices all year) and 2026 (real prices through Sep 20, then the AI's prediction), as
+`years` in `GET /settings`. The 2025 presets mirror `config.yaml` (`presets.items`; `ai_best_evening` is the
+default, as there); each year also has "From January 1" (two days here), and 2026 has the evening its real prices end:
 
-| Preset | Replay starts (Central time) | Real prices loaded |
-|---|---|---|
-| `spike_evening` | May 16, 2025, 4 pm | May 16–17 |
-| `morning_spike` | Apr 7, 2025, 3 am | Apr 7–8 |
-| `summer_spike` (default) | Jul 11, 2025, 6 pm | Jul 11–12 |
-| `ordinary_day` | Jun 28, 2025, midnight | Jun 28–29 |
+| Preset | Year | Replay starts (Central time) | Prices loaded |
+|---|---|---|---|
+| `spike_evening` | 2025 | May 16, 2025, 4 pm | real, May 16–17 |
+| `morning_spike` | 2025 | Apr 7, 2025, 3 am | real, Apr 7–8 |
+| `summer_spike` | 2025 | Jul 11, 2025, 6 pm | real, Jul 11–12 |
+| `ai_best_evening` (default) | 2025 | May 30, 2025, 6 pm | real, May 30–31 |
+| `ordinary_day` | 2025 | Jun 28, 2025, midnight | real, Jun 28–29 |
+| `jan1_2025` | 2025 | Jan 1, 2025, midnight | real, Jan 1–2 |
+| `predicted_2026` | 2026 | Sep 20, 2026, 6 pm | stand-in to midnight, then the simulated prediction for two days |
+| `jan1_2026` | 2026 | Jan 1, 2026, midnight | stand-in, Jan 1–2 |
+
+Settings take `year` too: a preset from another year answers 400 `invalid_preset`, a year other than 2025 or 2026
+400 `invalid_year`, and a year alone picks that year's first preset (the default for 2025).
 
 The price fixture is exported from the committed snapshot `data/snapshot/ercot_rt_2025_hubs.parquet` (ERCOT MIS
-report 13061, see `data/snapshot/README.md`), reading the presets and the load zones (`fleet.locations`) from
-`config.yaml`. To regenerate it after either changes, from the repo root after `make setup`:
+report 13061, see `data/snapshot/README.md`), reading the 2025 presets and the load zones (`fleet.locations`)
+from `config.yaml` and adding the mock-only days above (`MOCK_ONLY`); presets of other years are skipped, since
+the snapshot is 2025. To regenerate it after either changes, from the repo root after `make setup`:
 
 ```sh
 uv run python web/mock/export_prices.py      # or: make web-prices
@@ -52,15 +65,19 @@ A preset without loaded prices answers **501** `not_in_mock` on `POST /run/start
   fleet always gets the same map.
 - **`battery_status`** in every snapshot and frame, as of the latest tick (like the backend): 0 offline, 1 waiting,
   2 selling, 3 charging (from each battery's setpoint), 4 for the two ticks its controller misses before the
-  hand-over. So at 5-10 ticks a second a frame can miss code 4, as with the backend; the site then flashes from
-  the worker events. While paused, a controller that stops responding shows as 4 until it is handed over.
+  hand-over. So at 5-10 ticks a second a frame can miss code 4, as with the backend; the site then shows it from
+  the worker events. As docs/API.md asks, a change shows within one frame even while paused: batteries taken
+  offline are 0 at once, and a crashed controller's batteries are 4 from the moment it is killed until the
+  hand-over.
 - **Money per city**: `totals.by_location` holds revenue and energy per load zone; they add up to the totals.
 - **The race** (`race` in every snapshot and frame while a run exists, `null` while idle): a shadow copy of the
   fleet on the comparison strategy, the simple rule (`bands`), or the AI forecast when the live run uses the simple
   rule. The same batteries and starting charge, the same prices at the same 15-minute decision lag, the same
   availability overrides; no controllers, so no crashes, no failed commands and no delivery noise.
   `live_minus_race_usd` is `totals.revenue_usd` minus the race's; `by_location` has each city's revenue, charge
-  level and action.
+  level and action. `potential` is a second shadow fleet, the live strategy with every battery online and no
+  crashes ("All batteries online"), with `shortfall_usd` = its revenue minus the live fleet's, per city too;
+  `shows_potential` turns true, for the rest of the run, once any battery goes offline or a controller is crashed.
 - **`race_update` events**: when a spike (a price of $1,000/MWh or more) starts in any city, "Prices jumped to
   $1,760 in all four cities. The AI fleet had 90% charge left; the simple rule had 21%." (the charge levels as it
   began); when it ends, "The AI is now $55,800 ahead of the simple rule." (the leader first; `good` when the live
@@ -68,6 +85,8 @@ A preset without loaded prices answers **501** `not_in_mock` on `POST /run/start
 - **The simulated "forecast" strategy** peeks at the loaded prices from now to 4 hours ahead, standing in for a
   good forecast, so it sells into a spike as it happens; the simple rule and the evening peak decide on the price
   published 15 minutes earlier.
+- **2026's prediction**: ticks whose price is the prediction carry `predicted: true`, and the first one brings a
+  `prediction_started` event (`detail.real_until_utc`) saying the prices from there on are the AI's prediction.
 
 ## Never shipped
 
@@ -85,7 +104,6 @@ Knobs (environment variables, for either mode):
 
 | Variable | Effect |
 |---|---|
-| `MOCK_PRESENTER_PASSCODE` | Presenter passcode. Default `presenter` (a test value for this mock only). Set it to an empty string to test "passcode not set" (503). |
 | `MOCK_COLD_START_MS` | Hold every request (and refuse WebSockets) for this long after start, like a Cloud Run cold start. Try `8000` to see "Waking up the simulator…". |
 | `MOCK_WS=off` | Refuse WebSocket upgrades, so the site falls back to polling `GET /state`. |
 | `MOCK_NO_RESULTS=1` | `GET /results/pitch` and `GET /results/ai-gains` answer 404 `no_results` until a full-year re-run finishes. |
@@ -99,14 +117,17 @@ Knobs (environment variables, for either mode):
   every 5 s; `last_run` holds the id and totals of the run that was reset or replaced. Idle messages carry no
   `battery_status`, so after an availability change with no run the site fetches `GET /state` to redraw the map.
 - `GET /fleet/layout` sends its version as an `ETag` and answers a matching `If-None-Match` with 304.
-- Rate limits match docs/API.md: start and reset share one call per 5 s, availability 10 per second, wrong
-  passcodes 5 per minute; limited calls answer 429 with `retry_after_s` and `Retry-After`.
+- Rate limits match docs/API.md: start and reset share one call per 5 s, availability 10 per second, crashes
+  one per 2 s for everyone together; limited calls answer 429 with `retry_after_s` and `Retry-After`.
+- `POST /chaos/kill` is public (no passcode) and takes an optional `worker_id` (0–19; a random working one
+  without it): 409 `already_dead` for a controller that is already down, 409 `too_few_healthy` when only two
+  are left working, 404 `unknown_worker` for another number.
 - A crashed controller misses two 5-minute steps: at the first it is "not responding", at the second it is marked
   crashed; its batteries miss both steps' orders (those become failed commands) and show as code 4, and are handed
   over after the second. Worker events carry `detail.worker_id`, `detail.controller` and, for `worker_suspect`
   and `worker_adopted`, `detail.by_location`; `worker_adopted` adds `adopted_by` and `ms`. While paused,
-  detection uses wall-clock heartbeats instead (2 s, then 6 s), which is the easiest way to watch the flash: pause,
-  crash a controller, wait.
+  detection uses wall-clock heartbeats instead (2 s, then 6 s), which is the easiest way to watch a crash on the
+  map: pause, crash a controller, watch its batteries pulse red, then the hand-over.
 - Cities that switch action at the same step share one event ("Batteries in all four cities started selling at
   about $1,757/MWh"), and so do price spikes.
 - `POST /backtest` while a job runs returns that job's id; job status includes `skipped` (always empty here). A
@@ -119,11 +140,11 @@ Knobs (environment variables, for either mode):
 
 | File | Purpose |
 |---|---|
-| `sim.ts` | The simulated run and the race (pure; unit-tested in `sim.test.ts`) |
-| `gains.ts` | `GET /results/ai-gains`: the measured numbers copied from RUNLOG.md |
+| `sim.ts` | The simulated run, the race, the years and the 2026 prediction (pure; unit-tested in `sim.test.ts` and `v2.test.ts`, which also calls the public crash over HTTP) |
+| `gains.ts` | `GET /results/ai-gains`: the measured 2025 numbers copied from RUNLOG.md |
 | `layout.ts` | Simulated battery positions for `GET /fleet/layout` |
 | `api.ts` | HTTP routes, errors, rate limits, WebSocket broadcast, CORS |
 | `server.ts` | Standalone Node server (`npm run mock`) |
 | `vitePlugin.ts` | Mounts the same API inside the Vite dev server |
-| `export_prices.py` | Writes the real-price fixture from `data/snapshot` for every preset and load zone in `config.yaml` |
+| `export_prices.py` | Writes the real-price fixture from `data/snapshot` for every 2025 preset and load zone in `config.yaml`, plus the mock-only days |
 | `data/` | The real-price fixture, with its source note inside |
