@@ -150,6 +150,15 @@ describe('Central time', () => {
     ).toBe('An ordinary day, Jun 28, 2025, from midnight');
   });
 
+  it('does not repeat a date the preset’s label already names ("From January 1")', () => {
+    const jan1 = { id: 'jan1_2026', year: 2026, label: 'From January 1', date_local: '2026-01-01', description: '' };
+    expect(fmtPresetLabel({ ...jan1, start_utc: '2026-01-01T06:00:00Z' })).toBe('From January 1, 2026');
+    expect(fmtPresetLabel({ ...jan1, start_utc: '2026-01-01T12:00:00Z' })).toBe('From January 1, 2026, from 6 am');
+    expect(fmtPresetLabel({ ...jan1, label: 'Where real prices end', date_local: '2026-09-20', start_utc: '2026-09-20T23:00:00Z' })).toBe(
+      'Where real prices end, Sep 20, 2026, from 6 pm',
+    );
+  });
+
   it('reads calendar dates without shifting them a day', () => {
     expect(fmtLocalDate('2025-05-16')).toBe('May 16, 2025');
     expect(fmtLocalDate('2025-05-16', { weekday: true })).toBe('Fri, May 16, 2025');

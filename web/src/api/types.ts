@@ -19,6 +19,8 @@ export type Severity = 'info' | 'good' | 'warn';
 export type ByLocation<T> = Partial<Record<string, T>>;
 
 export interface Settings {
+  /** 2025 or 2026 (docs/API.md). Missing from an older backend: the preset's year. */
+  year?: number;
   preset: string;
   start_utc: string;
   speed_tps: number;
@@ -31,17 +33,37 @@ export interface Settings {
 }
 
 /** The only keys visitors may change; the server ignores the rest. */
-export type EditableKey = 'preset' | 'speed_tps' | 'strategy' | 'start_charge_level';
-export const EDITABLE_KEYS: readonly EditableKey[] = ['preset', 'speed_tps', 'strategy', 'start_charge_level'];
-export type EditableSettings = Pick<Settings, EditableKey>;
+export type EditableKey = 'year' | 'preset' | 'speed_tps' | 'strategy' | 'start_charge_level';
+export const EDITABLE_KEYS: readonly EditableKey[] = ['year', 'preset', 'speed_tps', 'strategy', 'start_charge_level'];
+/** What the Start screen's editor holds: always a year (the preset's). */
+export interface EditableSettings {
+  year: number;
+  preset: string;
+  speed_tps: number;
+  strategy: string;
+  start_charge_level: number;
+}
 
 export interface Preset {
   id: string;
+  /** The year the preset belongs to (docs/API.md); an older backend leaves it out. */
+  year?: number;
   label: string;
   date_local: string;
   start_utc: string;
   start_local?: string;
   description: string;
+}
+
+/**
+ * GET /settings `years[]`: 2025 is real prices all year; 2026 is real prices until `real_until_utc` (the end of
+ * the last real interval), then the AI's prediction.
+ */
+export interface YearInfo {
+  year: number;
+  label: string;
+  description: string;
+  real_until_utc: string | null;
 }
 
 export interface StrategyChoice {
@@ -61,6 +83,7 @@ export interface SettingsResponse {
   presets: Preset[];
   strategies: StrategyChoice[];
   speeds: SpeedChoice[];
+  years?: YearInfo[];
 }
 
 export interface Tick {
@@ -75,6 +98,11 @@ export interface Tick {
   revenue_usd: ByLocation<number>;
   charge_level: ByLocation<number>;
   healthy_workers: number;
+  /**
+   * True after the year's real_until_utc (2026): the prices are the AI's prediction (TimesFM-3, p50), not
+   * ERCOT's, and the money earned on this tick is a projection. Missing means real.
+   */
+  predicted?: boolean;
 }
 
 export interface LocationTotals {
@@ -176,6 +204,19 @@ export interface Race {
   charge_level: number;
   /** The live fleet's totals.revenue_usd minus the race's: positive means the live strategy is ahead. */
   live_minus_race_usd: number;
+  /** A second shadow fleet: the live strategy with every battery online and no controller crashes. */
+  potential?: RacePotential | null;
+  /** True (for the rest of the run) once any battery went offline or any controller crashed: show `potential`. */
+  shows_potential?: boolean;
+}
+
+export interface RacePotential {
+  /** "AI forecast, all batteries online". */
+  label: string;
+  revenue_usd: number;
+  by_location?: Record<string, { revenue_usd: number }>;
+  /** potential.revenue_usd minus the live revenue: what outages cost so far. */
+  shortfall_usd: number;
 }
 
 interface LiveBody {

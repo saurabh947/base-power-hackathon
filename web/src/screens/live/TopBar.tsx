@@ -1,13 +1,27 @@
 import { Icon } from '../../components/Icon.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
 import { reconnectNow, useConnection, useLive } from '../../live/liveStore.ts';
-import { fmtClock, fmtDate, localDateOf, fmtLocalDate } from '../../lib/format.ts';
-import { useIsPresenter } from '../../state/presenter.ts';
-import { CrashControl, PauseResume, ResetButton, SpeedSelect } from './controls.tsx';
+import { firstPredicted } from '../../live/past.ts';
+import { fmtClock, fmtDate, fmtLocalDate, localDateOf } from '../../lib/format.ts';
+import { CrashButton, PauseResume, ResetButton, SpeedSelect } from './controls.tsx';
+
+/** Next to the clock on predicted ticks (docs/API.md Tick.predicted): these prices are the AI's, not ERCOT's. */
+export function PredictedBadge() {
+  return (
+    <span
+      className="chip chip-predicted"
+      title="These prices are the AI's prediction (TimesFM-3), not real ERCOT data. Money earned on them is projected."
+    >
+      <Icon name="ai" size={13} />
+      Predicted
+    </span>
+  );
+}
 
 export function Clock() {
   const simTime = useLive((s) => s.simTimeUtc);
   const status = useLive((s) => s.status);
+  const predicted = useLive((s) => s.history[s.history.length - 1]?.predicted === true);
   if (!simTime) {
     return <div className="clock">{status === 'idle' ? 'No simulation running' : 'Replay clock'}</div>;
   }
@@ -23,18 +37,33 @@ export function Clock() {
           , <span className="nowrap">{zone}</span>
         </>
       ) : null}
+      {predicted ? (
+        <>
+          {' '}
+          <PredictedBadge />
+        </>
+      ) : null}
     </div>
   );
 }
 
-/** "Replaying real prices from May 16, 2025" — an honest label for what is on screen. */
+/**
+ * "Replaying real prices from May 16, 2025", an honest label for what is on screen; once the replay has
+ * passed into the AI's prediction (2026), "Real prices through Sep 20, 2026, then the AI's prediction".
+ */
 export function ReplayLabel() {
   const startUtc = useLive((s) => s.settings?.start_utc ?? null);
   const firstTick = useLive((s) => s.history[0]?.ts_utc ?? null);
+  const predictedFrom = useLive((s) => firstPredicted(s.history)?.ts_utc ?? null);
+  const allPredicted = useLive((s) => s.history[0]?.predicted === true);
   const source = startUtc ?? firstTick;
   if (!source) return null;
   const day = localDateOf(source);
-  return <span>Replaying real prices from {day ? fmtLocalDate(day) : fmtDate(source)}</span>;
+  const from = day ? fmtLocalDate(day) : fmtDate(source);
+  if (allPredicted) return <span>Replaying the AI’s predicted prices from {from}</span>;
+  // The last real interval ends where the prediction begins: name the day before that instant.
+  if (predictedFrom) return <span>Real prices through {fmtDate(Date.parse(predictedFrom) - 1)}, then the AI’s prediction</span>;
+  return <span>Replaying real prices from {from}</span>;
 }
 
 export function RunStatus() {
@@ -95,7 +124,6 @@ export function TechCounters() {
 }
 
 export function TopBar({ onOpenAvailability, onShowMap }: { onOpenAvailability: () => void; onShowMap: () => void }) {
-  const presenter = useIsPresenter();
   return (
     <div className="live-topbar">
       <div className="page live-topbar-inner">
@@ -120,7 +148,7 @@ export function TopBar({ onOpenAvailability, onShowMap }: { onOpenAvailability: 
             Take batteries offline
           </button>
           <ResetButton />
-          {presenter ? <CrashControl /> : null}
+          <CrashButton />
         </div>
       </div>
     </div>

@@ -125,11 +125,55 @@ describe('the race, one city', () => {
   });
 });
 
+describe('the third bar: all batteries online (projected)', () => {
+  const potential = {
+    label: 'AI forecast, all batteries online',
+    revenue_usd: 47_100.9,
+    by_location: { LZ_HOUSTON: { revenue_usd: 25_400 } },
+    shortfall_usd: 790.5,
+  };
+
+  it('stays hidden until race.shows_potential', () => {
+    expect(raceView(input({ race: race({ potential, shows_potential: false }) }))).toMatchObject({ potential: null, shortfall: null });
+    expect(raceView(input({ race: race({ potential }) }))?.potential).toBeNull(); // an older backend: no flag
+  });
+
+  it('shows the projection beside the two fleets, with what the outages cost', () => {
+    const v = raceView(input({ race: race({ potential, shows_potential: true }) }));
+    expect(v?.potential).toMatchObject({ label: 'All batteries online', text: '$47,101', share: 1 });
+    expect(v?.live.share).toBeCloseTo(46_310.4 / 47_100.9, 9);
+    expect(v?.shortfall).toEqual({ usd: 790.5, text: 'Outages cost $791 so far' });
+    expect(v?.summary).toBe(
+      'AI forecast $46,310 · Simple rule $31,020 · All batteries online (projected) $47,101 · AI forecast ahead by $15,290 · Outages cost $791 so far',
+    );
+  });
+
+  it('per city, from potential.by_location, the shortfall worked out against the city’s own money', () => {
+    const v = raceView(input({ scope: 'LZ_HOUSTON', race: race({ potential, shows_potential: true }) }));
+    expect(v?.potential?.text).toBe('$25,400');
+    expect(v?.shortfall?.usd).toBeCloseTo(25_400 - 24_608.96, 9);
+    expect(v?.shortfall?.text).toBe('Outages cost $791 so far');
+    // A city the potential has no numbers for: no third bar there.
+    expect(raceView(input({ scope: 'LZ_NORTH', race: race({ potential, shows_potential: true }) }))?.potential).toBeNull();
+  });
+
+  it('says so plainly when the outages have cost nothing (yet)', () => {
+    const v = raceView(input({ race: race({ potential: { ...potential, shortfall_usd: -3 }, shows_potential: true }) }));
+    expect(v?.shortfall?.text).toBe('Outages have cost nothing so far');
+  });
+});
+
 describe('race updates in "What just happened"', () => {
   it('get a flag of their own and say so to screen readers, coloured by severity like the rest', () => {
     expect(eventIcon({ kind: 'race_update', severity: 'good' })).toBe('flag');
     expect(eventSpoken({ kind: 'race_update', severity: 'good' })).toBe('Race update: ');
     expect(eventClass({ kind: 'race_update', severity: 'info' })).toBe('feed-info feed-race');
+  });
+
+  it('mark the moment the AI’s prediction takes over with its sparkle, in the prediction’s violet', () => {
+    expect(eventIcon({ kind: 'prediction_started', severity: 'info' })).toBe('ai');
+    expect(eventClass({ kind: 'prediction_started', severity: 'info' })).toBe('feed-predict');
+    expect(eventSpoken({ kind: 'prediction_started', severity: 'info' })).toBe('Prediction: ');
   });
 
   it('leave the other events as they were', () => {

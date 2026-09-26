@@ -9,12 +9,25 @@ interface DialogProps {
   onClose: () => void;
   title: ReactNode;
   variant?: 'modal' | 'drawer';
+  /** Which edge a drawer slides in from. */
+  side?: 'left' | 'right';
+  /** "light" keeps the page behind visible (a drawer whose effect shows on the map). */
+  backdrop?: 'dim' | 'light';
   children: ReactNode;
   /** Element to focus when opened (defaults to the first focusable control). */
   initialFocusSelector?: string;
 }
 
-export function Dialog({ open, onClose, title, variant = 'modal', children, initialFocusSelector }: DialogProps) {
+export function Dialog({
+  open,
+  onClose,
+  title,
+  variant = 'modal',
+  side = 'right',
+  backdrop = 'dim',
+  children,
+  initialFocusSelector,
+}: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -52,7 +65,12 @@ export function Dialog({ open, onClose, title, variant = 'modal', children, init
 
   return (
     // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- Escape closes natively; the click only handles the backdrop
-    <dialog ref={ref} className={variant} aria-labelledby={titleId} onClick={onDialogClick}>
+    <dialog
+      ref={ref}
+      className={`${variant}${variant === 'drawer' && side === 'left' ? ' drawer-left' : ''}${backdrop === 'light' ? ' backdrop-light' : ''}`}
+      aria-labelledby={titleId}
+      onClick={onDialogClick}
+    >
       {open ? (
         <div className="dialog-inner">
           <div className="dialog-head">

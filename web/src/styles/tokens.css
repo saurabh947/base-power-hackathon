@@ -3,12 +3,14 @@
  * live map's look (docs/UX.md, Live map): a dark gray page (#25282c), compact translucent dark panels with
  * light text, Texas as a bright red outline and the batteries as green dots.
  *
- * Meaning of color (docs/UX.md principle 6), never the only signal:
- *   green  = the primary action and links, a controller that is working, the headline earnings
- *   teal   = charging (buying cheap power)       amber  = selling / not responding
- *   grey   = holding / waiting                   red    = failures only (and the Texas outline)
- *   violet = the AI forecast                     blue   = the keyboard focus ring, power delivered
- * Text pairs are checked for WCAG AA contrast by src/styles/contrast.test.ts.
+ * Meaning of color (docs/UX.md principle 6 and "Live map v2"), never the only signal:
+ *   green  = selling, money, the primary action and links, a controller that is working
+ *   blue   = charging (buying cheap power), and neutral news, the focus ring, power delivered
+ *   grey   = holding / waiting                   amber  = not responding, catching up
+ *   red    = failures: offline and crashed batteries, a crashed controller (and the Texas outline)
+ *   violet = the AI forecast and the AI's prediction (2026's predicted prices)
+ * The map's dots use the same meanings (src/map/looks.ts): selling green, charging blue, waiting gray,
+ * offline and crashed red. Text pairs are checked for WCAG AA contrast by src/styles/contrast.test.ts.
  */
 :root {
   color-scheme: dark;
@@ -31,12 +33,13 @@
   /* Neutral news (info notices, "info" events): blue, so it never reads as "good" green. */
   --info: #8ab4ff;
 
-  --charge: #2dd4bf;
-  --charge-fill: rgba(45, 212, 191, 0.18);
-  --charge-soft: #173230;
-  --sell: #fbbf24;
-  --sell-fill: rgba(251, 191, 36, 0.2);
-  --sell-soft: #3a3017;
+  /* Charging blue and selling green, as on the map (src/map/looks.ts PALETTE). */
+  --charge: #54a0ff;
+  --charge-fill: rgba(84, 160, 255, 0.2);
+  --charge-soft: #172a40;
+  --sell: #4ade80;
+  --sell-fill: rgba(74, 222, 128, 0.17);
+  --sell-soft: #16301f;
   --hold: #aab2bc;
   --hold-soft: #30343a;
   --ok: #4ade80;
@@ -47,6 +50,10 @@
   --fail-soft: #402327;
   --forecast: #c4b5fd;
   --forecast-fill: rgba(167, 139, 250, 0.24);
+  /* The "Predicted" badge and the predicted part of the timeline (2026 after its real prices end). */
+  --forecast-soft: #2a2542;
+  /* Offline rings, crashed dots and red edges on the map, and the legend's (src/map/looks.ts PALETTE.outage). */
+  --outage: #ff5a5a;
 
   --chart-price: #eef0f2;
   --chart-plan: #adb4bc;

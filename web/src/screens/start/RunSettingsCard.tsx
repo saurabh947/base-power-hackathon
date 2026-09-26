@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { presetById, type SettingsModel } from '../../api/settings.ts';
+import { presetById, yearOption, type SettingsModel } from '../../api/settings.ts';
 import type { EditableSettings } from '../../api/types.ts';
 import { TechBlock } from '../../components/Tech.tsx';
 import {
@@ -30,6 +30,7 @@ export function RunSettingsCard({ model, origin, draft, onDraft, editing, onEdit
   const editorId = useId();
   const d = model.defaults;
   const preset = presetById(model.presets, draft.preset);
+  const year = yearOption(model, draft.year);
   const strategy = model.strategies.find((s) => s.value === draft.strategy);
   // Biggest share first: Dallas–Fort Worth, Houston, San Antonio, and Austin.
   const areas = Object.entries(d.locations ?? {})
@@ -76,6 +77,13 @@ export function RunSettingsCard({ model, origin, draft, onDraft, editing, onEdit
           {areas.length > 2 ? <div className="muted small">The Texas Triangle, weighted by how many people live in each metro area.</div> : null}
         </dd>
 
+        <dt>Year</dt>
+        <dd>
+          {year?.label ?? draft.year}
+          {/* 2026: real prices until a date, then the AI's prediction (docs/API.md Year). */}
+          {year?.realUntilUtc && year.description ? <div className="muted small year-note">{year.description}</div> : null}
+        </dd>
+
         <dt>Replay</dt>
         <dd>
           {preset ? fmtPresetLabel(preset) : draft.preset}
@@ -94,6 +102,7 @@ export function RunSettingsCard({ model, origin, draft, onDraft, editing, onEdit
 
       <TechBlock
         rows={[
+          ['year', `${draft.year}${year?.realUntilUtc ? ` (real_until_utc ${year.realUntilUtc})` : ''}`],
           ['preset', draft.preset],
           ['start_utc', preset?.start_utc ?? d.start_utc],
           ['speed_tps', `${draft.speed_tps} (5-minute steps per second)`],

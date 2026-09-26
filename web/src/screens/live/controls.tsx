@@ -1,19 +1,17 @@
-// Run controls shared by the map's bottom-left corner and the detailed layout's
-// top bar: Pause/Resume, Speed, Reset (with a confirmation) and the
-// presenter-only "Crash a controller".
+// Run controls shared by the map's bottom-left corner and the detailed layout's top bar: Pause/Resume,
+// Speed, Reset (with a confirmation) and "Crash a controller", which is open to everyone (docs/UX.md,
+// Crashing controllers). A visitor can also crash one controller by clicking its tile, after a small
+// "Crash controller 7?" confirmation (CrashPopover). Crashes are limited to one every 2 s for everyone
+// together, and the server never leaves fewer than 2 working controllers (./crash.ts).
 
-import { useId, useState } from 'react';
-import { api, ApiError } from '../../api/client.ts';
-import { friendlyError } from '../../api/errors.ts';
-import type { KillResponse } from '../../api/types.ts';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Dialog } from '../../components/Dialog.tsx';
 import { Icon } from '../../components/Icon.tsx';
 import { useLive } from '../../live/liveStore.ts';
 import { controllerName } from '../../lib/fleet.ts';
-import { fmtSpeed, fmtSpeedShort } from '../../lib/format.ts';
-import { leavePresenter, presenterPasscode } from '../../state/presenter.ts';
-import { showToast } from '../../state/toasts.ts';
+import { fmtCount, fmtSpeed, fmtSpeedShort, plural } from '../../lib/format.ts';
 import { pauseRun, resetRun, resumeRun, setSpeed } from './actions.ts';
+import { crashController, CRASH_POP_WIDTH, useCrashable, useCrashWait, workerCities, type CrashTarget } from './crash.ts';
 
 const SPEEDS = [1, 2, 5, 10];
 
@@ -104,60 +102,115 @@ export function ResetButton() {
   );
 }
 
-/** Presenter only. "Presenter mode" and "Leave presenter mode" are the link in the header. */
-export function CrashControl() {
-  const workers = useLive((s) => s.workers);
-  const status = useLive((s) => s.status);
-  const id = useId();
-  const [target, setTarget] = useState('random');
-  const [busy, setBusy] = useState(false);
-  const can = status === 'running' || status === 'paused';
+// ---- crashing a controller (the logic is in ./crash.ts) -----------------------------------------------
 
-  const crash = async () => {
-    const passcode = presenterPasscode();
-    if (!passcode) return;
-    setBusy(true);
-    const workerId = target === 'random' ? undefined : Number(target);
-    let result: KillResponse | null = null;
-    try {
-      result = await api.kill(passcode, workerId);
-    } catch (err) {
-      const f = friendlyError(err, 'kill');
-      // A rejected passcode is useless from now on: drop it so the presenter can unlock again.
-      if (err instanceof ApiError && err.status === 403) leavePresenter();
-      showToast({ kind: 'error', title: f.title, detail: f.detail, technical: f.technical });
-    }
-    setBusy(false);
-    if (result) {
-      showToast({
-        kind: 'success',
-        title: `${controllerName(result.worker_id)} crashed.`,
-        detail: 'Watch the other controllers take over its batteries, and the power gap close.',
-        technical: `worker_id ${result.worker_id}, pid ${result.pid}, killed at ${result.killed_at_utc}`,
-      });
-      setTarget('random');
+/** "Crash a controller": a random working one, for everyone watching. Clicking a controller tile picks one. */
+export function CrashButton() {
+  const { can, why } = useCrashable();
+  const { busy, waitS } = useCrashWait();
+  const label = busy ? 'Crashing…' : waitS > 0 ? `Next crash in ${waitS} s` : 'Crash a controller';
+  return (
+    <button
+      type="button"
+      className="btn btn-danger crash-button"
+      onClick={() => void crashController()}
+      disabled={!can || busy || waitS > 0}
+      title={why ?? 'Crashes a random working controller. To pick one, click its tile.'}
+    >
+      <Icon name="crash" />
+      <span className="crash-button-label">{label}</span>
+    </button>
+  );
+}
+
+/**
+ * "Crash controller 7?", just above the tile that was clicked (render it inside the tiles' wrapper, from
+ * useCrashAsk). Esc, Cancel, a click elsewhere or tabbing away closes it.
+ */
+export function CrashPopover({ target, onClose }: { target: CrashTarget; onClose: (refocus: boolean) => void }) {
+  const titleId = useId();
+  const ref = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const worker = useLive((s) => s.workers.find((w) => w.worker_id === target.workerId));
+  const { can, why } = useCrashable();
+  const { busy, waitS } = useCrashWait();
+  const working = worker?.status === 'healthy';
+  const allowed = working && can && waitS === 0;
+
+  useEffect(() => {
+    // The confirm button when it can be pressed, else the popover itself, so Esc and Tab work from here.
+    const button = confirmRef.current;
+    (button && !button.disabled ? button : ref.current)?.focus();
+    const onDown = (e: PointerEvent) => {
+      const el = e.target as Node | null;
+      if (!ref.current?.contains(el) && !target.button.contains(el)) onClose(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    return () => document.removeEventListener('pointerdown', onDown);
+  }, [onClose, target.button]);
+
+  // The controller stopped working meanwhile (someone else crashed it): nothing is left to confirm.
+  useEffect(() => {
+    if (worker && worker.status === 'dead' && !busy) onClose(false);
+  }, [worker, busy, onClose]);
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault(); // the map's own Esc (zoom out, all of Texas) waits for the next press
+      e.stopPropagation();
+      onClose(true);
     }
   };
 
+  const confirm = async () => {
+    if (busy || !allowed) return;
+    if (await crashController(target.workerId)) onClose(true);
+  };
+
+  const name = controllerName(target.workerId);
+  const cities = workerCities(worker);
+  const count = worker?.batteries ?? 0;
   return (
-    <span className="crash-control">
-      <label className="sr-only" htmlFor={`${id}-crash`}>
-        Which controller to crash
-      </label>
-      <select id={`${id}-crash`} value={target} onChange={(e) => setTarget(e.target.value)} disabled={!can}>
-        <option value="random">Random</option>
-        {workers
-          .filter((w) => w.status !== 'dead')
-          .map((w) => (
-            <option key={w.worker_id} value={String(w.worker_id)}>
-              {controllerName(w.worker_id)}
-            </option>
-          ))}
-      </select>
-      <button type="button" className="btn btn-danger" onClick={() => void crash()} disabled={!can || busy}>
-        <Icon name="crash" />
-        {busy ? 'Crashing…' : 'Crash a controller'}
-      </button>
-    </span>
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Esc closes this small dialog, as in native ones
+    <div
+      ref={ref}
+      className="crash-pop"
+      role="dialog"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      style={{ left: target.left, bottom: target.bottom, width: CRASH_POP_WIDTH }}
+      onKeyDown={onKeyDown}
+      onBlur={(e) => {
+        const next = e.relatedTarget as Node | null;
+        // Tabbing out closes it; a click elsewhere is handled by the pointerdown listener.
+        if (next && !ref.current?.contains(next) && next !== target.button) onClose(false);
+      }}
+    >
+      <p className="crash-pop-title" id={titleId}>
+        Crash {name.replace(/^Controller/, 'controller')}?
+      </p>
+      <p className="crash-pop-text">
+        {working
+          ? `Its ${fmtCount(count)} ${plural(count, 'battery', 'batteries')}${cities ? ` in ${cities}` : ''} pulse red on the map until the other controllers take them over.`
+          : `${name} is not working right now, so it can't be crashed.`}
+      </p>
+      <div className="crash-pop-actions">
+        <button
+          type="button"
+          ref={confirmRef}
+          className="btn btn-danger btn-sm"
+          onClick={() => void confirm()}
+          disabled={!allowed}
+          aria-disabled={busy || undefined}
+          title={why ?? undefined}
+        >
+          <Icon name="crash" size={15} />
+          {busy ? 'Crashing…' : waitS > 0 ? `Wait ${waitS} s` : 'Crash it'}
+        </button>
+        <button type="button" className="btn btn-quiet btn-sm" onClick={() => onClose(true)}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }

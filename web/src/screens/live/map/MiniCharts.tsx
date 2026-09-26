@@ -1,10 +1,10 @@
-// Small line charts for the map's corners: the price of the selected city (with
-// charge/sell shading and the forecast band) and power asked for vs delivered.
-// Decorative: the values they show are always written out next to them.
+// Small line charts for the map's corners: the price of the selected city (with charge/sell shading, the
+// forecast band, and the AI's predicted prices dashed) and power asked for vs delivered. They end at the
+// moment the timeline shows. Decorative: the values they show are always written out next to them.
 
 import type { Forecast, Tick } from '../../../api/types.ts';
 import { actionSpans } from '../../../components/charts/model.ts';
-import { useLive } from '../../../live/liveStore.ts';
+import { useLiveData } from '../../../live/timeTravel.ts';
 import { scopeValue, type Scope } from './scope.ts';
 
 const W = 280;
@@ -49,18 +49,28 @@ function visibleTicks(history: Tick[]): { ticks: Tick[]; now: number; from: numb
 }
 
 export function MiniPriceChart({ location }: { location: string }) {
-  const history = useLive((s) => s.history);
-  const forecast: Forecast | undefined = useLive((s) => s.forecast[location]);
+  const history = useLiveData((s) => s.history);
+  const forecast: Forecast | undefined = useLiveData((s) => s.forecast[location]);
   const seen = visibleTicks(history);
   if (!seen) return <div className="mini-chart mini-empty">The price line appears when the replay starts.</div>;
   const { ticks, now, from } = seen;
-  const prices: [number, number][] = ticks.map((t) => [toS(t.ts_utc), t.price?.[location] ?? Number.NaN]);
+  // Real prices solid; the AI's predicted prices (2026, after the real data ends) dashed. The two share the
+  // tick where the prediction begins, so the line is unbroken.
+  const real: [number, number][] = ticks.map((t) => [toS(t.ts_utc), t.predicted ? Number.NaN : (t.price?.[location] ?? Number.NaN)]);
+  const firstPredicted = ticks.findIndex((t) => t.predicted);
+  const predicted: [number, number][] = ticks.map((t, i) => [
+    toS(t.ts_utc),
+    t.predicted || i === firstPredicted - 1 ? (t.price?.[location] ?? Number.NaN) : Number.NaN,
+  ]);
   const band = (forecast?.points ?? [])
     .map((p) => ({ x: toS(p.ts_utc), lo: p.p10, hi: p.p90 }))
     .filter((p) => p.x > now && p.x <= now + AHEAD_S && Number.isFinite(p.lo) && Number.isFinite(p.hi));
   const x0 = from;
   const x1 = now + (band.length ? AHEAD_S : 15 * 60);
-  const values = prices.map((p) => p[1]).concat(band.flatMap((p) => [p.lo, p.hi])).filter(Number.isFinite);
+  const values = ticks
+    .map((t) => t.price?.[location] ?? Number.NaN)
+    .concat(band.flatMap((p) => [p.lo, p.hi]))
+    .filter(Number.isFinite);
   const lo = Math.min(0, ...values);
   let hi = Math.max(...values, lo + 20);
   hi += (hi - lo) * 0.08;
@@ -87,14 +97,15 @@ export function MiniPriceChart({ location }: { location: string }) {
       ))}
       {bandPath ? <path className="mini-band" d={bandPath} /> : null}
       {lo < 0 ? <line className="mini-zero" x1={0} x2={W} y1={sy(f, 0)} y2={sy(f, 0)} /> : null}
-      <path className="mini-line" d={path(f, prices)} />
+      <path className="mini-line" d={path(f, real)} />
+      {firstPredicted >= 0 ? <path className="mini-line mini-predicted" d={path(f, predicted)} /> : null}
       <line className="mini-now" x1={nowX} x2={nowX} y1={0} y2={H} />
     </svg>
   );
 }
 
 export function MiniPowerChart({ scope }: { scope: Scope }) {
-  const history = useLive((s) => s.history);
+  const history = useLiveData((s) => s.history);
   const seen = visibleTicks(history);
   if (!seen) return <div className="mini-chart mini-empty">Power appears when the replay starts.</div>;
   const { ticks, now, from } = seen;

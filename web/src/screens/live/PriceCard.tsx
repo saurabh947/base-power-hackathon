@@ -94,10 +94,10 @@ export function PriceCard() {
       what="Real prices from ERCOT, the Texas grid operator. Batteries buy when power is cheap and sell when it's expensive."
       how={
         <p>
-          These are the real 2025 wholesale prices for each area, in dollars per megawatt-hour ($/MWh); divide by 10
-          for cents per kWh, the unit on a home power bill. Shading shows what the batteries did: teal while charging,
-          amber while selling. The violet band is the AI forecast's likely range: it expects the price to land inside it
-          8 times out of 10.
+          These are real wholesale prices for each area (in 2026, the AI's prediction after the real data ends), in
+          dollars per megawatt-hour ($/MWh); divide by 10 for cents per kWh, the unit on a home power bill. Shading
+          shows what the batteries did: blue while charging, green while selling, as on the map. The violet band is the
+          AI forecast's likely range: it expects the price to land inside it 8 times out of 10.
         </p>
       }
       actions={

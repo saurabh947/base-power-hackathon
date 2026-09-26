@@ -37,12 +37,13 @@ function caught(fn: () => unknown): unknown {
 }
 
 describe('price fixture', () => {
-  it('holds 2 real days of 15-minute prices for every preset and all four cities', () => {
+  it('holds real 15-minute prices for every 2025 preset (2 days) and the mock-only days, all four cities', () => {
     expect(fixture.source_note).toContain('REAL DATA');
     expect(fixture.locations).toEqual(['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN']);
-    expect(fixture.segments.map((s) => s.preset)).toEqual(PRESETS.map((p) => p.id));
+    const presets2025 = PRESETS.filter((p) => p.year === 2025).map((p) => p.id);
+    expect(fixture.segments.map((s) => s.preset)).toEqual([...presets2025.filter((id) => id !== 'jan1_2025'), 'jan1_2025', 'stand_in_2026_sep']);
     for (const s of fixture.segments) {
-      expect(s.rows).toHaveLength(192);
+      expect(s.rows).toHaveLength(s.preset === 'stand_in_2026_sep' ? 7 * 96 : 192);
       for (const r of s.rows) for (const loc of LOCS) expect(typeof (r as Record<string, unknown>)[loc]).toBe('number');
     }
   });
@@ -51,7 +52,7 @@ describe('price fixture', () => {
     expect(priceAt('LZ_HOUSTON', at('2025-05-17T00:45:00Z'))).toBe(2250.15); // 7:45 pm CDT, May 16
     expect(priceAt('LZ_HOUSTON', at('2025-05-17T00:55:00Z'))).toBe(2250.15); // forward-filled in its interval
     expect(priceAt('LZ_NORTH', at('2025-05-17T00:45:00Z'))).toBe(2512.18);
-    expect(priceAt('LZ_HOUSTON', at('2025-01-01T00:00:00Z'))).toBeNull();
+    expect(priceAt('LZ_HOUSTON', at('2025-03-01T00:00:00Z'))).toBeNull();
     // The summer night spike reaches all four cities in the 9 pm interval.
     for (const loc of LOCS) expect(priceAt(loc, at('2025-07-12T02:00:00Z'))).toBeGreaterThan(1700);
   });
@@ -61,13 +62,38 @@ describe('GET /settings shapes', () => {
   it('match docs/API.md', () => {
     const s = mockSettingsResponse();
     expect(Object.keys(s.presets[0]).toSorted()).toEqual(
-      ['date_local', 'description', 'id', 'label', 'start_local', 'start_utc'].toSorted(),
+      ['date_local', 'description', 'id', 'label', 'start_local', 'start_utc', 'year'].toSorted(),
     );
     expect(Object.keys(s.strategies[0]).toSorted()).toEqual(['description', 'id', 'label']);
     expect(s.speeds[1]).toEqual({ tps: 2, label: '1 hour every 6 s' });
-    expect(s.presets.map((p) => p.id)).toEqual(['spike_evening', 'morning_spike', 'summer_spike', 'ai_best_evening', 'ordinary_day']);
-    expect(s.defaults.preset).toBe('ai_best_evening'); // config.yaml presets.default
+    expect(s.presets.map((p) => p.id)).toEqual([
+      'spike_evening',
+      'morning_spike',
+      'summer_spike',
+      'ai_best_evening',
+      'ordinary_day',
+      'jan1_2025',
+      'predicted_2026',
+      'jan1_2026',
+    ]);
+    expect(s.defaults).toMatchObject({ year: 2025, preset: 'ai_best_evening' }); // config.yaml presets.default
     expect(s.defaults.locations).toEqual({ LZ_HOUSTON: 0.35, LZ_NORTH: 0.4, LZ_CPS: 0.13, LZ_AEN: 0.12 });
+    expect(s.editable).toEqual(['year', 'preset', 'speed_tps', 'strategy', 'start_charge_level']);
+  });
+
+  it('offer 2025 and 2026, each with its own presets and a "From January 1"', () => {
+    const s = mockSettingsResponse();
+    expect(s.years).toEqual([
+      { year: 2025, label: '2025', description: 'Real ERCOT prices for the whole year.', real_until_utc: null },
+      { year: 2026, label: '2026', description: 'Real prices through Sep 20, then the AI’s prediction.', real_until_utc: '2026-09-21T05:00:00Z' },
+    ]);
+    for (const y of [2025, 2026]) {
+      const own = s.presets.filter((p) => p.year === y);
+      expect(own.length).toBeGreaterThan(0);
+      expect(own.some((p) => p.label === 'From January 1' && p.date_local === `${y}-01-01`)).toBe(true);
+      for (const p of own) expect(p.date_local.startsWith(String(y))).toBe(true);
+    }
+    expect(s.presets.some((p) => p.year === 2024)).toBe(false);
   });
 });
 
@@ -436,21 +462,20 @@ describe('the race (docs/API.md Race)', () => {
     const [a, b] = [calm.sim.snapshot(), crash.sim.snapshot()];
     expect(b.failed_commands.count).toBeGreaterThan(0);
     expect(b.totals.revenue_usd).not.toBe(a.totals.revenue_usd);
-    expect(b.race).toEqual({ ...a.race, live_minus_race_usd: expect.any(Number) });
+    const bare = (r: typeof a.race) => ({ ...r, live_minus_race_usd: 0, potential: null, shows_potential: null });
+    expect(bare(b.race)).toEqual(bare(a.race));
+    // The crash shows the third bar; the calm run does not need it.
+    expect([a.race?.shows_potential, b.race?.shows_potential]).toEqual([false, true]);
   });
 });
 
 describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
   const gains = new MockSim().aiGains();
 
-  it('has the pitch year first, then 2024, with the uplift over the simple rule', () => {
+  it('has the pitch year only (2025), with the uplift over the simple rule', () => {
     expect(gains).toMatchObject({ ai: 'forecast', baseline: 'bands' });
-    expect(gains.years.map((y) => [y.year, y.is_pitch])).toEqual([
-      [2025, true],
-      [2024, false],
-    ]);
+    expect(gains.years.map((y) => [y.year, y.is_pitch])).toEqual([[2025, true]]);
     expect(gains.years[0].uplift).toEqual({ per_battery_usd_year: 67.28, pct: 0.544, fleet_usd_year: 1_345_600 });
-    expect(gains.years[1].uplift).toEqual({ per_battery_usd_year: 157.74, pct: 1.387, fleet_usd_year: 3_154_800 });
     expect(gains.years[0].best_possible_per_battery_usd_year).toBe(421.29);
   });
 
@@ -468,8 +493,6 @@ describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
       avg_sell_usd_mwh: 66.58,
       avg_buy_usd_mwh: 17.02,
     });
-    expect(gains.years[1].strategies.forecast).toMatchObject({ spike_events: 53, spike_charge_level: 0.52, spike_mwh: 610.9, surplus_mwh: 6361 });
-    expect(gains.years[1].strategies.bands).toMatchObject({ spike_charge_level: 0.24, spike_mwh: 76.3, surplus_mwh: 905 });
     // bought_mwh is derived so the money adds up: sold × average sell price − bought × average buy price.
     for (const y of gains.years) {
       for (const s of Object.values(y.strategies)) {
@@ -481,13 +504,13 @@ describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
   it('reads on the site as the approved headline and cards', () => {
     const read = readAiGains(JSON.parse(JSON.stringify(gains)));
     if (!read) throw new Error('unreadable');
-    const view = gainsView(read, null, 20_000);
+    const view = gainsView(read, 20_000);
     expect(view.headline?.sentence).toBe(
       '+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet',
     );
     expect(view.perfect?.bars.map((b) => b.text)).toEqual(['29%', '32%', '45%']);
     expect(view.surplus).toMatchObject({ aiText: '7,011 MWh', baseText: '1,239 MWh', times: '5.7×' });
-    expect(view.spike).toMatchObject({ aiChargeText: '52%', baseChargeText: '24%', aiMwhText: '611 MWh', baseMwhText: '76 MWh', times: '8×' });
+    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus']); // three cards, no spike card
   });
 
   it('agrees with GET /results/pitch', () => {

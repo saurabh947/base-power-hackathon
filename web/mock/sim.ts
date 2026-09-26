@@ -1,12 +1,18 @@
 // SIMULATED fleet for the mock API (dev and tests only; never shipped).
 //
 // Real: the prices in ./data (ERCOT real-time prices of the four Texas Triangle
-// load zones, each replay preset's day and the day after), and the full-year
+// load zones, each 2025 replay preset's day and the day after), and the full-year
 // figures copied from RUNLOG.md (below). Simulated: everything else — batteries
 // and where they sit, controllers, decisions, money, the race, forecasts and
 // failures. The physics follow RUNLOG.md loosely (grid-side metering, sqrt(eta)
 // each way, 20% reserve) so the site sees realistic shapes, but no live number
 // here is a real result.
+//
+// 2026 (docs/API.md Year): real prices through Sep 20, then the AI's prediction.
+// The mock has no 2026 data, so its "real" 2026 prices are 2025's from the same
+// dates, a year on, and its prediction is simulated: for each 15 minutes, the
+// median of the same time of day over the last 7 real days, smoothed, like a
+// forecast's middle line (p50). Ticks after real_until_utc are `predicted`.
 //
 // Contract details (docs/API.md): worker_id 0-19 shown as "Controller N+1";
 // battery ids b00000-b19999 in city blocks (Houston b00000-b06999, Dallas–Fort
@@ -46,6 +52,7 @@ import type {
   TickAction,
   Totals,
   Worker,
+  YearInfo,
 } from '../src/api/types.ts';
 import { batteryRanges, DEFAULT_SHARES } from '../src/lib/fleet.ts';
 import { CHARGING, DOWN, OFFLINE, packStatus, SELLING, WAITING } from '../src/map/status.ts';
@@ -56,7 +63,7 @@ import { buildMockLayout } from './layout.ts';
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
 export const MOCK_MARKER = 'FLEET_SIM_MOCK_DO_NOT_SHIP';
 export const MOCK_VERSION =
-  'mock-0.4 (simulated data; real ERCOT prices for the replay preset days; measured full-year figures from RUNLOG.md)';
+  'mock-0.5 (simulated data; real ERCOT prices for the 2025 replay days; 2026 is 2025 a year on, then a simulated prediction; measured full-year figures from RUNLOG.md)';
 
 /** The Texas Triangle load zones in config order. */
 export const LOCS = ['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN'] as const;
@@ -93,10 +100,24 @@ LOCS.forEach((loc, k) => LOC_OF.fill(k, BASE[loc], BASE[loc] + COUNT[loc]));
 
 const perLoc = <T>(f: (loc: Loc) => T): Record<Loc, T> => Object.fromEntries(LOCS.map((l) => [l, f(l)])) as Record<Loc, T>;
 
-/** Mirrors config.yaml presets.items (start_local added, as GET /settings sends it). */
+/** docs/API.md: 2026's real prices end here (the end of the last real interval); the AI's prediction follows. */
+export const REAL_UNTIL_2026 = '2026-09-21T05:00:00Z';
+
+/** docs/API.md Year items. */
+export const YEARS: YearInfo[] = [
+  { year: 2025, label: '2025', description: 'Real ERCOT prices for the whole year.', real_until_utc: null },
+  { year: 2026, label: '2026', description: 'Real prices through Sep 20, then the AI’s prediction.', real_until_utc: REAL_UNTIL_2026 },
+];
+
+/**
+ * The 2025 presets mirror config.yaml presets.items (start_local added, as GET /settings sends it); each year
+ * has a "From January 1" preset (docs/API.md). The mock loads two days per preset, so "From January 1" runs for
+ * two days here.
+ */
 export const PRESETS: Preset[] = [
   {
     id: 'spike_evening',
+    year: 2025,
     label: 'Price-spike evening',
     date_local: '2025-05-16',
     start_utc: '2025-05-16T21:00:00Z',
@@ -105,6 +126,7 @@ export const PRESETS: Preset[] = [
   },
   {
     id: 'morning_spike',
+    year: 2025,
     label: 'Biggest spike of 2025',
     date_local: '2025-04-07',
     start_utc: '2025-04-07T08:00:00Z',
@@ -113,6 +135,7 @@ export const PRESETS: Preset[] = [
   },
   {
     id: 'summer_spike',
+    year: 2025,
     label: 'Summer night spike',
     date_local: '2025-07-11',
     start_utc: '2025-07-11T23:00:00Z',
@@ -121,6 +144,7 @@ export const PRESETS: Preset[] = [
   },
   {
     id: 'ai_best_evening',
+    year: 2025,
     label: "The AI's best evening",
     date_local: '2025-05-30',
     start_utc: '2025-05-30T23:00:00Z',
@@ -129,16 +153,45 @@ export const PRESETS: Preset[] = [
   },
   {
     id: 'ordinary_day',
+    year: 2025,
     label: 'An ordinary day',
     date_local: '2025-06-28',
     start_utc: '2025-06-28T05:00:00Z',
     start_local: '2025-06-28T00:00:00-05:00',
     description: 'A typical day in all four cities, with small ups and downs.',
   },
+  {
+    id: 'jan1_2025',
+    year: 2025,
+    label: 'From January 1',
+    date_local: '2025-01-01',
+    start_utc: '2025-01-01T06:00:00Z',
+    start_local: '2025-01-01T00:00:00-06:00',
+    description: 'The year from its first hour (the practice server loads two days).',
+  },
+  {
+    id: 'predicted_2026',
+    year: 2026,
+    label: 'Where real prices end',
+    date_local: '2026-09-20',
+    start_utc: '2026-09-20T23:00:00Z',
+    start_local: '2026-09-20T18:00:00-05:00',
+    description: 'The last real evening, Sep 20; from midnight on, the prices are the AI’s prediction.',
+  },
+  {
+    id: 'jan1_2026',
+    year: 2026,
+    label: 'From January 1',
+    date_local: '2026-01-01',
+    start_utc: '2026-01-01T06:00:00Z',
+    start_local: '2026-01-01T00:00:00-06:00',
+    description: 'The year from its first hour (the practice server loads two days).',
+  },
 ];
 
 /** config.yaml presets.default is ai_best_evening. */
 export const DEFAULT_SETTINGS: Settings = {
+  year: 2025,
   preset: 'ai_best_evening',
   start_utc: '2025-05-30T23:00:00Z',
   speed_tps: 2,
@@ -173,7 +226,7 @@ export class MockError extends Error {
   }
 }
 
-// ---- real prices ---------------------------------------------------------------
+// ---- prices: real 2025, a stand-in for 2026, and the simulated prediction -----------------
 
 type PriceRow = { ts_utc: string; ts_local: string } & Record<Loc, number>;
 
@@ -200,22 +253,73 @@ function percentile(values: number[], p: number): number {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
-const ROWS_BY_INTERVAL = new Map<number, PriceRow>();
-const SEGMENTS: Segment[] = priceFixture.segments.map((seg) => {
-  const rows = seg.rows as PriceRow[];
-  for (const r of rows) ROWS_BY_INTERVAL.set(toS(r.ts_utc), r);
-  const of = (loc: Loc) => rows.map((r) => r[loc]);
-  return {
-    preset: seg.preset,
-    startS: toS(rows[0].ts_utc),
-    endS: toS(rows[rows.length - 1].ts_utc) + INTERVAL_S,
-    cheap: perLoc((l) => percentile(of(l), 0.3)),
-    sellFloor: perLoc((l) => percentile(of(l), 0.85)),
-  };
-});
+const DAY_S = 86_400;
+/** 2025-09-20 + 365 days is 2026-09-20 (same weekday count aside): the stand-in shift. */
+const YEAR_S = 365 * DAY_S;
+export const REAL_UNTIL_2026_S = toS(REAL_UNTIL_2026);
+/** How much of the prediction the mock simulates, and from how many real days before it. */
+const PREDICTION_DAYS = 2;
+const PREDICTION_LOOKBACK_DAYS = 7;
+/** Fixture segments that stand in for 2026's real prices, a year on (see export_prices.py MOCK_ONLY). */
+const STAND_IN_SEGMENTS = new Set(['jan1_2025', 'stand_in_2026_sep']);
+
+/** Every 15-minute interval the mock has a price for, by its start (UTC seconds). */
+const BOOK = new Map<number, { row: PriceRow; predicted: boolean }>();
+
+for (const seg of priceFixture.segments) {
+  for (const r of seg.rows as PriceRow[]) {
+    BOOK.set(toS(r.ts_utc), { row: r, predicted: false });
+    // 2026's "real" prices on the practice server: 2025's, a year on (same local clock and UTC offset).
+    const later = toS(r.ts_utc) + YEAR_S;
+    if (STAND_IN_SEGMENTS.has(seg.preset) && later < REAL_UNTIL_2026_S) {
+      BOOK.set(later, {
+        row: { ...r, ts_utc: isoUtc(later), ts_local: r.ts_local.replace(/^2025/, '2026') },
+        predicted: false,
+      });
+    }
+  }
+}
+
+/**
+ * The simulated prediction after REAL_UNTIL_2026: for each 15 minutes, the median of the same time of day over
+ * the last 7 real days, pulled a little towards their mean and smoothed over an hour or so, like a forecast's
+ * middle line. Plausible practice data, not TimesFM.
+ */
+function simulatePrediction(): void {
+  const steps = (PREDICTION_DAYS * DAY_S) / INTERVAL_S;
+  const raw: Record<Loc, number[]> = perLoc(() => []);
+  for (let k = 0; k < steps; k++) {
+    const s = REAL_UNTIL_2026_S + k * INTERVAL_S;
+    for (const loc of LOCS) {
+      const past: number[] = [];
+      for (let d = 1; past.length < PREDICTION_LOOKBACK_DAYS && d <= PREDICTION_LOOKBACK_DAYS + PREDICTION_DAYS; d++) {
+        const back = s - d * DAY_S;
+        const got = back < REAL_UNTIL_2026_S ? BOOK.get(back) : undefined;
+        if (got) past.push(got.row[loc]);
+      }
+      const mean = past.reduce((a, b) => a + b, 0) / Math.max(1, past.length);
+      raw[loc].push(past.length ? mean + (percentile(past, 0.5) - mean) * 0.85 : 30);
+    }
+  }
+  for (let k = 0; k < steps; k++) {
+    const s = REAL_UNTIL_2026_S + k * INTERVAL_S;
+    const row = { ts_utc: isoUtc(s), ts_local: '' } as PriceRow;
+    for (const loc of LOCS) {
+      const lo = Math.max(0, k - 2);
+      const hi = Math.min(steps - 1, k + 2);
+      let sum = 0;
+      for (let j = lo; j <= hi; j++) sum += raw[loc][j];
+      row[loc] = round(sum / (hi - lo + 1), 2);
+    }
+    // Late September 2026 is on Central daylight time (UTC-5).
+    row.ts_local = `${new Date((s - 5 * 3600) * 1000).toISOString().slice(0, 19)}-05:00`;
+    BOOK.set(s, { row, predicted: true });
+  }
+}
+simulatePrediction();
 
 function rowAt(tsS: number): PriceRow | null {
-  return ROWS_BY_INTERVAL.get(Math.floor(tsS / INTERVAL_S) * INTERVAL_S) ?? null;
+  return BOOK.get(Math.floor(tsS / INTERVAL_S) * INTERVAL_S)?.row ?? null;
 }
 
 /** 15-minute price, forward-filled within its own interval only; null where no data was loaded. */
@@ -224,8 +328,30 @@ export function priceAt(loc: Loc, tsS: number): number | null {
   return row && typeof row[loc] === 'number' ? row[loc] : null;
 }
 
-function segmentAt(tsS: number): Segment | null {
-  return SEGMENTS.find((s) => tsS >= s.startS && tsS < s.endS) ?? null;
+/** Is this moment's price the (simulated) AI prediction rather than a real one? */
+export function isPredicted(tsS: number): boolean {
+  return BOOK.get(Math.floor(tsS / INTERVAL_S) * INTERVAL_S)?.predicted ?? false;
+}
+
+/** A preset's two loaded days, from its local midnight; null when the mock has no prices for all of them. */
+function segmentFor(preset: Preset): Segment | null {
+  const offset = preset.start_local?.slice(-6) ?? '-05:00';
+  const startS = toS(`${preset.date_local}T00:00:00${offset}`);
+  const endS = startS + 2 * DAY_S;
+  const rows: PriceRow[] = [];
+  for (let s = startS; s < endS; s += INTERVAL_S) {
+    const got = BOOK.get(s);
+    if (!got) return null;
+    rows.push(got.row);
+  }
+  const of = (loc: Loc) => rows.map((r) => r[loc]);
+  return {
+    preset: preset.id,
+    startS,
+    endS,
+    cheap: perLoc((l) => percentile(of(l), 0.3)),
+    sellFloor: perLoc((l) => percentile(of(l), 0.85)),
+  };
 }
 
 function isoUtc(tsS: number): string {
@@ -375,6 +501,9 @@ interface WorkerState extends Worker {
   missed: number;
 }
 
+/** Killed or not responding, and not handed over yet: its batteries are "controller down". */
+const isCrashing = (w: WorkerState) => w.status === 'suspect' || (w.status !== 'dead' && w.killedAtMs !== null);
+
 interface Job {
   id: string;
   doneAtMs: number;
@@ -513,6 +642,10 @@ class RaceFleet {
     this.fleetLevel = stored / capacity;
   }
 
+  revenueOf(loc: Loc): number {
+    return this.revenueBy[loc];
+  }
+
   toJson(liveRevenue: number): Race {
     return {
       strategy: this.strategy,
@@ -569,6 +702,12 @@ export class MockSim {
   private lastAction: Record<Loc, TickAction> = perLoc(() => 'hold');
   private spiked: Record<Loc, boolean> = perLoc(() => false);
   private race = new RaceFleet('bands', DEFAULT_SETTINGS.start_charge_level);
+  /** docs/API.md race.potential: the live strategy with every battery online and no crashes. */
+  private potential = new RaceFleet(DEFAULT_SETTINGS.strategy, DEFAULT_SETTINGS.start_charge_level);
+  /** Some battery went offline or some controller crashed in this run: race.shows_potential. */
+  private hadOutage = false;
+  /** The prediction_started event went out (at the first predicted tick). */
+  private predictionNoted = false;
   /** A spike is on in at least one city (for the race_update events). */
   private inSpike = false;
   private eventSeq = 0;
@@ -618,13 +757,24 @@ export class MockSim {
 
   start(partial: Partial<EditableSettings>): { run_id: string; settings: Settings } {
     const next: Settings = { ...DEFAULT_SETTINGS };
-    const presetId = partial.preset ?? DEFAULT_SETTINGS.preset;
+    const year = partial.year === undefined || partial.year === null ? null : Number(partial.year);
+    if (year !== null && !YEARS.some((y) => y.year === year)) {
+      throw new MockError(400, 'invalid_year', 'The year must be 2025 or 2026.');
+    }
+    // A preset belongs to one year; a year alone gets the default preset, or that year's first.
+    const yearDefault =
+      year === null || year === DEFAULT_SETTINGS.year ? DEFAULT_SETTINGS.preset : PRESETS.find((p) => p.year === year)?.id;
+    const presetId = partial.preset ?? yearDefault ?? DEFAULT_SETTINGS.preset;
     const preset = PRESETS.find((p) => p.id === presetId);
     if (!preset) throw new MockError(400, 'unknown_preset', `There is no replay called "${presetId}".`);
-    const segment = segmentAt(toS(preset.start_utc));
+    if (year !== null && preset.year !== year) {
+      throw new MockError(400, 'invalid_preset', `"${preset.label}" is a ${preset.year} replay. Pick one of ${year}'s.`);
+    }
+    const segment = segmentFor(preset);
     if (!segment) {
       throw new MockError(501, 'not_in_mock', `The practice server has no prices loaded for "${preset.label}".`);
     }
+    next.year = preset.year;
     next.preset = preset.id;
     next.start_utc = preset.start_utc;
     if (partial.speed_tps !== undefined) {
@@ -666,9 +816,12 @@ export class MockSim {
     this.lastAction = perLoc(() => 'hold');
     this.spiked = perLoc(() => false);
     this.inSpike = false;
+    this.hadOutage = false;
+    this.predictionNoted = false;
     this.resetFleet(next.start_charge_level);
     // The comparison is the simple rule, or the AI forecast when the live run uses the simple rule.
     this.race = new RaceFleet(next.strategy === 'bands' ? 'forecast' : 'bands', next.start_charge_level);
+    this.potential = new RaceFleet(next.strategy, next.start_charge_level);
     for (const w of this.workers) w.status = 'starting';
     return { run_id: this.runId, settings: this.settings };
   }
@@ -728,12 +881,14 @@ export class MockSim {
 
   /**
    * battery_status codes: the latest tick's, like the backend (so, like the backend, a frame at
-   * 5-10 ticks a second can miss the two ticks a crashed controller's batteries are down). Offline
-   * batteries show at once, and while paused a controller that stops responding shows as down.
+   * 5-10 ticks a second can miss the two ticks a crashed controller's batteries are down). As
+   * docs/API.md asks, an availability change or a crash shows within one frame, even while paused:
+   * offline batteries show at once, and while paused a crashed controller's batteries show as down
+   * from the moment it is killed until they are handed over.
    */
   statusCodes(): Uint8Array {
     const codes = this.status === 'idle' || !this.tickCodes ? new Uint8Array(FLEET).fill(WAITING) : this.tickCodes.slice();
-    const down = this.status === 'paused' ? new Set(this.workers.filter((w) => w.status === 'suspect').map((w) => w.worker_id)) : null;
+    const down = this.status === 'paused' ? new Set(this.workers.filter(isCrashing).map((w) => w.worker_id)) : null;
     for (let g = 0; g < FLEET; g++) {
       if (!this.isAvailable(g)) codes[g] = OFFLINE;
       else if (down?.has(this.owner[g])) codes[g] = DOWN;
@@ -825,8 +980,9 @@ export class MockSim {
       default:
         throw new MockError(400, 'bad_scope', 'scope must be location, worker, battery or all.');
     }
-    if (this.status !== 'idle') this.emit('availability_changed', 'info', message, { request: req, affected });
     const { total } = this.countAvailable();
+    if (total < FLEET && this.status !== 'idle') this.hadOutage = true; // race.shows_potential, for the rest of the run
+    if (this.status !== 'idle') this.emit('availability_changed', 'info', message, { request: req, affected, available: total });
     return { applied_from_tick_utc: isoUtc(this.nextTickS()), affected, available: total, total: FLEET };
   }
 
@@ -869,6 +1025,7 @@ export class MockSim {
     }
     target.killedAtTick = this.tickIndex;
     target.killedAtMs = this.now();
+    this.hadOutage = true; // race.shows_potential, for the rest of the run
     return { worker_id: target.worker_id, pid: target.pid ?? 0, killed_at_utc: new Date(this.now()).toISOString() };
   }
 
@@ -902,17 +1059,24 @@ export class MockSim {
     if (this.status === 'starting' && now - this.startedAtMs >= 1500) {
       this.status = 'running';
       for (const w of this.workers) w.status = 'healthy';
+      const startS = toS(this.settings.start_utc);
+      const prices =
+        startS >= REAL_UNTIL_2026_S
+          ? 'the AI’s predicted prices'
+          : (this.settings.year ?? 2025) >= 2026
+            ? 'prices (on this practice server, 2025’s real ones a year on)'
+            : 'real prices';
       this.emit(
         'run_started',
         'info',
-        `The replay started: real prices from ${spokenDate(toS(this.settings.start_utc))}, with ${FLEET.toLocaleString('en-US')} batteries ${Math.round(this.settings.start_charge_level * 100)}% charged.`,
+        `The replay started: ${prices} from ${spokenDate(startS)}, with ${FLEET.toLocaleString('en-US')} batteries ${Math.round(this.settings.start_charge_level * 100)}% charged.`,
       );
     }
     if (this.status === 'running') {
       for (let k = 0; k < this.settings.speed_tps; k++) {
         if (!this.segment || this.nextTickS() >= this.segment.endS) {
           this.status = 'finished';
-          this.emit('run_finished', 'good', 'The replay finished: it reached the end of the recorded prices.', {
+          this.emit('run_finished', 'good', 'The replay finished: it reached the end of the loaded prices.', {
             revenue_usd: round(this.totals.revenue_usd),
           });
           break;
@@ -964,9 +1128,24 @@ export class MockSim {
     };
   }
 
-  /** docs/API.md Race: in every snapshot and frame while a run exists, null while idle. */
+  /**
+   * docs/API.md Race: in every snapshot and frame while a run exists, null while idle. `potential` is a second
+   * shadow fleet, the live strategy with every battery online and no crashes; `shows_potential` turns true once
+   * a battery went offline or a controller crashed, and stays true for the run.
+   */
   publicRace(): Race | null {
-    return this.status === 'idle' || !this.runId ? null : this.race.toJson(this.totals.revenue_usd);
+    if (this.status === 'idle' || !this.runId) return null;
+    const live = this.totals.revenue_usd;
+    return {
+      ...this.race.toJson(live),
+      potential: {
+        label: `${strategyLabel(this.settings.strategy).replace(/\s*\([^)]*\)$/, '')}, all batteries online`,
+        revenue_usd: round(this.potential.revenue, 4),
+        by_location: perLoc((l) => ({ revenue_usd: round(this.potential.revenueOf(l), 4) })),
+        shortfall_usd: round(this.potential.revenue - live, 4),
+      },
+      shows_potential: this.hadOutage,
+    };
   }
 
   private publicTotals(): Totals {
@@ -1031,6 +1210,17 @@ export class MockSim {
     const index = this.tickIndex;
     const tsS = this.tickS(index);
     this.currentTickUtc = isoUtc(tsS);
+    const predicted = isPredicted(tsS);
+    if (predicted && !this.predictionNoted) {
+      // docs/API.md prediction_started: once, at the first predicted tick.
+      this.predictionNoted = true;
+      this.emit(
+        'prediction_started',
+        'info',
+        'From here on, prices are the AI’s prediction, not real ERCOT data (on this practice server, a simulated one).',
+        { real_until_utc: REAL_UNTIL_2026 },
+      );
+    }
     const dying = this.detectAtTick();
 
     const price = perLoc(() => 0);
@@ -1152,6 +1342,8 @@ export class MockSim {
     const liveLevelBefore = this.history[this.history.length - 1]?.charge_level.fleet ?? this.settings.start_charge_level;
     const raceLevelBefore = this.race.fleetLevel;
     this.race.step(this.segment, tsS, price, decision, (g) => this.isAvailable(g));
+    // What the live strategy would earn with every battery online and no crashes (race.potential).
+    this.potential.step(this.segment, tsS, price, decision, () => true);
     const spikeLocs = LOCS.filter((l) => price[l] >= SPIKE_USD_MWH);
     if (spikeLocs.length && !this.inSpike) {
       this.inSpike = true;
@@ -1176,6 +1368,7 @@ export class MockSim {
         fleet: round(LOCS.reduce((s, l) => s + level[l] * CAPACITY_BY_LOC[l], 0) / capTotal, 4),
       },
       healthy_workers: this.workers.filter((w) => w.status === 'healthy').length,
+      predicted,
     };
     this.history.push(t);
     if (this.history.length > HISTORY_CAP) this.history.splice(0, this.history.length - HISTORY_CAP);
@@ -1556,8 +1749,9 @@ const TOP_DAY_DATES = [
 export function mockSettingsResponse() {
   return {
     defaults: DEFAULT_SETTINGS,
-    editable: ['preset', 'speed_tps', 'strategy', 'start_charge_level'],
+    editable: ['year', 'preset', 'speed_tps', 'strategy', 'start_charge_level'],
     presets: PRESETS,
+    years: YEARS,
     strategies: STRATEGIES,
     speeds: SPEEDS.map((tps) => ({ tps, label: `1 hour every ${12 / tps} s` })),
   };

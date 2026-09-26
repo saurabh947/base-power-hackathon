@@ -20,24 +20,6 @@ export function controllerFromDetail(detail: Record<string, unknown> | undefined
   return null;
 }
 
-/** "b00123" from 123. */
-export function batteryId(index: number): string {
-  return `b${String(index).padStart(5, '0')}`;
-}
-
-/** Accepts "123", "00123", "b123" or "b00123"; null unless it names a battery in the fleet. */
-export function parseBatteryInput(input: string, fleetSize = DEFAULT_FLEET_SIZE): string | null {
-  const m = /^\s*b?\s*(\d{1,6})\s*$/i.exec(input);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isInteger(n) && n >= 0 && n < fleetSize ? batteryId(n) : null;
-}
-
-export function batteryIndex(id: string): number | null {
-  const m = /^b(\d{5})$/.exec(id);
-  return m ? Number(m[1]) : null;
-}
-
 export interface AreaRange {
   location: string;
   /** First and last battery index, inclusive. */
@@ -66,8 +48,4 @@ export function batteryRanges(fleetSize: number, shares: Record<string, number>)
     first += count;
     return range;
   });
-}
-
-export function areaOfBattery(index: number, ranges: AreaRange[]): string | null {
-  return ranges.find((r) => index >= r.first && index <= r.last)?.location ?? null;
 }

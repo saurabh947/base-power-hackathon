@@ -32,6 +32,13 @@ export type Leader = 'live' | 'race' | 'level';
 export interface RaceView {
   live: RaceSide;
   race: RaceSide;
+  /**
+   * The third bar, once batteries went offline or a controller crashed (race.shows_potential): what the live
+   * strategy would have earned with every battery online, a projection. Null until then.
+   */
+  potential: RaceSide | null;
+  /** "Outages cost $790 so far" (potential minus live), with the dollars; null without the third bar. */
+  shortfall: { usd: number; text: string } | null;
   /** Live minus race, dollars: positive means the live strategy is ahead. */
   diff: number;
   leader: Leader;
@@ -42,6 +49,9 @@ export interface RaceView {
   /** The whole line, for screen readers and tooltips. */
   summary: string;
 }
+
+/** The third bar's name: "All batteries online (projected)". */
+export const POTENTIAL_LABEL = 'All batteries online';
 
 export interface RaceInput {
   race: Race | null;
@@ -95,25 +105,56 @@ export function raceView({ race, liveStrategy, totals, tick, scope }: RaceInput)
   }
   if (!finite(liveUsd) || !finite(diff)) return null;
 
+  // The third bar (docs/API.md race.potential), only once race.shows_potential is true.
+  let potUsd: number | null = null;
+  let shortfallUsd: number | null = null;
+  if (race.shows_potential && race.potential) {
+    const p = race.potential;
+    if (scope === null) {
+      potUsd = finite(p.revenue_usd) ? p.revenue_usd : null;
+      shortfallUsd = finite(p.shortfall_usd) ? p.shortfall_usd : potUsd === null ? null : potUsd - liveUsd;
+    } else {
+      const own = p.by_location?.[scope]?.revenue_usd;
+      potUsd = finite(own) ? own : null;
+      shortfallUsd = potUsd === null ? null : potUsd - liveUsd;
+    }
+  }
+
   // Cents while the sums are small (the first minutes of a replay), whole dollars after.
-  const decimals = Math.max(Math.abs(liveUsd), Math.abs(raceUsd)) < 100 ? 2 : 0;
+  const decimals = Math.max(Math.abs(liveUsd), Math.abs(raceUsd), Math.abs(potUsd ?? 0)) < 100 ? 2 : 0;
   const money = (n: number) => fmtUsd(n, decimals);
-  const leader: Leader = Math.abs(diff) < (decimals ? 0.005 : 0.5) ? 'level' : diff > 0 ? 'live' : 'race';
+  const tiny = decimals ? 0.005 : 0.5;
+  const leader: Leader = Math.abs(diff) < tiny ? 'level' : diff > 0 ? 'live' : 'race';
   const lead = leader === 'level' ? 'Level so far' : `${leader === 'live' ? liveLabel : raceLabel} ahead by ${money(Math.abs(diff))}`;
-  const max = Math.max(liveUsd, raceUsd, 0);
+  const max = Math.max(liveUsd, raceUsd, potUsd ?? 0, 0);
   const share = (n: number) => (max > 0 ? Math.min(1, Math.max(0, n / max)) : 0);
   const charge =
     liveCharge !== null && raceCharge !== null
       ? `Charge left: ${liveLabel} ${fmtPercent(liveCharge)}, ${lowerFirst(raceLabel)} ${fmtPercent(raceCharge)}`
       : null;
+  const potential: RaceSide | null =
+    potUsd === null ? null : { label: POTENTIAL_LABEL, usd: potUsd, text: money(potUsd), share: share(potUsd), charge: null, action: null };
+  const shortfall =
+    potential && shortfallUsd !== null
+      ? {
+          usd: shortfallUsd,
+          text: shortfallUsd >= tiny ? `Outages cost ${money(shortfallUsd)} so far` : 'Outages have cost nothing so far',
+        }
+      : null;
 
   return {
     live: { label: liveLabel, usd: liveUsd, text: money(liveUsd), share: share(liveUsd), charge: liveCharge, action: liveAction },
     race: { label: raceLabel, usd: raceUsd, text: money(raceUsd), share: share(raceUsd), charge: raceCharge, action: raceAction },
+    potential,
+    shortfall,
     diff,
     leader,
     lead,
     charge,
-    summary: `${liveLabel} ${money(liveUsd)} · ${raceLabel} ${money(raceUsd)} · ${lead}`,
+    summary:
+      `${liveLabel} ${money(liveUsd)} · ${raceLabel} ${money(raceUsd)}` +
+      (potential ? ` · ${POTENTIAL_LABEL} (projected) ${potential.text}` : '') +
+      ` · ${lead}` +
+      (shortfall ? ` · ${shortfall.text}` : ''),
   };
 }

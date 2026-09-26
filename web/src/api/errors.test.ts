@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, PASSCODE_HEADER, request } from './client.ts';
+import { ApiError, api, request } from './client.ts';
 import { friendlyError } from './errors.ts';
 
 describe('friendlyError', () => {
@@ -11,8 +11,12 @@ describe('friendlyError', () => {
     expect(f.unreachable).toBe(false);
   });
 
-  it('has its own words for too many wrong passcodes', () => {
-    expect(friendlyError(new ApiError(429, 'rate_limited', null, 60), 'presenter').title).toBe('Too many wrong passcodes.');
+  it('explains the one-crash-every-2-seconds limit in plain words', () => {
+    const f = friendlyError(new ApiError(429, 'rate_limited', null, 2), 'kill');
+    expect(f.title).toBe('One crash every 2 seconds, please.');
+    expect(f.detail).toBe('Everyone shares one fleet, so crashes are spaced out. Try again in 2 seconds.');
+    expect(f.retryAfterS).toBe(2); // the crash buttons count down
+    expect(friendlyError(new ApiError(429, 'rate_limited', null, null), 'kill').detail).toContain('Try again in a few seconds.');
   });
 
   it('explains 501 as a feature that is not switched on, using the server sentence', () => {
@@ -21,13 +25,10 @@ describe('friendlyError', () => {
     expect(f.detail).toBe('Forecasts land in M5.');
   });
 
-  it('treats 503 as busy or starting, except a missing presenter passcode', () => {
+  it('treats 503 as busy or starting', () => {
     const busy = friendlyError(new ApiError(503, 'http_503', null, null));
     expect(busy.title).toBe('The simulator is busy or still starting.');
     expect(busy.unreachable).toBe(true);
-    const noPasscode = friendlyError(new ApiError(503, 'presenter_passcode_not_set', null, null), 'kill');
-    expect(noPasscode.title).toBe("Presenter mode isn't set up on the server yet.");
-    expect(noPasscode.unreachable).toBe(false);
   });
 
   it('asks for a short wait when a Start comes while the controllers restart after a Reset', () => {
@@ -46,14 +47,14 @@ describe('friendlyError', () => {
     );
   });
 
-  it('names the chaos errors plainly', () => {
-    expect(friendlyError(new ApiError(409, 'already_dead', null, null), 'kill').title).toBe(
-      'That controller has already crashed.',
-    );
-    expect(friendlyError(new ApiError(409, 'too_few_healthy', null, null), 'kill').title).toBe(
-      'At least 2 controllers must keep working.',
-    );
-    expect(friendlyError(new ApiError(403, 'forbidden', null, null), 'kill').title).toBe("That passcode wasn't accepted.");
+  it('names the crash errors plainly and says what to do next', () => {
+    const dead = friendlyError(new ApiError(409, 'already_dead', 'That worker is already dead.', null), 'kill');
+    expect(dead.title).toBe('That controller has already crashed.');
+    expect(dead.detail).toBe('Pick one that is still working. Crashed controllers stay down until someone presses Reset.');
+    const few = friendlyError(new ApiError(409, 'too_few_healthy', null, null), 'kill');
+    expect(few.title).toBe('At least 2 controllers must keep working.');
+    expect(few.detail).toBe('Press Reset to bring the crashed controllers back, then try again.');
+    expect(friendlyError(new ApiError(404, 'unknown_worker', null, null), 'kill').detail).toBe('Controllers are numbered 1 to 20.');
   });
 
   it('does not repeat the server sentence for "no_results", and says what to do', () => {
@@ -64,8 +65,8 @@ describe('friendlyError', () => {
   });
 
   it('keeps the raw status for "Show technical details"', () => {
-    expect(friendlyError(new ApiError(404, 'unknown_battery', 'No battery has that ID.', null), 'battery').technical).toBe(
-      'HTTP 404 · unknown_battery · No battery has that ID.',
+    expect(friendlyError(new ApiError(409, 'already_dead', 'That worker is already dead.', null), 'kill').technical).toBe(
+      'HTTP 409 · already_dead · That worker is already dead.',
     );
   });
 
@@ -79,15 +80,29 @@ describe('request', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sends JSON and the presenter header, and returns the body', async () => {
+  it('sends JSON with only a content type, and returns the body', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
-    await expect(request('POST', '/chaos/kill', { body: { a: 1 }, passcode: 'secret-test' })).resolves.toEqual({ ok: true });
+    await expect(request('POST', '/availability', { body: { a: 1 } })).resolves.toEqual({ ok: true });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url.endsWith('/chaos/kill')).toBe(true);
-    expect((init.headers as Record<string, string>)[PASSCODE_HEADER]).toBe('secret-test');
-    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(url.endsWith('/availability')).toBe(true);
+    // Every endpoint is public: no credential headers (docs/API.md CORS allows Content-Type only).
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
     expect(init.body).toBe('{"a":1}');
+  });
+
+  it('crashes a controller with a bare POST, a chosen one by worker_id', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ worker_id: 6, pid: 1, killed_at_utc: '2026-01-01T00:00:00Z' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await api.kill(6);
+    await api.kill();
+    const [first, second] = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(first[0].endsWith('/chaos/kill?worker_id=6')).toBe(true);
+    expect(second[0].endsWith('/chaos/kill')).toBe(true);
+    expect(first[1]).toMatchObject({ method: 'POST', headers: {} });
+    expect(first[1].body).toBeUndefined();
   });
 
   it('does not send a body or content type on GET', async () => {

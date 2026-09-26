@@ -1,19 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AiGains, StrategyGains } from '../../api/types.ts';
-import {
-  fleetSizeOf,
-  fmtMwh,
-  fmtSignedPct,
-  fmtSignedUsd,
-  fmtTimes,
-  gainsView,
-  pickYear,
-  readAiGains,
-  spikeCard,
-  upliftOf,
-  yearOptions,
-  yearsNote,
-} from './aiGains.ts';
+import { fleetSizeOf, fmtMwh, fmtSignedPct, fmtSignedUsd, fmtTimes, gainsView, readAiGains, upliftOf } from './aiGains.ts';
 
 const MINUS = '−';
 const FLEET = 20_000;
@@ -80,7 +67,7 @@ const read = (raw: unknown) => {
 
 describe('the headline', () => {
   it('reads like the approved line, from uplift and the fleet size', () => {
-    const view = gainsView(read(measured()), null, FLEET);
+    const view = gainsView(read(measured()), FLEET);
     expect(view.year.year).toBe(2025);
     expect(view.headline?.sentence).toBe(
       '+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet',
@@ -91,10 +78,10 @@ describe('the headline', () => {
   it('follows the numbers it is given (nothing hardcoded)', () => {
     const g = measured();
     g.years[0].uplift = { per_battery_usd_year: 80.5, pct: 0.61, fleet_usd_year: 1_610_000 };
-    expect(gainsView(read(g), 2025, FLEET).headline?.sentence).toBe(
+    expect(gainsView(read(g), FLEET).headline?.sentence).toBe(
       '+$81 per battery per year (+61%) vs the simple rule, $1.61 million more a year for the 20,000-battery fleet',
     );
-    expect(gainsView(read(measured()), 2025, 10_000).headline?.fleetText).toBe(
+    expect(gainsView(read(measured()), 10_000).headline?.fleetText).toBe(
       '$1.35 million more a year for the 10,000-battery fleet',
     );
   });
@@ -102,12 +89,12 @@ describe('the headline', () => {
   it('fills a missing uplift from the two methods and the fleet size', () => {
     const g = measured();
     g.years[0].uplift = {} as never;
-    const y = read(g).years[0];
+    const y = read(g).year;
     const up = upliftOf(y, 'forecast', 'bands', FLEET);
     expect(up?.perBattery).toBeCloseTo(190.95 - 123.67, 9);
     expect(up?.pct).toBeCloseTo((190.95 - 123.67) / 123.67, 9);
     expect(up?.fleet).toBeCloseTo((190.95 - 123.67) * FLEET, 6);
-    expect(gainsView(read(g), 2025, FLEET).headline?.sentence).toBe(
+    expect(gainsView(read(g), FLEET).headline?.sentence).toBe(
       '+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet',
     );
     // No fleet size and no fleet sums: the fleet part is left out rather than guessed.
@@ -115,7 +102,7 @@ describe('the headline', () => {
   });
 
   it('knows the fleet size from the results, or from the AI’s own sums', () => {
-    const y = read(measured()).years[0];
+    const y = read(measured()).year;
     expect(fleetSizeOf(y, 'forecast', 20_000)).toBe(20_000);
     expect(fleetSizeOf(y, 'forecast', null)).toBe(20_000); // 3,819,000 / 190.95
     expect(fleetSizeOf(y, 'forecast', Number.NaN)).toBe(20_000);
@@ -124,7 +111,7 @@ describe('the headline', () => {
   it('says so honestly when the AI earns less', () => {
     const g = measured();
     g.years[0].uplift = { per_battery_usd_year: -12.4, pct: -0.1, fleet_usd_year: -248_000 };
-    expect(gainsView(read(g), 2025, FLEET).headline?.sentence).toBe(
+    expect(gainsView(read(g), FLEET).headline?.sentence).toBe(
       `${MINUS}$12 per battery per year (${MINUS}10%) vs the simple rule, $248,000 less a year for the 20,000-battery fleet`,
     );
   });
@@ -161,7 +148,7 @@ describe('formatting', () => {
 });
 
 describe('the cards', () => {
-  const view = gainsView(read(measured()), 2025, FLEET);
+  const view = gainsView(read(measured()), FLEET);
 
   it('(a) earns more: per battery and the fleet difference', () => {
     expect(view.earns).toMatchObject({
@@ -188,7 +175,7 @@ describe('the cards', () => {
   it('(b) works out a missing share from the hindsight best', () => {
     const g = measured();
     g.years[0].strategies.bands.share_of_best = undefined as never;
-    const bars = gainsView(read(g), 2025, FLEET).perfect?.bars ?? [];
+    const bars = gainsView(read(g), FLEET).perfect?.bars ?? [];
     expect(bars[0].share).toBeCloseTo(123.67 / 421.29, 9);
     expect(bars[0].text).toBe('29%');
   });
@@ -198,83 +185,32 @@ describe('the cards', () => {
     expect(view.surplus?.homes).toBe('about what 190,000 homes use in a day');
   });
 
-  it('(d) ready for spikes: the 2024 numbers', () => {
-    expect(view.spike).toMatchObject({
-      year: 2024,
-      aiChargeText: '52%',
-      baseChargeText: '24%',
-      aiMwhText: '611 MWh',
-      baseMwhText: '76 MWh',
-      times: '8×',
-      eventsText: '2024 had 53 price spikes of $1,000/MWh or more ($1.00 per kWh).',
-    });
-  });
 });
 
-describe('the year switch', () => {
-  const g = read(measured());
-
-  it('offers the pitch year first, labelled for a first-time visitor', () => {
-    // A no-break space inside the note, so a narrow switch wraps after the year.
-    expect(yearOptions(g)).toEqual([
-      { year: 2025, label: '2025 (headline year)', isPitch: true },
-      { year: 2024, label: '2024 (check year)', isPitch: false },
-    ]);
-    expect(yearsNote(g)).toBe('The headline number above is for 2025. 2024 is a second full year, to check that the gain holds.');
+describe('the pitch year only (no year switch, no spike card)', () => {
+  it('shows the first year flagged is_pitch and ignores the others', () => {
+    const g = read(measured());
+    expect(g.year.year).toBe(2025);
+    expect(Object.keys(g)).toEqual(['ai', 'baseline', 'year']);
+    const view = gainsView(g, FLEET);
+    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus']);
+    // 2024's much bigger gain never shows, whatever order the server sends.
+    const reversed = measured();
+    reversed.years.reverse();
+    expect(read(reversed).year.year).toBe(2025);
+    expect(gainsView(read(reversed), FLEET).headline?.amount).toBe('+$67');
   });
 
-  it('drives the headline and cards a–c', () => {
-    const v = gainsView(g, 2024, FLEET);
-    expect(v.year.year).toBe(2024);
-    expect(v.headline?.sentence).toBe(
-      '+$158 per battery per year (+139%) vs the simple rule, $3.15 million more a year for the 20,000-battery fleet',
-    );
-    expect(v.earns).toMatchObject({ aiText: '$271', baseText: '$114', fleetText: '$5.43 million vs $2.27 million a year' });
-    expect(v.perfect?.bars.map((b) => b.text)).toEqual(['22%', '29%', '52%']);
-    expect(v.surplus).toMatchObject({ aiText: '6,361 MWh', baseText: '905 MWh', times: '7×' });
-  });
-
-  it('keeps the spike card on 2024 whichever year is picked', () => {
-    expect(gainsView(g, 2025, FLEET).spike).toEqual(gainsView(g, 2024, FLEET).spike);
-    expect(gainsView(g, 2025, FLEET).spike?.year).toBe(2024);
-  });
-
-  it('falls back to the pitch year for a year that is not there', () => {
-    expect(pickYear(g, 2019).year).toBe(2025);
-    expect(pickYear(g, null).year).toBe(2025);
-  });
-
-  it('puts the pitch year first even when the server does not', () => {
+  it('hides the section when the pitch year cannot be compared, rather than showing another year', () => {
     const raw = measured();
-    raw.years.reverse();
-    expect(read(raw).years.map((y) => y.year)).toEqual([2025, 2024]);
+    delete (raw.years[0].strategies as Record<string, unknown>).bands;
+    expect(readAiGains(raw)).toBeNull();
   });
-});
 
-describe('the spike card is 2024 only', () => {
-  it('is hidden when there is no 2024', () => {
+  it('uses the first usable year when no year is flagged (older data)', () => {
     const raw = measured();
-    raw.years = raw.years.filter((y) => y.year !== 2024);
-    const g = read(raw);
-    expect(spikeCard(g)).toBeNull();
-    expect(gainsView(g, 2025, FLEET).spike).toBeNull();
-    expect(yearOptions(g).map((o) => o.year)).toEqual([2025]);
-    expect(yearsNote(g)).toBeNull();
-  });
-
-  it('is shown for 2024 even when 2024 is the only year', () => {
-    const raw = measured();
-    raw.years = raw.years.filter((y) => y.year === 2024);
-    expect(spikeCard(read(raw))?.aiChargeText).toBe('52%');
-  });
-
-  it('is hidden when the spike numbers are missing, and says "1 price spike" for one', () => {
-    const missing = measured();
-    missing.years[1].strategies.forecast.spike_mwh = null as never;
-    expect(spikeCard(read(missing))).toBeNull();
-    const one = measured();
-    one.years[1].strategies.forecast.spike_events = 1;
-    expect(spikeCard(read(one))?.eventsText).toBe('2024 had 1 price spike of $1,000/MWh or more ($1.00 per kWh).');
+    for (const y of raw.years) y.is_pitch = false;
+    expect(read(raw).year.year).toBe(2025);
   });
 });
 
@@ -289,14 +225,13 @@ describe('readAiGains', () => {
     expect(readAiGains(raw)).toBeNull();
   });
 
-  it('keeps the first of a repeated year and fills a missing label', () => {
+  it('keeps the first pitch entry of a repeated year and fills a missing label', () => {
     const raw = measured();
     raw.years.push({ ...raw.years[0], uplift: { per_battery_usd_year: 1, pct: 0.01, fleet_usd_year: 20_000 } });
     raw.years[0].strategies.bands.label = '';
     const g = read(raw);
-    expect(g.years.map((y) => y.year)).toEqual([2025, 2024]);
-    expect(g.years[0].uplift.per_battery_usd_year).toBe(67.28);
-    expect(g.years[0].strategies.bands.label).toBe('Simple rule');
+    expect(g.year.uplift.per_battery_usd_year).toBe(67.28);
+    expect(g.year.strategies.bands.label).toBe('Simple rule');
   });
 
   it('defaults the AI and the baseline to the documented ids', () => {

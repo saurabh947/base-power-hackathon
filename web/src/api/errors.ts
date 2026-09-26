@@ -4,16 +4,7 @@
 
 import { ApiError } from './client.ts';
 
-export type ErrorContext =
-  | 'load'
-  | 'start'
-  | 'control'
-  | 'availability'
-  | 'battery'
-  | 'kill'
-  | 'presenter'
-  | 'backtest'
-  | 'results';
+export type ErrorContext = 'load' | 'start' | 'control' | 'availability' | 'kill' | 'backtest' | 'results';
 
 export interface FriendlyError {
   title: string;
@@ -65,8 +56,13 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
   switch (err.status) {
     case 429: {
       const wait = err.retryAfterS != null ? `Try again in ${seconds(err.retryAfterS)}.` : 'Try again in a few seconds.';
-      if (context === 'presenter') {
-        return { ...base, title: 'Too many wrong passcodes.', detail: `Wait a minute before trying again. ${wait}` };
+      if (context === 'kill') {
+        // docs/API.md: one crash per 2 s, for everyone together.
+        return {
+          ...base,
+          title: 'One crash every 2 seconds, please.',
+          detail: `Everyone shares one fleet, so crashes are spaced out. ${wait}`,
+        };
       }
       return {
         ...base,
@@ -89,43 +85,32 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
           detail: `Its 20 controllers are coming back up. ${wait}`,
         };
       }
-      if (err.code === 'presenter_passcode_not_set') {
-        return {
-          ...base,
-          title: "Presenter mode isn't set up on the server yet.",
-          detail: server ?? 'An administrator needs to set the presenter passcode first.',
-        };
-      }
       return {
         ...base,
         unreachable: true,
         title: 'The simulator is busy or still starting.',
         detail: server ?? 'Try again in a few seconds.',
       };
-    case 403:
-      return {
-        ...base,
-        title: "That passcode wasn't accepted.",
-        detail:
-          context === 'kill'
-            ? 'Unlock presenter mode again from the "Presenter" link at the bottom of the page.'
-            : (server ?? 'Check the passcode and try again.'),
-      };
     case 409:
+      // docs/API.md POST /chaos/kill: our own words, which say what to do next.
       if (err.code === 'already_dead') {
-        return { ...base, title: 'That controller has already crashed.', detail: server ?? 'Pick a different controller.' };
+        return {
+          ...base,
+          title: 'That controller has already crashed.',
+          detail: 'Pick one that is still working. Crashed controllers stay down until someone presses Reset.',
+        };
       }
       if (err.code === 'too_few_healthy') {
         return {
           ...base,
           title: 'At least 2 controllers must keep working.',
-          detail: server ?? 'Press Reset to bring the crashed controllers back.',
+          detail: 'Press Reset to bring the crashed controllers back, then try again.',
         };
       }
       return { ...base, title: "That can't happen right now.", detail: server ?? 'The simulation changed. Try again.' };
     case 404:
-      if (context === 'battery') {
-        return { ...base, title: 'No battery has that ID.', detail: server ?? 'Battery IDs run from b00000 to b19999.' };
+      if (context === 'kill' && err.code === 'unknown_worker') {
+        return { ...base, title: 'There is no such controller.', detail: 'Controllers are numbered 1 to 20.' };
       }
       if (context === 'results' || err.code === 'no_results') {
         // The server's sentence is the same as this title (docs/API.md), so say what to do instead.

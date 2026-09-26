@@ -1,6 +1,7 @@
 import { useId } from 'react';
-import type { SettingsModel } from '../../api/settings.ts';
+import { draftFrom, presetsForYear, withPreset, withYear, yearOption, type SettingsModel } from '../../api/settings.ts';
 import type { EditableSettings } from '../../api/types.ts';
+import { Segmented } from '../../components/Segmented.tsx';
 import { fmtLocalDate, fmtPercent, fmtTimeOfDay, localDateOf } from '../../lib/format.ts';
 
 interface Props {
@@ -10,26 +11,43 @@ interface Props {
   onDone: () => void;
 }
 
-/** Only preset, speed, decision method and starting charge can be changed (docs/API.md). */
+/**
+ * Only the year, preset, speed, decision method and starting charge can be changed (docs/API.md). Picking a
+ * year offers that year's presets.
+ */
 export function SettingsEditor({ model, draft, onDraft, onDone }: Props) {
-  const ids = { speed: useId(), charge: useId(), chargeHint: useId() };
+  const ids = { speed: useId(), charge: useId(), chargeHint: useId(), yearNote: useId() };
   const can = (key: keyof EditableSettings) => model.editable.includes(key);
   const set = <K extends keyof EditableSettings>(key: K, value: EditableSettings[K]) => onDraft({ ...draft, [key]: value });
-  const backToDefaults = () =>
-    onDraft({
-      preset: model.defaults.preset,
-      speed_tps: model.defaults.speed_tps,
-      strategy: model.defaults.strategy,
-      start_charge_level: model.defaults.start_charge_level,
-    });
+  const backToDefaults = () => onDraft(draftFrom(model));
+  // The year picks which presets are offered, so it shows whenever there is more than one to choose from.
+  const showYears = can('preset') && model.years.length > 1;
+  const year = yearOption(model, draft.year);
+  const presets = presetsForYear(model.presets, draft.year);
 
   return (
     <div className="editor">
+      {showYears ? (
+        <div className="editor-year">
+          <Segmented<string>
+            label="Year"
+            value={String(draft.year)}
+            onChange={(v) => onDraft(withYear(draft, Number(v), model))}
+            options={model.years.map((y) => ({ value: String(y.year), label: y.label }))}
+          />
+          {year?.realUntilUtc && year.description ? (
+            <p className="field-hint year-note" id={ids.yearNote}>
+              {year.description}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {can('preset') ? (
         <fieldset>
           <legend>Replay</legend>
           <div className="choice-list">
-            {model.presets.map((p) => {
+            {(presets.length ? presets : model.presets).map((p) => {
               const date = p.date_local ?? (p.start_utc ? localDateOf(p.start_utc) : null);
               return (
                 <label key={p.id} className="choice">
@@ -38,7 +56,7 @@ export function SettingsEditor({ model, draft, onDraft, onDone }: Props) {
                     name="preset"
                     value={p.id}
                     checked={draft.preset === p.id}
-                    onChange={() => set('preset', p.id)}
+                    onChange={() => onDraft(withPreset(draft, p.id, model))}
                   />
                   <span className="choice-text">
                     <span className="choice-title">{p.label}</span>
