@@ -2,8 +2,12 @@
 // wire format exactly. Units: power kW, energy kWh, prices $/MWh, money USD.
 // Signs: power is + when selling to the grid and - when charging.
 
-export type LocationId = 'LZ_HOUSTON' | 'LZ_NORTH';
-export const LOCATIONS: readonly LocationId[] = ['LZ_HOUSTON', 'LZ_NORTH'];
+/**
+ * The Texas Triangle load zones, in config order (the battery id blocks run in this order).
+ * The live list comes from GET /fleet/layout (src/lib/cities.ts); this is the documented default.
+ */
+export type LocationId = 'LZ_HOUSTON' | 'LZ_NORTH' | 'LZ_CPS' | 'LZ_AEN';
+export const LOCATIONS: readonly LocationId[] = ['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN'];
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'paused' | 'finished';
 export type StrategyId = 'bands' | 'forecast' | 'peak';
@@ -73,11 +77,16 @@ export interface Tick {
   healthy_workers: number;
 }
 
-export interface Totals {
+export interface LocationTotals {
   revenue_usd: number;
   sold_kwh: number;
   bought_kwh: number;
+}
+
+export interface Totals extends LocationTotals {
   ticks: number;
+  /** The same sums per location. */
+  by_location?: Record<string, LocationTotals>;
 }
 
 export interface Worker {
@@ -87,6 +96,8 @@ export interface Worker {
   batteries: number;
   last_tick_utc: string | null;
   adopted_from: number[];
+  /** How many of its batteries are in each location, e.g. {"LZ_NORTH": 400, …}. */
+  by_location?: Record<string, number>;
 }
 
 export interface FailedCommand {
@@ -152,6 +163,8 @@ interface LiveBody {
   availability: Availability;
   events: LiveEvent[];
   forecast?: Record<string, Forecast | null | undefined>;
+  /** Base64 of packed 4-bit codes, one per battery (src/map/status.ts). */
+  battery_status?: string;
 }
 
 export interface SnapshotMessage extends LiveBody {
@@ -207,12 +220,34 @@ export interface AvailabilityResponse {
 export interface BatteryInfo {
   battery_id: string;
   location: string;
+  /** City name shown to people, e.g. "Houston". */
+  city?: string;
+  /** Simulated position, [longitude, latitude]. */
+  lonlat?: [number, number];
   worker_id: number;
   capacity_kwh: number;
   power_kw: number;
   charge_level: number;
   power_kw_now: number;
   available: boolean;
+}
+
+/** GET /fleet/layout: where every battery sits, for the map. Static per fleet; cache it by `version`. */
+export interface LayoutCity {
+  location: string;
+  name: string;
+  short: string;
+  batteries: number;
+  first_battery: number;
+  center_lonlat: [number, number];
+}
+
+export interface FleetLayout {
+  version: string;
+  fleet_size: number;
+  cities: LayoutCity[];
+  /** Base64 of a little-endian Int16Array [lon0, lat0, lon1, lat1, …]: lon = -100 + v/1000, lat = 31 + v/1000. */
+  positions: string;
 }
 
 export interface KillResponse {

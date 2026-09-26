@@ -2,7 +2,10 @@
 NPM ?= npm
 WEB_DIR := web
 
-.PHONY: web-install web-dev web-dev-local web-mock web-typecheck web-lint web-test web-build web-check web-prices
+.PHONY: web-install web-dev web-dev-local web-mock web-typecheck web-lint web-test web-build web-check web-prices web-texas
+
+# U.S. Census Bureau 2023 cartographic boundary file, states, 1:5,000,000 (public domain).
+CENSUS_STATES_URL := https://www2.census.gov/geo/tiger/GENZ2023/kml/cb_2023_us_state_5m.zip
 
 # Install the locked dependencies (Node 22.12+).
 web-install:
@@ -40,3 +43,11 @@ web-check:
 # Re-export the mock's real-price fixture for every preset in config.yaml (needs `make setup`).
 web-prices:
 	$(UV) run python web/mock/export_prices.py
+
+# Rebuild web/src/map/texasOutline.ts from the Census file (downloaded to a temp dir, then removed).
+web-texas:
+	@tmp=$$(mktemp -d) && \
+	curl -sSL -o $$tmp/states.zip $(CENSUS_STATES_URL) && \
+	unzip -q -o $$tmp/states.zip cb_2023_us_state_5m.kml -d $$tmp && \
+	(cd $(WEB_DIR) && node scripts/texas-outline.ts $$tmp/cb_2023_us_state_5m.kml); \
+	status=$$?; rm -rf $$tmp; exit $$status

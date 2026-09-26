@@ -165,6 +165,8 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
         return send(res, 200, mockSettingsResponse());
       case 'GET /state':
         return send(res, 200, sim.snapshot());
+      case 'GET /fleet/layout':
+        return send(res, 200, sim.layout(), { 'Cache-Control': 'public, max-age=300' });
       case 'POST /run/start': {
         limited(runLimit);
         const body = (await readJson(req)) as Partial<EditableSettings>;

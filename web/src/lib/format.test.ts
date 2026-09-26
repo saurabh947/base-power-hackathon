@@ -10,6 +10,7 @@ import {
   fmtEnergy,
   fmtHomesDay,
   fmtHomesPower,
+  fmtList,
   fmtLocalDate,
   fmtPercent,
   fmtPercentValue,
@@ -157,8 +158,13 @@ describe('plain words', () => {
   it('names areas, methods and actions per the glossary', () => {
     expect(areaName('LZ_HOUSTON')).toBe('Houston area');
     expect(areaName('LZ_NORTH')).toBe('Dallas–Fort Worth area');
+    expect(areaName('LZ_CPS')).toBe('San Antonio area');
+    expect(areaName('LZ_AEN')).toBe('Austin area');
     expect(areaShortName('LZ_NORTH')).toBe('Dallas–Fort Worth');
     expect(areaName('HB_WEST')).toBe('HB_WEST');
+    expect(fmtList(['Dallas–Fort Worth', 'Houston', 'San Antonio', 'Austin'])).toBe(
+      'Dallas–Fort Worth, Houston, San Antonio, and Austin',
+    );
     expect(strategyName('bands')).toBe('Simple rule');
     expect(strategyName('forecast')).toBe('AI forecast (TimesFM-3)');
     expect(strategyName('peak')).toBe('Evening peak');

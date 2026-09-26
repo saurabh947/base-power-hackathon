@@ -1,5 +1,5 @@
 // Standalone mock API: `npm run mock` (port 8787, or MOCK_PORT).
-// SIMULATED data except the real ERCOT prices for May 16-17, 2025. See mock/README.md.
+// SIMULATED data except the real ERCOT prices for the replay preset days. See mock/README.md.
 
 import { createServer } from 'node:http';
 import { createMockApi, mockOptionsFromEnv } from './api.ts';
@@ -27,7 +27,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(port, () => {
-  console.info(`Mock fleet-sim API (simulated; real ERCOT prices for May 16-17, 2025) on http://localhost:${port}`);
+  console.info(`Mock fleet-sim API (simulated; real ERCOT prices for the replay preset days) on http://localhost:${port}`);
   console.info(`Point the site at it with VITE_API_BASE_URL=http://localhost:${port}`);
 });
 

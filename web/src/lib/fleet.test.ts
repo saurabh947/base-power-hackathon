@@ -45,15 +45,23 @@ describe('battery ids', () => {
 });
 
 describe('batteryRanges (mirrors src/sim/fleet.location_counts)', () => {
-  it('splits the default fleet into Houston b00000-b09999 and DFW b10000-b19999', () => {
+  it('splits the default fleet into the Texas Triangle blocks from docs/API.md', () => {
     const ranges = batteryRanges(20_000, DEFAULT_SHARES);
     expect(ranges).toEqual([
-      { location: 'LZ_HOUSTON', first: 0, last: 9_999 },
-      { location: 'LZ_NORTH', first: 10_000, last: 19_999 },
+      { location: 'LZ_HOUSTON', first: 0, last: 6_999 },
+      { location: 'LZ_NORTH', first: 7_000, last: 14_999 },
+      { location: 'LZ_CPS', first: 15_000, last: 17_599 },
+      { location: 'LZ_AEN', first: 17_600, last: 19_999 },
     ]);
-    expect(areaOfBattery(9_999, ranges)).toBe('LZ_HOUSTON');
-    expect(areaOfBattery(10_000, ranges)).toBe('LZ_NORTH');
+    expect(areaOfBattery(6_999, ranges)).toBe('LZ_HOUSTON');
+    expect(areaOfBattery(7_000, ranges)).toBe('LZ_NORTH');
+    expect(areaOfBattery(15_000, ranges)).toBe('LZ_CPS');
+    expect(areaOfBattery(19_999, ranges)).toBe('LZ_AEN');
     expect(areaOfBattery(20_000, ranges)).toBeNull();
+  });
+
+  it('matches the old two-area split too', () => {
+    expect(batteryRanges(20_000, { LZ_HOUSTON: 0.5, LZ_NORTH: 0.5 }).map((r) => r.last)).toEqual([9_999, 19_999]);
   });
 
   it('gives the remainder to the largest fraction, ties in config order', () => {

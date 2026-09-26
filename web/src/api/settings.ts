@@ -44,7 +44,7 @@ export const DOCUMENTED_DEFAULTS: Settings = {
   fleet_size: 20000,
   power_kw_range: [5.0, 11.5],
   capacity_kwh_range: [10.0, 20.0],
-  locations: { LZ_HOUSTON: 0.5, LZ_NORTH: 0.5 },
+  locations: { LZ_HOUSTON: 0.35, LZ_NORTH: 0.4, LZ_CPS: 0.13, LZ_AEN: 0.12 },
 };
 
 const DOCUMENTED_PRESETS: Preset[] = [

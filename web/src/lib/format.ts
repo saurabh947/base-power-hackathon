@@ -4,6 +4,7 @@
 // Market times are always shown in Houston time (America/Chicago).
 
 import type { Preset, TickAction } from '../api/types.ts';
+import { cityName } from './cities.ts';
 
 export const LOCALE = 'en-US';
 export const MARKET_TZ = 'America/Chicago';
@@ -62,18 +63,22 @@ export function roundSignificant(n: number, digits = 2): number {
 
 // ---- plain words -----------------------------------------------------------
 
-const AREA_NAMES: Record<string, string> = {
-  LZ_HOUSTON: 'Houston area',
-  LZ_NORTH: 'Dallas–Fort Worth area',
-};
-
+/** "Houston area", "Dallas–Fort Worth area" (names from GET /fleet/layout); unknown ids as they are. */
 export function areaName(location: string): string {
-  return AREA_NAMES[location] ?? location;
+  const name = cityName(location);
+  return name === location ? location : `${name} area`;
 }
 
-/** "Houston", "Dallas–Fort Worth" (for lists like "Houston & Dallas–Fort Worth"). */
+/** "Houston", "Dallas–Fort Worth" (for lists like "Dallas–Fort Worth, Houston, San Antonio, and Austin"). */
 export function areaShortName(location: string): string {
-  return areaName(location).replace(/ area$/, '');
+  return cityName(location);
+}
+
+const listFormat = new Intl.ListFormat(LOCALE, { style: 'long', type: 'conjunction' });
+
+/** "a, b, and c" */
+export function fmtList(items: string[]): string {
+  return listFormat.format(items);
 }
 
 /** "5–11.5" with an en dash; a single value when both ends match. */

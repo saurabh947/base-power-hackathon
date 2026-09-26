@@ -117,6 +117,8 @@ export const api = {
   reset: () => request<{ status: RunStatus }>('POST', '/run/reset'),
   availability: (change: AvailabilityRequest) => request<AvailabilityResponse>('POST', '/availability', { body: change }),
   battery: (batteryId: string) => request<BatteryInfo>('GET', `/batteries/${encodeURIComponent(batteryId)}`),
+  /** GET /fleet/layout, read defensively by src/map/layout.ts. */
+  layout: (signal?: AbortSignal) => request<unknown>('GET', '/fleet/layout', { signal, timeoutMs: 30_000 }),
   presenterCheck: (passcode: string) => request<{ ok: boolean }>('POST', '/presenter/check', { passcode }),
   kill: (passcode: string, workerId?: number) =>
     request<KillResponse>('POST', workerId === undefined ? '/chaos/kill' : `/chaos/kill?worker_id=${workerId}`, { passcode }),
