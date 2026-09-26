@@ -486,3 +486,29 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   All four are fixed.
 - **Results.** "What the AI adds" shows 2025 only, with three cards; the 2024 switch and the spike card are removed.
 - **Tests.** 590 backend (Redis + Postgres) and 408 website.
+
+## Round 3: controller charge panel, failure model, Results by year (2026-09-26)
+
+- **Live page is the map only.** "Show charts" is removed, and uPlot with it; the website JS dropped from 468 KB to 402 KB.
+- **"Charge by controller" panel** on the centre right: 20 gauges of `usable_charge`. You crash a controller from its gauge, and restart a crashed one from its gauge.
+- **Failure model (the human's rules):**
+  - **Crash:** a crash, or any DEAD declaration, empties that controller's batteries to the 20% reserve (0 usable). This happens in the mirror, the hashes and the race shadow, before the within-a-tick hand-over; the adopters then run them.
+  - **Restart:** nothing restarts on its own. `POST /workers/{id}/restart` (or Reset) brings the controller back, and it takes its original batteries back with whatever charge they have by then.
+  - **Offline:** taking a controller offline halves its batteries' usable charge. Only the user brings them back online.
+  - **Potential fleet:** it never loses charge, so `shortfall_usd` includes the destroyed energy (verified to the cent).
+- **M3 at 20k with the new crash model** (kill worker 17: 600 San Antonio + 400 Austin batteries):
+
+  | | Max speed | 2 ticks/s |
+  |---|---|---|
+  | Kill-tick error | 4.96% | 0.000% |
+  | After the kill | 0.000% | 0.000% |
+  | Feasible target | 164.9 → 156.7 MW | same |
+  | Energy destroyed | 6.9 MWh | same |
+  | Hand-over | 4.6 ms | 3.7 ms |
+  | Restart → `worker_recovered` | 195 ms | 468 ms |
+
+- **Results by year.**
+  - `?year=` on `/results/pitch` and `/results/ai-gains`.
+  - The 2026 backtest replays real prices to Sep 19, then the AI's predicted p50, with the real/projected split on every strategy and the ceiling.
+  - Each year has its own pitch set; 2025 is untouched.
+- **Tests:** 611 backend and 434 website.

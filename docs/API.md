@@ -54,7 +54,7 @@ Change it only through the integrator.
 | `POST /availability` | anyone | see below | `{"applied_from_tick_utc": "…", "affected": 6000, "available": 14000, "total": 20000}` |
 | `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "city", "lonlat", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
 | `GET /fleet/layout` | anyone | – | Layout (below): where every battery sits, for the map. It is static per fleet, so cache it by `version`. |
-| `POST /workers/{worker_id}/restart` | anyone | – | Restarts a crashed controller: `200 {"worker_id": 7, "status": "starting"}`, `409 not_crashed` if it isn't down, `404 unknown_worker`. Rate-limited like kill. |
+| `POST /workers/{worker_id}/restart` | anyone | – | Restarts a crashed controller: `200 {"worker_id": 7, "status": "starting"}`. Errors below. |
 | `POST /chaos/kill` | anyone | optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. Rate-limited: one kill per 2 s. |
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
 | `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed\|cancelled", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
@@ -80,6 +80,8 @@ Change it only through the integrator.
 | `unknown_battery` | No battery with that id |
 | `not_a_worker` | The pid is not a registered worker, so it is never killed |
 | `invalid_*` | A malformed field, e.g. `invalid_speed` or `invalid_year` (a preset from another year, or a year with no data) |
+| `not_crashed` | 409 from restart: "Controller N hasn't crashed, so there's nothing to restart." or "Controller N is already restarting." |
+| `invalid_worker` / `unknown_worker` | 400 for a malformed id / 404 for an id outside 0–19, on restart |
 | `simulator_restarting` | 503 from `/run/start` when the controllers aren't back within 15 s of a Reset. Carries `retry_after_s` and a `Retry-After` header, like a 429. |
 
 **`GET /settings` item shapes:**
@@ -162,7 +164,10 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 - **Crash.** A crash (public kill or any worker exit) empties that controller's batteries to the reserve (`usable_charge` 0).
   - The other controllers take them over within one tick, as before, so the fleet keeps running with those batteries empty.
   - **Nothing restarts on its own.** A crashed controller stays down until a user restarts it with `POST /workers/{worker_id}/restart`, or Reset brings everything back.
-  - A user restart emits `worker_recovered`, and its gauge starts from 0.
+  - `POST /workers/{worker_id}/restart` is rate-limited to one per 2 s, like kill. A controller whose process exited but isn't declared dead yet is declared dead first.
+  - A user restart emits `worker_recovered`, e.g. "Controller 18 is back and has taken back its 1,000 San Antonio and Austin batteries, starting from empty", or "…, now N% charged" if the adopters recharged them.
+  - Any DEAD declaration counts as a crash, including a frozen controller, and empties its batteries.
+  - `worker_adopted` messages end "…, emptied by the crash."
   - **Hand-over (the human's choice).** While the controller is down, its emptied batteries are run by the other controllers, which recharge them when it's cheap.
   - On a user restart the controller takes its original batteries back, with whatever charge they have by then (owner-epoch fenced).
 - **Controller offline.** Taking a controller offline (`/availability` scope `worker`) **halves** the usable charge of its batteries at that moment.
@@ -246,6 +251,8 @@ StrategyGains is:
   - `spike_events` is the number of separate spikes.
   - `spike_charge_level` is the fleet's charge level when each spike began, averaged.
 - `share_of_best` is per-battery earnings ÷ the same year's hindsight best.
+- **Per year.** Each year entry also carries `real_until_utc`. StrategyGains and `uplift` add `real_per_battery_usd` and `projected_per_battery_usd`, which sum to the total.
+- **`is_pitch`.** `is_pitch: true` marks the requested year's pitch set only. Other years show `is_pitch: false`, from their complete pitch set, else their latest complete set.
 - **Fields that can be missing:**
   - The insight fields, on runs stored before they existed.
   - `best_possible_per_battery_usd_year` and `share_of_best`, when that year has no hindsight run.
@@ -288,10 +295,11 @@ StrategyGains is:
 - For fully real years these are `real_until_utc: null` and `projected_per_battery_usd: 0`.
 - `POST /backtest {"year": 2026}` re-runs 2026 the same way.
 ```json
-{"year": 2025, "generated_utc": "…", "fleet_size": 20000, "fleet_power_mw": 165.1, "fleet_energy_mwh": 300.2,
+{"year": 2025, "generated_utc": "…", "real_until_utc": null, "fleet_size": 20000, "fleet_power_mw": 165.1, "fleet_energy_mwh": 300.2,
  "assumptions": ["Gross wholesale energy value at ERCOT real-time prices (15-minute settlement)", "…"],
  "strategies": [{"strategy": "forecast", "label": "AI forecast (TimesFM-3)", "run_id": "…", "is_headline": true,
-                 "per_battery_usd_year": 0, "fleet_usd_year": 0, "usd_per_kwh_year": 0, "usd_per_kw_year": 0,
+                 "per_battery_usd_year": 0, "real_per_battery_usd": 0, "projected_per_battery_usd": 0,
+                 "fleet_usd_year": 0, "usd_per_kwh_year": 0, "usd_per_kw_year": 0,
                  "cycles_per_year": 0, "per_location_usd": {"LZ_HOUSTON": 0, "LZ_NORTH": 0},
                  "top_days": [{"date_local": "2025-05-16", "usd": 0}]}],
  "ceiling": {"label": "Best possible (perfect hindsight)", "per_battery_usd_year": 0, "fleet_usd_year": 0}}

@@ -134,7 +134,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
   - **Top-right:** money earned so far (city or fleet); power asked for vs delivered, as numbers plus a sparkline and an On target badge.
   - **Bottom-left:** Pause/Resume, Speed, Reset, Take batteries offline, and Crash a controller (public).
   - **Bottom-right:** 20 mini controller tiles (serving the selected city = highlighted, using `workers[].by_location`); batteries online/offline for the selection; the last 3 "What just happened" events.
-- **"Show charts."** A button that opens the existing detailed Live layout; nothing is lost.
+- **"Show charts" is removed** (the human's call: it repeated the map). The Live page is the map only.
 - **Honesty.** A small caption: "Battery locations are simulated inside real metro areas."
 
 
@@ -172,3 +172,19 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
   - The `prediction_started` event appears in the feed.
   - Money on predicted ticks is labelled "projected".
 - **Presenter mode** is removed from the header, and its dialog and session storage are removed too.
+
+
+## Round 3 (2026-09-26, the human's direction)
+- **"Charge by controller"** panel, centred on the right edge.
+  - **Gauges:** 20 upright battery gauges (1–10 over 11–20), filled to `usable_charge` (energy above the 20% reserve).
+  - **States:**
+    - working: green
+    - not responding: amber outline
+    - crashed: red ✕ at 0%, then "—" once its batteries are handed over
+    - controller offline: dashed red outline, hatched fill, and a ghost mark at the pre-halving level
+  - **Clicks:** clicking a working gauge asks "Crash controller N?"; clicking a crashed one asks "Restart controller N?".
+  - **Nothing comes back on its own.** Reset restores everything.
+  - The bottom-right corner keeps only the battery counts (legend) and "What just happened".
+- **Results follows the chosen year:** the current run's year, else the year last picked on Start, else 2025.
+  - For 2026: "Real Jan 1 – Sep 19: $X per battery · Projected Sep 20 – Dec 31: $Y · 2026 estimate: $Z".
+  - The method bars show projected parts hatched violet, and projected top days are marked.
