@@ -11,7 +11,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
    - spec terms in brackets, e.g. "Controllers (worker processes)"
 5. **Explain acronyms or hide them.**
    - "ERCOT" is first introduced as "ERCOT, the Texas grid operator".
-   - LZ_HOUSTON is shown as "Houston area" and LZ_NORTH as "Dallas–Fort Worth area".
+   - Load zones are shown as cities: LZ_HOUSTON "Houston", LZ_NORTH "Dallas–Fort Worth", LZ_CPS "San Antonio", LZ_AEN "Austin". Names come from `GET /fleet/layout`.
 6. **Color has meaning, and color is never the only signal** (also use icon or label):
    - **teal/green** = charging (buying cheap power)
    - **amber** = selling
@@ -38,7 +38,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 | AI forecast (TimesFM-3) | forecast strategy |
 | Evening peak | peak strategy |
 | Price right now | RT settlement point price |
-| Houston area / Dallas–Fort Worth area | LZ_HOUSTON / LZ_NORTH |
+| Houston / Dallas–Fort Worth / San Antonio / Austin | LZ_HOUSTON / LZ_NORTH / LZ_CPS / LZ_AEN |
 
 ## Screens
 
@@ -48,7 +48,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **Run settings card**, placed ABOVE the button:
   - 20,000 home batteries
   - 5–11.5 kW, 10–20 kWh each
-  - Houston & Dallas–Fort Worth
+  - The Texas Triangle: Dallas–Fort Worth, Houston, San Antonio and Austin
   - Replay: {preset label, e.g. "Price-spike evening, May 16, 2025, from 4 pm"}
   - Speed: "1 hour of market time every 6 seconds"
   - Decision method: "AI forecast (TimesFM-3)"
@@ -59,7 +59,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **If a run is already going:** "A simulation is running. Watch live" plus a secondary "Start over".
 
 ### 2. Live
-- **Top bar:** replay clock ("May 16, 2025, 7:45 pm, Houston time"), Pause/Resume, Speed, Reset. Presenter mode shows the extra button "Crash a controller".
+- **Top bar:** replay clock ("Jul 11, 2025, 8:45 pm, Central time"), Pause/Resume, Speed, Reset. Presenter mode shows the extra button "Crash a controller".
 - **Price card** ("Electricity price right now"):
   - Real price line per area, shaded teal while charging and amber while selling.
   - The AI forecast as a soft band (10–90% range) when available.

@@ -78,6 +78,7 @@ Change it only through the integrator.
 | `unknown_battery` | No battery with that id |
 | `not_a_worker` | The pid is not a registered worker, so it is never killed |
 | `invalid_*` | A malformed field, e.g. `invalid_speed` |
+| `simulator_restarting` | 503 from `/run/start` when the controllers aren't back within 15 s of a Reset. Carries `retry_after_s` and a `Retry-After` header, like a 429. |
 
 **`GET /settings` item shapes:**
 - Preset: `{"id", "label", "date_local", "start_utc", "start_local", "description"}`

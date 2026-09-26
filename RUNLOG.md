@@ -344,3 +344,19 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
 
 - **Per city, AI forecast, 2025:** Houston $179.49, Dallas–Fort Worth $187.17, San Antonio $212.77, Austin $213.32 per battery.
 - **Presets.** All four cities spike together on the presets: 2025-07-11 at 9 pm is about $1,757/MWh in each, and 2025-05-16 and 2025-04-07 spike in all four too.
+- **Controller ownership (4 cities).** Each controller owns a contiguous block of 1,000 battery ids:
+  - workers 0–6: Houston
+  - workers 7–14: Dallas–Fort Worth
+  - workers 15–16, plus 600 of worker 17: San Antonio
+  - the other 400 of worker 17, plus workers 18–19: Austin
+
+  So killing worker 7 hits 1,000 Dallas–Fort Worth batteries, and killing worker 17 hits San Antonio and Austin.
+- **Measured with 4 cities** (backend merge 143b30c):
+  - Parity with the backtest is bit-identical, including a day when worker 17's two cities get opposite decisions.
+  - M2: 38.3 ticks/s at 20k on the laptop, 0.0% error.
+  - M3 (kill worker 17): 4.96% on the kill tick, then 0.000%. Hand-over takes 5–8 ms, with 2,000 failed commands.
+- **Map data.**
+  - `GET /fleet/layout` returns about 107 KB with an ETag.
+  - `battery_status` is 10 KB of packed codes per frame, about 19 KB per frame at 2 ticks/s. Computing it costs 0.05 ms per tick.
+  - Battery positions are seeded inside 12–28 real city and suburb centres per metro (`src/sim/geo.py`). They are simulated, not real addresses.
+- **Start after Reset.** `/run/start` waits up to 15 s for the controllers, and otherwise returns 503 `simulator_restarting`. This fixes the 503s seen in the Cloud Run logs.
