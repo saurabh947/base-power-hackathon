@@ -156,7 +156,7 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 - Events:
   - `run_finished` is emitted at the end of the loaded data, or at the end of an internal `max_ticks` run.
   - Worker events carry `detail.worker_id` (0-based) and `detail.controller` (1-based). `worker_adopted` adds `adopted_by` and `ms`.
-- CORS: `allow_headers` are exactly `Content-Type` and `X-Presenter-Passcode`; `expose_headers` is `Retry-After`.
+- CORS: `allow_headers` is exactly `Content-Type` (presenter mode is gone, 2026-09-26); `expose_headers` is `Retry-After`.
 - A 429 has body `{error, message, retry_after_s}` and a `Retry-After` header.
 - Bridges:
   - `POST /backtest`: a ValueError gives 400 `invalid_backtest`; while a job runs, the service returns that job's id.
@@ -179,10 +179,7 @@ Adopters HMGET the batteries lazily, from the `load` section of their very next 
 - A zombie counts as `already_dead`.
 
 **Rate limits** are in-memory, which works because there is one API process and one shared fleet. Invalid `/run/start` bodies (400) don't consume the 5 s budget.
-
-**Passcode:**
-- Read per request from `PRESENTER_PASSCODE_FILE` (default `/secrets/presenter/passcode`), then `PRESENTER_PASSCODE`, then `DEMO_PRESENTER_PASSCODE` (the name `.env.example` uses).
-- Compared with SHA-256 + `hmac.compare_digest`.
+- `/chaos/kill` is open to everyone (no presenter mode since 2026-09-26): one kill per 2 s, globally (`api.rate_limits.chaos_kill_s`). A malformed `worker_id` (400) doesn't spend the budget; a refused kill (409 `already_dead` / `too_few_healthy`, 404) does.
 
 **Forecasts:**
 - The API asks `src.forecast.provider.latest_forecast` once per location per 15-min slot of sim time.
@@ -248,9 +245,9 @@ b17600–b19999). Everything below is built against docs/API.md as written.
 - Packed as docs/API.md says (byte i // 2, low nibble for even i): 10,000 bytes at 20,000. The coordinator writes
   one key (`battery_status`) in the tick's existing Redis pipeline (no extra round trip), overwritten every tick;
   the API base64s the latest into the snapshot and every frame (13,336 characters).
-- Outside ticks: boot, reset and run start write the idle form (1 or 0); an availability change with no run
-  writes the idle form at once; while paused or finished it is overlaid on the last tick's codes at once (the next
-  tick recomputes everything).
+- Outside ticks: boot, reset and run start write the idle form (1 or 0). Since 2026-09-26 every availability change
+  and every crash is published at once in every state (see "v2" below): no run, the idle form; otherwise the
+  latest tick's look with the current offline and controller-down overlays (the next tick recomputes everything).
 - Overhead: 0.05 ms p50, 0.1–0.6 ms max per tick at 20,000 (compute + pack; the SET rides the tick's pipeline).
 - A 2 ticks/s frame at 20,000 is ~19.2 KB (13.3 KB of it `battery_status`); the snapshot with 6 ticks of history is
   ~24 KB; an idle `/state` ~17 KB.
@@ -347,7 +344,9 @@ b17600–b19999). Everything below is built against docs/API.md as written.
 | `test_fleet_cities.py` | Four-city event wording through the real fleet (price spikes grouped per tick, all four cities, Central time), controllers' `by_location`, per-city totals, the per-city AI-forecast fallback and its `run_started` message, `battery_status` overlaid while paused. |
 | `test_geo.py`, `test_battery_status.py` | Positions: deterministic across runs, processes and fleet sizes, inside a Texas bbox and their metro radius, per-city counts, population weighting, the Int16 encoding, the version hash. Status codes: nibble order, 10,000 bytes at 20k, precedence, speed. |
 | `test_fleet_price_source.py` | `PRICE_SOURCE=postgres` replays exactly like the snapshot (needs Postgres with real RT rows). |
-| `test_api_unit.py`, `test_api_live.py` | Every message shape in docs/API.md (now with `battery_status`, `totals.by_location`, `workers[].by_location`, battery `city`/`lonlat`), `GET /fleet/layout` (contract keys, decoding, ETag/304, from config before the simulator is up), availability scopes, presenter auth, rate limits, CORS, chaos-kill guards, run controls, Start right after Reset, `simulator_restarting`, forecasts riding along, 501 bridges. |
+| `test_api_unit.py`, `test_api_live.py` | Every message shape in docs/API.md (now with `battery_status`, `totals.by_location`, `workers[].by_location`, battery `city`/`lonlat`, Settings `year`, `years`, Tick `predicted`, `race.potential`), `GET /fleet/layout` (contract keys, decoding, ETag/304, from config before the simulator is up), availability scopes, rate limits (the public kill: one per 2 s), CORS (Content-Type only), chaos-kill guards, run controls, Start right after Reset, `simulator_restarting`, forecasts riding along, 501 bridges, presenter mode gone; battery_status within one frame while paused (a controller taken offline: code 0 on exactly its batteries; a crash: code 4, then the hand-over). |
+| `test_years.py` | Years 2025/2026 and where 2026's real prices end (the snapshot), per-year presets (From January 1, the computed "Where real prices end"), year/preset resolution and its 400s. |
+| `test_fleet_prediction.py` | 2026 through the real fleet: real prices then the prediction's p50, `predicted` per tick and in the stored history, one `prediction_started`, the AI on virtual forecasts, the replay ending at real_until without a prediction, the late-December 2025 warm-up. |
 | `test_fleet_launcher.py` | SIGTERM → exit 0 with nothing left running; dead coordinator → exit 1; SIGKILLed launcher → no orphans. |
 | `test_contracts_battery.py[redis]` | The Redis BatteryAdapter passes the frozen seam's 25 contract tests. |
 
@@ -381,7 +380,7 @@ docs/API.md `Race` and the `race_update` event. Code: `src/sim/race.py`, hooks i
 - **Block** (snapshot, every frame, `GET /state`): `strategy`, `label`, `revenue_usd` (fsum of the cities, as the
   Ledger totals), `by_location` {`revenue_usd`, `charge_level`, `action`}, `charge_level` (capacity-weighted over all
   batteries, as `Tick.charge_level`), `live_minus_race_usd` = the live `totals.revenue_usd` minus the race's (same
-  snapshot). Finished and paused runs keep it.
+  snapshot), and since v2 `potential` and `shows_potential` (see "v2" below). Finished and paused runs keep it.
 
 ### race_update events
 
@@ -442,6 +441,111 @@ docs/API.md `Race` and the `race_update` event. Code: `src/sim/race.py`, hooks i
    carries `phase` (`spike_started` / `spike_ended`), the charge levels or revenues, and `live_minus_race_usd`.
 3. `FLEET_RACE=0` switches the race off without a code change (a new Cloud Run revision with that env var).
 
+## v2 (2026-09-26): public crashes, years 2025/2026, the AI-predicted 2026, race.potential, fresh battery_status
+
+Built against docs/API.md as of 4879fde. Code: `src/data/years.py`, `src/feeds/predicted.py`,
+`src/forecast/predictions.py`, `src/forecast/predict.py`, migration 030, and changes in `src/sim/control.py`,
+`src/sim/coordinator.py`, `src/sim/race.py`, `src/api/*`, `src/forecast/{job,provider}.py`.
+
+### Presenter mode is gone
+
+- Deleted `src/api/presenter.py`, `POST /presenter/check`, the passcode lookup (`PRESENTER_PASSCODE_FILE`,
+  `PRESENTER_PASSCODE`, `DEMO_PRESENTER_PASSCODE`), the wrong-passcode limiter and its config, its tests, the
+  `/secrets/presenter/passcode` mount in `scripts/cloud/deploy.sh` and the `.env.example` line (`.env` untouched).
+- `POST /chaos/kill` is public: the guards stay (409 `already_dead`, `too_few_healthy`; the pid checks), plus one kill
+  per 2 s globally (429 with `retry_after_s` and `Retry-After`, like the other limits). CORS allows only `Content-Type`.
+- Reset still restarts every controller (killed ones included) and brings every battery online.
+
+### Years and presets
+
+- config `years: {default: 2025, items: [2025, 2026]}`; every preset has a `year`. `GET /settings` adds `years`:
+  `{year, label, description, real_until_utc}` for each configured year with real prices for every fleet city.
+- `real_until_utc` (`src/data/years.py`) = the END of the last RT interval present for ALL four fleet cities in the
+  ERCOT year (one SQL over `prices`, or the snapshot files; cached 60 s per process; `PRICE_SOURCE` picks the
+  source, as for the live fleet's prices). `null` when the year is real all year (2025).
+- Description: "Real ERCOT prices for the whole year." / "Real prices through Sep 19, then the AI's prediction."
+  (the date is the last local day with real prices), or "... The AI's prediction for the rest of the year isn't
+  ready yet." when no stored prediction covers the cutoff.
+- Presets: the five 2025 ones plus `jan1_2025` ("From January 1", 2025-01-01T06:00Z); for 2026
+  `real_prices_end_2026` ("Where real prices end": 6 pm Central on the evening before real_until_utc, computed, so
+  it follows each ERCOT publication: 2026-09-19T23:00Z with the Sep 20 files, 72 ticks = 36 s at 2 ticks/s before
+  the switch), `spike_2026` (2026-04-24, from 4 pm CDT: at 7:45 pm Houston $1,051.54, Dallas–Fort Worth
+  $1,231.82, San Antonio $1,096.97, Austin $1,105.20, the biggest 2026 evening where all four spike) and
+  `jan1_2026` (2026-01-01T06:00Z; its bands window warms up on real Dec 25-31, 2025 prices).
+- Settings: `year` is editable. A preset sets its year; a year alone replays that year's default preset
+  (`presets.default_by_year`: 2025 `ai_best_evening`, 2026 `real_prices_end_2026`); a preset of another year than
+  the one sent is 400 `invalid_preset`; a year that isn't configured, isn't a whole number, or has no prices loaded
+  is 400 `invalid_year`. Presets of a year without prices are left out of `GET /settings`.
+
+### Replay across real_until_utc
+
+- `coordinator.run_feed`: a run's feed is `PredictedFeed(real, cutoff, paths)` where cutoff =
+  `years.real_until_ahead(start)` (the first year from the start on whose real prices end early). Before the
+  cutoff, real ticks (Postgres or the snapshot) untouched; from it on, the stored prediction's p50 (latest cutoff
+  at or before real_until), forward-filled to its three 5-minute ticks, rounded to cents, no demand/fuel mix.
+- `Tick.predicted` = `ts >= real_until_utc` (in frames and in the stored history). `prediction_started` goes out once,
+  at the first predicted tick, with the contract's sentence and `detail.real_until_utc`, `model`, `locations`.
+  A run that starts after the cutoff announces it at its first tick.
+- No prediction stored: the replay ends at the cutoff, and `run_finished` says "the end of the real prices ...;
+  the AI's prediction for the rest of the year isn't ready yet". `run_started` says where real prices end when the
+  run's year has a cutoff.
+- The simple rule and the evening peak just trade on the predicted prices. The AI forecast strategy gets VIRTUAL
+  forecasts after the cutoff (docs/notes/forecast.md): hourly, 24 h, p10/p50/p90 sliced from the same prediction.
+  It sees its own long-range prediction, which is also the price path it trades on, so after the cutoff its
+  forecast is exact by construction and its projected earnings flatter it (docs/UX.md labels them "projected").
+- `GET /forecast` and the frames' `forecast` serve the virtual forecast after the cutoff (the band moves hourly); the
+  API sends no `forecast_issued` event for virtual ones (they are slices, not new forecasts).
+
+### race.potential
+
+- A second shadow fleet, `run.potential` (`src/sim/race.py` `Race`, stepped right after the race while the workers
+  apply the live tick): the LIVE run's own Strategy instances (pure) through the live `StrategyTargets` (same prices,
+  lag, history), its own SoC, every battery online, no crashes. Label: the live label without its bracket plus ",
+  all batteries online" ("AI forecast, all batteries online").
+- It books revenue per tick, city by city in config order (`running_usd`), exactly as the live ledger adds up
+  `totals.revenue_usd`, so with no outage it equals the live revenue bit for bit: `tests/test_race_fleet.py` for
+  the evening peak, the simple rule and the AI (synthetic books), and the 20,000-battery bench (shortfall 0.0 over
+  288 ticks). `shortfall_usd` = potential - live.
+- `shows_potential` is set at run start when batteries are already offline, and flips true (for the rest of the
+  run) when an availability change leaves any battery offline, a controller misses a tick (suspect), dies, or its
+  process is seen to exit. A new run starts over.
+- The shortfall can be negative: an outage that happens to hold charge back for a later spike earns more (bench
+  below: -$0.36 after a kill at 7:40 pm, before the 9 pm spike).
+- `potential` is `null` only if that fleet couldn't start or failed; `race` itself stays `null` as before (idle,
+  starting, nothing to race).
+
+### battery_status within one frame, paused included
+
+- The human saw a controller taken offline and no red on the map. The backend path was already publishing code 0
+  (the next tick while running, at once while paused), so the likeliest cause is the v1 map drawing offline dim
+  gray (docs/UX.md v2 makes it a red ring). What was really missing: **a crash while paused never showed**. The
+  coordinator only notices a dead controller at heartbeat expiry while paused, then hands its batteries over at
+  once, so code 4 never appeared.
+- Now the coordinator publishes an overlay (`_publish_overlay`) at once on every availability change (every state),
+  when it reaps an exited worker (within its 0.2 s supervision, running or paused) and after a hand-over outside a
+  tick: the latest tick's look, then code 4 for batteries of a controller that is suspect, dead or has exited and
+  hasn't handed them over, then code 0 for offline ones. A battery that stopped (offline or down) looks "waiting"
+  until the next tick commands it. Inside a tick nothing changes: `step()` still writes that tick's codes (the M3
+  code-4 window is unchanged: the missed tick and the hand-over tick).
+- While paused a crash shows as code 4 ~0.2-0.4 s after the kill and stays until the heartbeat expires (6 s in
+  production), then the batteries are handed over and look normal again. Running, code 4 now starts within
+  ~0.2 s of the kill instead of at the next tick's barrier.
+- Tests (`tests/test_api_live.py`, through the API's own frame builder and the WebSocket): paused, a controller
+  taken offline gives code 0 on exactly its 100 batteries in the next frame and leaves every other battery as it
+  was; a crash while paused gives code 4 on exactly its batteries within a frame (0.24 s here), then the
+  hand-over. Both fail with the overlay switched off (mutation-checked).
+
+### Measured (M3 Pro; Redis :6447, Postgres :5447 with ERCOT 2024-2026 ingested)
+
+| What | Number |
+|---|---|
+| Potential step at 20,000 batteries, max speed (bench, 288 ticks, live peak) | p50 **0.17 ms**, p99 1.39 ms, max 1.57 ms (race: 0.74 / 1.87 / 2.50 ms) |
+| Same at 2 ticks/s (48 ticks, a kill at tick 20) | p50 1.37 ms, p99 4.5 ms, max 6.0 ms (race 2.0 / 6.1 / 7.4 ms); deadline 250 ms |
+| Loop speed with race + potential, 20,000 × 20 workers, max speed | 38.1 ticks/s, max error 0.0% (38.3 before) |
+| Potential vs live, no outage, 20,000 batteries, 288 ticks | shortfall **0.0** (bit for bit) |
+| M3 at 2 ticks/s with the potential, kill worker 7 at tick 20 | 5.08% on the kill tick, then 0.000%; code 4 on ticks 21-22 for its 1,000 batteries |
+| Crash while paused → code 4 in a frame | 0.24 s after the kill (test) |
+
 ## Open issues
 
 - **Cloud Run speed is unmeasured.** It needs a check once deployed: `/state` workers, plus `barrier_ms` from `python -m src.sim.coordinator bench`. At 10 ticks/s, 20k batteries write about 200k HSET/s into one Redis thread.
@@ -465,4 +569,14 @@ docs/API.md `Race` and the `race_update` event. Code: `src/sim/race.py`, hooks i
 7. **`cities[].center_lonlat` is a hand-picked metro centre** (DFW is the doc's `[-96.97, 32.82]`), meant for labels, not the centroid of the dots. The layout `version` also hashes `GEO_VERSION`, so a change to the site list invalidates cached layouts.
 8. **Forecasts:** the live fallback is per city (documented above); the full-year pitch needs all four cities' forecasts at ≥ 99% or it skips "forecast" and names the cities. Per the coordinator, the San Antonio and Austin forecasts are now in Cloud SQL, so in the cloud all four cities run the AI forecast; the per-city fallback still shows locally (no forecasts here) and for any replay date a city's forecasts don't cover.
 9. **Pitch numbers at four cities.** The cloud's 4-city 2025 backtest (per the coordinator): AI forecast $190.95, evening peak $136.70, simple rule $123.67 per battery, ceiling $421.29. The local full-year run here gives the same bands and peak figures to the cent from the snapshot prices, which cross-checks the four-city split. RUNLOG's M4/M6 tables still show the two-city numbers.
+
+### Requests for integrator (v2, 2026-09-26)
+
+10. **Presenter leftovers outside my lane:** DEMO.md steps 1 and 3 (the passcode command, "Click Presenter mode") and RUNLOG's presenter lines are out of date. The Secret Manager secret `fleet-sim-presenter-passcode` (and the service account's accessor binding on it) is no longer read by anything; delete it once the new revision is live if you like.
+11. **docs/API.md `race.shortfall_usd` can be negative:** an outage can hold charge back for a later spike (measured: -$0.36). Suggest one line: "It can be negative when an outage happened to save charge for a later, higher price."
+12. **docs/API.md `race.potential` can be `null`** if that shadow fleet couldn't start (never seen; a failure stops it rather than the fleet), like `race` itself.
+13. **docs/API.md, the AI after the cutoff:** worth one sentence under `predicted`: the AI forecast strategy then acts on hourly slices of the same prediction (its forecast is exact by construction), so its projected money after real_until flatters it. docs/notes/forecast.md has the detail.
+14. **docs/API.md `forecast_issued`:** after real_until_utc the frames' `forecast` still updates hourly (virtual forecasts), but no `forecast_issued` event is sent for them. Say if the web wants them.
+15. **docs/API.md `Year`:** a configured year with no prices loaded (e.g. 2026 in a database not yet ingested) is left out of `years`, and its presets out of `presets`; a Start asking for it is 400 `invalid_year` (a new code for the error table, as `invalid_*`).
+16. **The weekly refresh:** ERCOT republishes 2026 about weekly. After each re-ingest (`INGEST_YEARS=2026 scripts/cloud/jobs.sh ingest`), re-run `YEAR=2026 scripts/cloud/jobs.sh forecast` (it resumes: only the new days) and `scripts/cloud/jobs.sh predict` (a new cutoff adds a new path). The "Where real prices end" preset and `years` follow real_until by themselves (cached 60 s).
 

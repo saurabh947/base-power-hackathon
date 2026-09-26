@@ -29,7 +29,7 @@ make test                      # whole suite; database tests skip without DATABA
   - `--datasets native_load fuel_mix rt_spp da_spp` loads a subset.
   - `--no-notes` skips writing this file.
   - `--cache-dir data/raw` is DEV ONLY: it keeps downloads and reuses them. `data/raw` is gitignored, and the real-file parser tests use it.
-- **Cloud Run job:** `scripts/cloud/jobs.sh ingest` already runs `python -m src.ingest.ercot --years 2024 2025`.
+- **Cloud Run job:** `scripts/cloud/jobs.sh ingest` runs `python -m src.ingest.ercot --years 2024 2025 2026` (`INGEST_YEARS=2026` for the weekly current-year refresh).
   - It is stateless: it downloads into a temp dir.
   - It connects through `src.db` (`DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`) and runs `src.db.migrate()` first.
   - The image has no `docs/` and no `data/snapshot`, so it only prints the report, and the snapshot comparison says "skipped".
@@ -64,6 +64,9 @@ make test                      # whole suite; database tests skip without DATABA
   - the rest of the year being absent is no failure, but a gap inside the published part still is, and so is a year with nothing stored.
   - A "Year to date" section lists how far each series goes. `report.build(..., now=)` pins the clock in tests.
 - **Local 2026 ingest (files published 2026-09-20):** RT and DA through Sep 19 (the last interval ends 2026-09-20 05:00Z), native load and fuel mix through Aug 31. RT rows from Sep 1 on have no `demand_mw`/`fuel_mix` context yet (349,860 of 377,220 have it); `enrich_rt` fills them in when a later ingest brings the load and fuel mix. The self-check passes.
+- **Where real prices end: `real_until_utc`** (`src/data/years.py`): the END of the last RT interval present for ALL four fleet cities in the ERCOT year, from the `prices` table (or the snapshot files in the dev path). **2026-09-20T05:00:00Z** here (Sep 20 00:00 CDT: real through Sep 19); `null` for 2025. The replay switches to the AI's prediction there (docs/notes/forecast.md).
+- **The 2026 snapshot** (`data/snapshot/ercot_{rt,da}_2026_hubs.parquet`, same 9 locations and layout as 2025) is the same Sep 20 publication, parsed by `src.ingest.parse`; `tests/test_series_parity.py` checks it equals Postgres when Postgres holds that publication (it does here).
+- **The 2026 spike preset** was picked from the real 2026 prices: per local day, each city's highest price between 4 pm and 11 pm, ranked by the lowest of the four (so all four spike). 2026-04-24 wins: at 7:45 pm CDT Houston $1,051.54, Dallas–Fort Worth $1,231.82, San Antonio $1,096.97, Austin $1,105.20 (next: 2026-03-23, all four $939–985; the year's highest prices so far, $1,285–1,612 on 2026-01-28 around 7 am, are a morning).
 
 ## Postgres layout
 
@@ -207,7 +210,7 @@ Recommended values for the integrator (who owns `presets:`):
 `spike_evening` and `morning_spike` need no change.
 
 <!-- BEGIN presets -->
-Generated 2026-09-25 23:57 UTC by `python -m src.ingest.presets` (series backend: postgres). RT 15-min settlement point prices; a peak's time is its interval start.
+Generated 2026-09-26 19:50 UTC by `python -m src.ingest.presets` (series backend: postgres). RT 15-min settlement point prices; a peak's time is its interval start.
 
 #### Presets against real prices
 
@@ -215,26 +218,54 @@ Generated 2026-09-25 23:57 UTC by `python -m src.ingest.presets` (series backend
 |---|---|---|---|---:|---|---:|---:|---:|
 | spike_evening | 2025-05-16 | 16:00 CDT | LZ_HOUSTON | 2,250.15 | 19:45 CDT | 45 | 18.28 | 138.65 |
 | spike_evening | 2025-05-16 | 16:00 CDT | LZ_NORTH | 2,512.18 | 19:45 CDT | 45 | 14.95 | 141.30 |
+| spike_evening | 2025-05-16 | 16:00 CDT | LZ_CPS | 3,149.97 | 19:45 CDT | 45 | 14.66 | 165.32 |
+| spike_evening | 2025-05-16 | 16:00 CDT | LZ_AEN | 2,610.95 | 19:45 CDT | 45 | 17.21 | 143.37 |
 | morning_spike | 2025-04-07 | 03:00 CDT | LZ_HOUSTON | 3,860.39 | 06:45 CDT | 45 | 0.01 | 133.23 |
 | morning_spike | 2025-04-07 | 03:00 CDT | LZ_NORTH | 3,734.94 | 06:45 CDT | 45 | 0.02 | 140.09 |
-| winter_spike | 2025-01-15 | 04:00 CST | LZ_HOUSTON | 215.40 | 07:30 CST | 42 | 22.43 | 48.98 |
-| winter_spike | 2025-01-15 | 04:00 CST | LZ_NORTH | 2,498.61 | 07:30 CST | 42 | 21.74 | 159.11 |
-| ordinary_day | 2025-03-19 | 00:00 CDT | LZ_HOUSTON | 167.70 | 07:00 CDT | 84 | 5.84 | 31.21 |
-| ordinary_day | 2025-03-19 | 00:00 CDT | LZ_NORTH | 144.84 | 07:00 CDT | 84 | -12.55 | 19.68 |
+| morning_spike | 2025-04-07 | 03:00 CDT | LZ_CPS | 3,522.19 | 06:45 CDT | 45 | -0.47 | 120.02 |
+| morning_spike | 2025-04-07 | 03:00 CDT | LZ_AEN | 3,600.84 | 06:45 CDT | 45 | -0.80 | 124.27 |
+| summer_spike | 2025-07-11 | 18:00 CDT | LZ_HOUSTON | 1,754.52 | 21:00 CDT | 36 | 11.62 | 49.27 |
+| summer_spike | 2025-07-11 | 18:00 CDT | LZ_NORTH | 1,757.28 | 21:00 CDT | 36 | 12.04 | 52.06 |
+| summer_spike | 2025-07-11 | 18:00 CDT | LZ_CPS | 1,759.93 | 21:00 CDT | 36 | 12.44 | 49.72 |
+| summer_spike | 2025-07-11 | 18:00 CDT | LZ_AEN | 1,757.40 | 21:00 CDT | 36 | 12.06 | 48.25 |
+| ai_best_evening | 2025-05-30 | 18:00 CDT | LZ_HOUSTON | 388.44 | 21:00 CDT | 36 | 20.06 | 61.35 |
+| ai_best_evening | 2025-05-30 | 18:00 CDT | LZ_NORTH | 389.06 | 21:00 CDT | 36 | 20.06 | 61.23 |
+| ai_best_evening | 2025-05-30 | 18:00 CDT | LZ_CPS | 390.19 | 21:00 CDT | 36 | 20.06 | 61.71 |
+| ai_best_evening | 2025-05-30 | 18:00 CDT | LZ_AEN | 389.25 | 21:00 CDT | 36 | 20.06 | 61.53 |
+| ordinary_day | 2025-06-28 | 00:00 CDT | LZ_HOUSTON | 72.99 | 20:15 CDT | 243 | 8.98 | 28.09 |
+| ordinary_day | 2025-06-28 | 00:00 CDT | LZ_NORTH | 74.93 | 20:15 CDT | 243 | 6.48 | 30.41 |
+| ordinary_day | 2025-06-28 | 00:00 CDT | LZ_CPS | 77.81 | 19:45 CDT | 237 | 9.26 | 26.70 |
+| ordinary_day | 2025-06-28 | 00:00 CDT | LZ_AEN | 75.09 | 19:45 CDT | 237 | 8.81 | 26.15 |
+| jan1_2025 | 2025-01-01 | 00:00 CST | LZ_HOUSTON | 108.90 | 19:00 CST | 228 | 0.01 | 25.01 |
+| jan1_2025 | 2025-01-01 | 00:00 CST | LZ_NORTH | 109.60 | 19:00 CST | 228 | 0.01 | 26.09 |
+| jan1_2025 | 2025-01-01 | 00:00 CST | LZ_CPS | 108.07 | 19:00 CST | 228 | 0.01 | 24.03 |
+| jan1_2025 | 2025-01-01 | 00:00 CST | LZ_AEN | 108.31 | 19:00 CST | 228 | 0.01 | 24.33 |
+| real_prices_end_2026 | 2026-09-19 | 18:00 CDT | LZ_HOUSTON | 75.88 | 18:45 CDT | 9 | 11.88 | 29.92 |
+| real_prices_end_2026 | 2026-09-19 | 18:00 CDT | LZ_NORTH | 88.86 | 18:45 CDT | 9 | 8.74 | 27.79 |
+| real_prices_end_2026 | 2026-09-19 | 18:00 CDT | LZ_CPS | 86.59 | 18:30 CDT | 6 | 13.79 | 33.81 |
+| real_prices_end_2026 | 2026-09-19 | 18:00 CDT | LZ_AEN | 90.02 | 18:30 CDT | 6 | 14.81 | 34.47 |
+| spike_2026 | 2026-04-24 | 16:00 CDT | LZ_HOUSTON | 1,051.54 | 19:45 CDT | 45 | 19.61 | 96.78 |
+| spike_2026 | 2026-04-24 | 16:00 CDT | LZ_NORTH | 1,231.82 | 19:45 CDT | 45 | 5.96 | 103.42 |
+| spike_2026 | 2026-04-24 | 16:00 CDT | LZ_CPS | 1,096.97 | 19:45 CDT | 45 | 22.95 | 132.57 |
+| spike_2026 | 2026-04-24 | 16:00 CDT | LZ_AEN | 1,105.20 | 19:45 CDT | 45 | 24.67 | 133.94 |
+| jan1_2026 | 2026-01-01 | 00:00 CST | LZ_HOUSTON | 24.45 | 05:45 CST | 69 | 11.28 | 17.75 |
+| jan1_2026 | 2026-01-01 | 00:00 CST | LZ_NORTH | 29.85 | 10:45 CST | 129 | 12.53 | 18.82 |
+| jan1_2026 | 2026-01-01 | 00:00 CST | LZ_CPS | 24.40 | 05:45 CST | 69 | 10.41 | 17.17 |
+| jan1_2026 | 2026-01-01 | 00:00 CST | LZ_AEN | 24.08 | 07:15 CST | 87 | 10.04 | 17.08 |
 
 #### Ordinary day: daily RT spread (max - min) closest to the 2025 median
 
-Median daily spread: LZ_HOUSTON $63.30/MWh, LZ_NORTH $67.66/MWh. Score = the worst relative distance from the median over the fleet locations. DST days and days with gaps are skipped.
+Median daily spread: LZ_HOUSTON $63.30/MWh, LZ_NORTH $67.66/MWh, LZ_CPS $75.34/MWh, LZ_AEN $73.69/MWh. Score = the worst relative distance from the median over the fleet locations. DST days and days with gaps are skipped.
 
-| rank | local date | weekday | LZ_HOUSTON spread | LZ_HOUSTON max | LZ_HOUSTON mean | LZ_NORTH spread | LZ_NORTH max | LZ_NORTH mean | score |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 2025-06-28 | Sat | 64.01 | 72.99 | 28.09 | 68.45 | 74.93 | 30.41 | 0.012 |
-| 2 | 2025-03-20 | Thu | 61.62 | 61.42 | 22.00 | 68.41 | 68.13 | 23.25 | 0.027 |
-| 3 | 2025-11-03 | Mon | 65.53 | 71.48 | 23.48 | 66.86 | 71.48 | 18.50 | 0.035 |
-| 4 | 2025-09-28 | Sun | 65.04 | 76.69 | 24.49 | 64.98 | 76.63 | 23.58 | 0.040 |
-| 5 | 2025-07-13 | Sun | 63.30 | 79.50 | 37.38 | 70.37 | 87.10 | 38.99 | 0.040 |
+| rank | local date | weekday | LZ_HOUSTON spread | LZ_HOUSTON max | LZ_HOUSTON mean | LZ_NORTH spread | LZ_NORTH max | LZ_NORTH mean | LZ_CPS spread | LZ_CPS max | LZ_CPS mean | LZ_AEN spread | LZ_AEN max | LZ_AEN mean | score |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 2025-09-21 | Sun | 60.46 | 62.73 | 24.92 | 64.57 | 66.84 | 25.65 | 75.40 | 77.67 | 27.91 | 72.07 | 74.34 | 28.97 | 0.046 |
+| 2 | 2025-04-08 | Tue | 66.91 | 67.59 | 22.68 | 63.57 | 63.34 | 20.95 | 71.06 | 71.04 | 21.71 | 69.82 | 69.45 | 20.43 | 0.060 |
+| 3 | 2025-04-01 | Tue | 61.09 | 80.91 | 36.87 | 63.55 | 77.29 | 32.83 | 70.37 | 83.30 | 35.03 | 77.56 | 91.85 | 36.01 | 0.066 |
+| 4 | 2025-11-12 | Wed | 66.60 | 78.76 | 27.17 | 68.24 | 80.56 | 27.48 | 71.23 | 83.77 | 28.10 | 68.77 | 81.05 | 27.34 | 0.067 |
+| 5 | 2025-07-10 | Thu | 67.69 | 78.61 | 26.82 | 69.06 | 79.92 | 28.33 | 70.15 | 81.17 | 24.10 | 69.05 | 79.97 | 26.70 | 0.069 |
 
-Recommended ordinary_day: **2025-06-28** (replay from local midnight = `2025-06-28T05:00:00Z`).
+Recommended ordinary_day: **2025-09-21** (replay from local midnight = `2025-09-21T05:00:00Z`).
 <!-- END presets -->
 
 ## Timings

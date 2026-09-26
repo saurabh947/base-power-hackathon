@@ -129,7 +129,7 @@ presets:
 
 # Area sections, one owner each; read via src.config.load_raw_config().
 data:       # owner: ingest (M1). python -m src.ingest.ercot; notes in docs/notes/data.md
-  years: [2024, 2025]       # ERCOT (America/Chicago) calendar years to ingest and check
+  years: [2024, 2025, 2026] # ERCOT (America/Chicago) calendar years to ingest and check (2026: year to date)
   max_missing_pct: 0.1      # M1 self-check: missing intervals per series and year must stay below this %
 
 api:        # owner: fleet + API

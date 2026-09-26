@@ -17,6 +17,7 @@ Owner: forecast builder. Written 2026-09-25. All numbers below were measured on 
 | Evaluation | `src/forecast/evaluate.py` | A small-fleet loop on real prices comparing forecast, bands and peak. It uses the project's physics, allocation, decision lag and ledger, and reproduces the M0 skeleton's peak number ($4.4470) exactly. |
 | Benchmark | `src/forecast/bench.py` | CPU throughput and a projection of the full-year job time. |
 | Container | `Dockerfile.forecast` | python:3.12-slim, CPU torch wheel, weights baked in, entrypoint `python -m src.forecast.job`. |
+| Prediction | `src/forecast/predict.py`, `predictions.py` | The AI's prediction for the rest of a year from its real_until_utc (chained 7-day chunks), table `price_predictions`; virtual hourly forecasts sliced from it. See "2026" below. |
 
 ## How to run
 
@@ -207,6 +208,72 @@ The DA covariate helps at every lead. Houston MAE at 0–1 / 1–6 / 6–24 h:
   - `books=` defaults to `ForecastBook.load(...)` for each configured location.
   - Call it through `decision_tick` like the other strategies. It ignores `price_history`.
 - **The API image stays small:** torch and timesfm live only in the optional `forecast` group. The strategy, provider, store, accuracy and evaluation modules never import torch (verified).
+
+## 2026: the AI's prediction for the rest of the year (2026-09-26)
+
+2026 is published year-to-date. Its real prices end at `real_until_utc` (src/data/years.py: the end of the last RT
+interval every fleet city has; 2026-09-20 05:00Z with the files ERCOT published on Sep 20). After it, the replay
+runs on the AI's prediction.
+
+### The prediction job (`src/forecast/predict.py`)
+
+```sh
+python -m src.forecast.predict --year 2026 [--out db|parquet] [--limit-days N] [--chunk-days 7] [--context N]
+make forecast-predict                     # locally (parquet, or the DB when DATABASE_URL is set)
+scripts/cloud/jobs.sh predict             # Cloud Run Job fleet-sim-predict, forecast image, 8 vCPU / 16 GiB
+```
+
+- Per fleet city, from real_until_utc to Dec 31 24:00 Central, TimesFM-3 univariate, chained in 7-day chunks: each
+  chunk's p50 is appended to the context (config `forecast.predict.context_steps`: the last 4,096 steps = 42.7 days)
+  and the next 7 days are forecast from it. All four cities go through the model in one batched call per chunk:
+  15 calls for 2026 (9,892 steps = 103 days + 1 h).
+- **No look-ahead:** the context holds only real intervals that ENDED at or before the cutoff; nothing after the
+  cutoff is requested, even for a city with more real data than the others. `tests/test_forecast_predict.py` proves
+  the chaining and the cutoff with a fake model and poisoned data past the cutoff.
+- **Univariate** because the DA covariate is only published a day ahead, never for the months to come.
+- **The band:** fed its own smooth p50, TimesFM grows very sure of itself: on the 2026 run the mean p10–p90 width was
+  $36/MWh in week 1, $16 in week 2 and $1–4 from week 3. So each later chunk's band is floored at the first week's
+  band at the same offset (the same time of week): it never claims more certainty about December than about next
+  week. It still doesn't widen with the horizon.
+- **Storage:** table `price_predictions` (migration 030): `(model, location, cutoff, ts)` primary key, with
+  `issued_at`, `chunk` (0 = saw only real prices), p10/p50/p90 in $/MWh rounded to cents. A re-run with the same
+  cutoff replaces that path in one transaction per city (idempotent); a later cutoff (after a newer ERCOT
+  publication) adds a new path, and readers take the latest cutoff at or before the real_until they replay against.
+  `--out parquet` writes `data/cache/predictions/{model}/{location}/{cutoff}.parquet` (gitignored), the dev path.
+- **Weights:** as src/forecast/model.py (pinned revisions; baked into the forecast image; `FORECAST_MODEL` switches).
+- **Local run (M3 Pro, CPU torch, 12 threads):** the whole 2026 remainder for 4 cities in **10–11 s** (model 7.7 s
+  for 15 calls, weights load 1.3–2.4 s); a 7-day sample (`--limit-days 7`, 1 call) in 9.2 s wall, 0.6 s of model.
+  The cloud's 8 vCPU box should take well under a minute.
+- **What it predicted (cutoff 2026-09-20):** p50 means Houston $34.51, Dallas–Fort Worth $31.24, San Antonio $36.07,
+  Austin $35.54/MWh; p50 ranges $12–86. A smooth daily wave, no spikes (it is a median).
+- **Out of sample, the same method on 2025** (cut at 2025-09-20, compared with the real Q4 2025):
+
+  | City | real mean | p50 mean | MAE p50 | MAE "last week repeated" | p10–p90 coverage | real sd | p50 sd |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | Houston | 32.37 | 31.48 | 13.35 | 15.28 | 57% | 23.0 | 13.2 |
+  | Dallas–Fort Worth | 32.82 | 30.17 | 16.20 | 18.18 | 52% | 29.0 | 14.9 |
+  | San Antonio | 39.59 | 34.57 | 21.33 | 21.73 | 51% | 48.1 | 18.4 |
+  | Austin | 40.97 | 33.39 | 23.54 | 23.33 | 46% | 57.6 | 19.2 |
+
+  The level is right to within $1–8/MWh, it beats repeating the last week in three cities of four (Austin: a tie),
+  and the band covers only about half of what really happened (nominal 80%): real prices spike, the median path
+  doesn't.
+
+### Virtual forecasts after the cutoff (`src/forecast/predictions.py`, `provider.py`)
+
+- After real_until_utc there are no real prices to forecast from. The rolling job (`src.forecast.job --year 2026`)
+  now stops at real_until_utc (issue times before it only), and skips any issue time past the end of a series' own
+  real data (2026 load ends Aug 31: no demand forecasts after it), so nothing is forecast from stale context.
+- Instead the AI strategy gets **virtual forecasts**: one per whole hour from the cutoff, each the next 24 h (96
+  points) of the stored prediction's p10/p50/p90 (NaN past its end). `ForecastBook.load(..., virtual=True)` (what
+  `make_forecast_strategy` asks for) drops any real forecast issued after the cutoff and appends them;
+  `latest_forecast` (GET /forecast, the live band) answers from them too. Without `virtual=True` a book is exactly
+  what is stored (accuracy, evaluation, tests).
+- **The AI sees its own long-range prediction.** After the cutoff the replay's prices ARE the prediction's p50, so
+  the strategy's forecast of them is exact by construction: it knows the whole next 24 h perfectly. Its projected
+  earnings after real_until_utc therefore flatter it compared with the simple rule and the evening peak, which just
+  trade on the predicted prices. That is inherent to "predict the rest of the year, then replay it"; the site labels
+  that money as projected (docs/UX.md).
 
 ## Open issues
 
