@@ -36,8 +36,8 @@ const STRATEGY_DESCRIPTIONS: Record<string, string> = {
 
 /** The documented defaults (docs/API.md, config.yaml), used only if GET /settings fails. */
 export const DOCUMENTED_DEFAULTS: Settings = {
-  preset: 'spike_evening',
-  start_utc: '2025-05-16T21:00:00Z',
+  preset: 'summer_spike',
+  start_utc: '2025-07-11T23:00:00Z',
   speed_tps: 2,
   strategy: 'forecast',
   start_charge_level: 0.9,
@@ -48,6 +48,14 @@ export const DOCUMENTED_DEFAULTS: Settings = {
 };
 
 const DOCUMENTED_PRESETS: Preset[] = [
+  {
+    id: 'summer_spike',
+    label: 'Summer night spike',
+    date_local: '2025-07-11',
+    start_utc: '2025-07-11T23:00:00Z',
+    start_local: '2025-07-11T18:00:00-05:00',
+    description: 'Both areas jump to about $1,750/MWh at 9 pm.',
+  },
   {
     id: 'spike_evening',
     label: 'Price-spike evening',

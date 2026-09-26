@@ -20,7 +20,7 @@ def raw():
 def test_default_settings_follow_docs_api(cfg, raw):
     s = ctl.default_settings(cfg, raw)
     assert s == {
-        "preset": "spike_evening", "start_utc": "2025-05-16T21:00:00Z", "speed_tps": 2, "strategy": "forecast",
+        "preset": "summer_spike", "start_utc": "2025-07-11T23:00:00Z", "speed_tps": 2, "strategy": "forecast",
         "start_charge_level": 0.9, "fleet_size": 20000, "power_kw_range": [5.0, 11.5],
         "capacity_kwh_range": [10.0, 20.0], "locations": {"LZ_HOUSTON": 0.5, "LZ_NORTH": 0.5},
     }

@@ -57,7 +57,7 @@ orchestration:
 
 # Replay presets for the website's Start screen (docs/UX.md). start_utc = replay start.
 presets:
-  default: spike_evening
+  default: summer_spike      # AI forecast sells from 8 pm at full power and is still selling at the 9 pm spike
   items:
     - id: spike_evening
       label: "Price-spike evening"

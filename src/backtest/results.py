@@ -102,7 +102,7 @@ def assumptions(year, source, ran, skipped, headline, ceiling, labels) -> list[s
         line = f"Decisions use each price only once it is published, {late} minutes late."
         lag0 = ran.get(headline, {}).get("metrics", {}).get("lag0") if headline else None
         if lag0:
-            line += (f" If prices were known instantly, the {labels.get(headline, headline).lower()} would earn "
+            line += (f" If prices were known instantly, {labels.get(headline, headline)} would earn "
                      f"${lag0['per_battery_usd_year']:,.2f} per battery instead.")
         lines.append(line)
     if ceiling:

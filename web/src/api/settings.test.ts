@@ -52,7 +52,7 @@ describe('GET /settings readers', () => {
       description: 'Both areas jump to about $1,750/MWh at 9 pm.',
     };
     expect(readPresets([good, { id: 'a', label: 'A' }, { id: 3 }])).toEqual([good]);
-    expect(readPresets([{ id: 'a' }])[0].id).toBe('spike_evening'); // documented fallback
+    expect(readPresets([{ id: 'a' }])[0].id).toBe('summer_spike'); // documented fallback
     expect(readEditable(['preset', 'fleet_size', 'strategy'])).toEqual(['preset', 'strategy']);
     expect(readEditable(null)).toEqual(['preset', 'speed_tps', 'strategy', 'start_charge_level']);
   });
@@ -61,7 +61,7 @@ describe('GET /settings readers', () => {
     const model = readSettingsResponse(null);
     expect(model.fallback).toBe(true);
     expect(model.defaults).toEqual(DOCUMENTED_DEFAULTS);
-    expect(model.presets[0].id).toBe('spike_evening');
+    expect(model.presets[0].id).toBe('summer_spike');
     const real = readSettingsResponse({ defaults: { ...DOCUMENTED_DEFAULTS, speed_tps: 5 } });
     expect(real.fallback).toBe(false);
     expect(real.defaults.speed_tps).toBe(5);

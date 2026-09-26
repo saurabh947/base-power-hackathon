@@ -18,8 +18,8 @@ Change it only through the integrator.
 
 ```json
 {
-  "preset": "spike_evening",
-  "start_utc": "2025-05-16T21:00:00Z",
+  "preset": "summer_spike",
+  "start_utc": "2025-07-11T23:00:00Z",
   "speed_tps": 2,
   "strategy": "forecast",
   "start_charge_level": 0.9,
