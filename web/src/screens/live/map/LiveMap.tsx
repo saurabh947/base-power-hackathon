@@ -165,6 +165,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
 
   // After every render that may move or resize a label, and whenever a corner panel changes size.
   useLayoutEffect(() => {
+    fitRightCorners();
     placeLabelsNow();
   });
 

@@ -9,7 +9,16 @@ import { Panel } from '../../components/Panel.tsx';
 import { Segmented } from '../../components/Segmented.tsx';
 import { TechBlock } from '../../components/Tech.tsx';
 import { fmtCount, fmtNumber } from '../../lib/format.ts';
-import { gainsView, yearOptions, yearsNote, type EarnsCard, type PerfectCard, type SpikeCard, type SurplusCard } from './aiGains.ts';
+import {
+  gainsView,
+  SPIKE_YEAR,
+  yearOptions,
+  yearsNote,
+  type EarnsCard,
+  type PerfectCard,
+  type SpikeCard,
+  type SurplusCard,
+} from './aiGains.ts';
 
 const width = (share: number) => `${Math.round(Math.min(1, Math.max(0, share)) * 1000) / 10}%`;
 
@@ -188,6 +197,20 @@ function Spikes({ card }: { card: SpikeCard }) {
   );
 }
 
+/** Technical details: the raw numbers behind the spike card (always 2024), AI / baseline. */
+function spikeRows(gains: AiGains): [string, string][] {
+  const y = gains.years.find((x) => x.year === SPIKE_YEAR);
+  if (!y) return [];
+  const a = y.strategies[gains.ai];
+  const b = y.strategies[gains.baseline];
+  return [
+    [
+      `spike card (${SPIKE_YEAR})`,
+      `spike_events ${fmtNumber(a.spike_events, 0)} · spike_charge_level ${fmtNumber(a.spike_charge_level, 3)} / ${fmtNumber(b.spike_charge_level, 3)} · spike_mwh ${fmtNumber(a.spike_mwh, 1)} / ${fmtNumber(b.spike_mwh, 1)}`,
+    ],
+  ];
+}
+
 export function AiGainsSection({ gains, fleetSize }: { gains: AiGains; fleetSize: number | null }) {
   const options = yearOptions(gains);
   const [year, setYear] = useState<number>(options[0].year);
@@ -260,9 +283,7 @@ export function AiGainsSection({ gains, fleetSize }: { gains: AiGains; fleetSize
                 `${fmtNumber(s.per_battery_usd_year, 2)} $/battery-yr · share_of_best ${fmtNumber(s.share_of_best, 3)} · surplus_mwh ${fmtNumber(s.surplus_mwh, 1)}`,
               ] as [string, string],
           ),
-          ...(view.spike
-            ? ([['spike card', `always ${view.spike.year}: spike_charge_level, spike_mwh, spike_events`]] as [string, string][])
-            : []),
+          ...spikeRows(gains),
         ]}
       />
     </Panel>

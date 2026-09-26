@@ -2573,6 +2573,29 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 
+  /* The year switch takes the full width, each year's label on up to two lines. */
+  .ai-gains .panel-actions,
+  .ai-gains .panel-actions > span {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .ai-gains .segmented {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ai-gains .segmented label {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .ai-gains .segmented span {
+    width: 100%;
+    white-space: normal;
+    text-align: center;
+  }
+
   .gains-big {
     font-size: 42px;
   }

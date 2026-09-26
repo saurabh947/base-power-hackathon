@@ -29,11 +29,21 @@ interface Loaded {
   loading: boolean;
 }
 
+/** How long the page waits for GET /results/ai-gains before showing the results without that section. */
+const GAINS_PATIENCE_MS = 1500;
+
+interface Gains {
+  data: AiGains | null;
+  /** The first answer (or failure) is in. */
+  settled: boolean;
+}
+
 export function ResultsScreen() {
   const backend = useBackend();
   const [state, setState] = useState<Loaded>({ results: null, error: null, loading: true });
   // "What the AI adds": shown only when GET /results/ai-gains has something to show.
-  const [gains, setGains] = useState<AiGains | null>(null);
+  const [gains, setGains] = useState<Gains>({ data: null, settled: false });
+  const [patienceOver, setPatienceOver] = useState(false);
 
   /** GET /results/pitch; state changes only once the answer arrives. */
   const fetchResults = useCallback((signal?: AbortSignal) => {
@@ -56,10 +66,11 @@ export function ResultsScreen() {
    */
   const fetchGains = useCallback((signal?: AbortSignal) => {
     api.aiGains(signal).then(
-      (raw) => setGains(readAiGains(raw)),
+      (raw) => setGains({ data: readAiGains(raw), settled: true }),
       (err) => {
         if (signal?.aborted) return;
-        if (err instanceof ApiError && err.status >= 400 && err.status < 500) setGains(null);
+        const answered = err instanceof ApiError && err.status >= 400 && err.status < 500;
+        setGains((g) => ({ data: answered ? null : g.data, settled: true }));
       },
     );
   }, []);
@@ -68,7 +79,13 @@ export function ResultsScreen() {
     const controller = new AbortController();
     fetchResults(controller.signal);
     fetchGains(controller.signal);
-    return () => controller.abort();
+    // The section sits right under the headline row: wait a moment for it, so it does not push the page down
+    // just after it appears, but never hold the results back for long.
+    const patience = setTimeout(() => setPatienceOver(true), GAINS_PATIENCE_MS);
+    return () => {
+      controller.abort();
+      clearTimeout(patience);
+    };
   }, [fetchResults, fetchGains]);
 
   const reload = useCallback(() => {
@@ -80,6 +97,7 @@ export function ResultsScreen() {
   const { results, error, loading } = state;
   const headline = headlineOf(results);
   const year = results?.year ?? 2025;
+  const waitingForGains = !!results && !gains.settled && !patienceOver;
 
   return (
     <div className="page results">
@@ -93,7 +111,7 @@ export function ResultsScreen() {
         </p>
       </div>
 
-      {loading && !results ? (
+      {(loading && !results) || waitingForGains ? (
         <Notice
           kind="waiting"
           title={
@@ -116,11 +134,11 @@ export function ResultsScreen() {
         />
       ) : null}
 
-      {results && headline ? (
+      {waitingForGains ? null : results && headline ? (
         <div className="results-grid">
           <BigNumber results={results} headline={headline} />
           <ComparisonBars results={results} headline={headline} />
-          {gains ? <AiGainsSection gains={gains} fleetSize={results.fleet_size} /> : null}
+          {gains.data ? <AiGainsSection gains={gains.data} fleetSize={results.fleet_size} /> : null}
           <TopDays results={results} headline={headline} />
           <div className="span-5 stack">
             <HowWeGotThis results={results} />

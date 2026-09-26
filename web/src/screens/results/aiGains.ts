@@ -106,11 +106,11 @@ export interface YearOption {
   isPitch: boolean;
 }
 
-/** One option per year, the pitch year first. */
+/** One option per year, the pitch year first. On a phone a label breaks after the year, never inside the note. */
 export function yearOptions(gains: AiGains): YearOption[] {
   return gains.years.map((y) => ({
     year: y.year,
-    label: `${y.year} (${y.is_pitch ? 'headline year' : 'check year'})`,
+    label: `${y.year} (${y.is_pitch ? 'headline year' : 'check year'})`,
     isPitch: y.is_pitch,
   }));
 }

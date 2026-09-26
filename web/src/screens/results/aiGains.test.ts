@@ -217,9 +217,10 @@ describe('the year switch', () => {
   const g = read(measured());
 
   it('offers the pitch year first, labelled for a first-time visitor', () => {
+    // A no-break space inside the note, so a narrow switch wraps after the year.
     expect(yearOptions(g)).toEqual([
-      { year: 2025, label: '2025 (headline year)', isPitch: true },
-      { year: 2024, label: '2024 (check year)', isPitch: false },
+      { year: 2025, label: '2025 (headline year)', isPitch: true },
+      { year: 2024, label: '2024 (check year)', isPitch: false },
     ]);
     expect(yearsNote(g)).toBe('The headline number above is for 2025. 2024 is a second full year, to check that the gain holds.');
   });
