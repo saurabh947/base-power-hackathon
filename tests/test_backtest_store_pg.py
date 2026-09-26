@@ -144,6 +144,55 @@ def test_pitch_results_reads_the_database(pg, tmp_path):
     assert any("in all four cities: Houston (7), Dallas–Fort Worth (8)" in a for a in results["assumptions"])
 
 
+def test_a_cancelled_job_leaves_no_rows_and_a_finished_one_is_stored_by_the_job(pg, tmp_path, monkeypatch):
+    """POST /backtest's jobs: the runner computes and stores nothing; the job stores the records in backtest_runs
+    (as the pitch set) once it has finished, and never for a cancelled job."""
+    import json
+    import sys
+    import time
+
+    settings = backtest_settings()
+    settings["ceiling"].update(ratio_step=0.25, workers=1)
+    start = local_midnight_utc(date(2025, 6, 1))
+    rows = [r for r in load_rt_rows(years=(2025,), locations=LOCS)
+            if start - timedelta(days=7) <= r.ts < start + timedelta(days=14)]
+    outcome = run_backtest(["bands", "peak"], 2025, settings=settings, pitch=True, fleet_size=20,
+                           feed=InMemoryPriceFeed.from_intervals(rows), out_dir=tmp_path, log=lambda s: None,
+                           save=False)
+    assert pg.execute("SELECT count(*) FROM backtest_runs").fetchone()[0] == 0  # save=False: nothing
+    records_path = tmp_path / "records.json"
+    records_path.write_text(json.dumps(store.clean(outcome.records)))
+    monkeypatch.setenv("BACKTEST_RESULTS_DIR", str(tmp_path / "results"))
+
+    def stand_in(delay_s):  # writes what the real runner writes, after `delay_s`
+        def command(names, year, status_file, records_file=None):
+            status = {"run_ids": outcome.run_ids, "skipped": {}, "error": None,
+                      "ceiling_run_id": outcome.ceiling["run_id"]}
+            code = (f"import shutil, sys, time; time.sleep({delay_s}); "
+                    f"shutil.copyfile({str(records_path)!r}, {records_file!r}); "
+                    f"open({status_file!r}, 'w').write({json.dumps(status)!r})")
+            return [sys.executable, "-c", code]
+        return command
+
+    monkeypatch.setattr(service, "runner_command", stand_in(20.0))
+    job_id = service.start_backtest(["bands", "peak"], 2025)
+    deadline = time.monotonic() + 10
+    while not service._jobs[job_id]["pid"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert service.cancel_job(job_id) == {"status": "cancelled"}
+    assert service._jobs[job_id]["settled"].wait(10)
+    assert pg.execute("SELECT count(*) FROM backtest_runs").fetchone()[0] == 0
+    assert not (tmp_path / "results").exists()
+    monkeypatch.setattr(service, "runner_command", stand_in(0.0))
+    job_id = service.start_backtest(["bands", "peak"], 2025)
+    assert service._jobs[job_id]["settled"].wait(20)
+    assert service.get_job(job_id)["status"] == "done"
+    stored = {r["run_id"] for r in store.load_pitch_records(2025)}
+    assert stored == {r["run_id"] for r in outcome.records}
+    with pytest.raises(service.JobNotRunning):
+        service.cancel_job(job_id)
+
+
 def _synthetic_forecast_run(year: int = 2025) -> dict:
     """A forecast run on SYNTHETIC forecast books (test doubles, not TimesFM) over the mini window."""
     import numpy as np

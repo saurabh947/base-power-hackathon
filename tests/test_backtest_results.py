@@ -231,13 +231,18 @@ def test_runner_command_is_the_cli():
     cmd = service.runner_command(["bands", "peak"], 2025, "/tmp/s.json")
     assert cmd[1:] == ["-m", "src.backtest.runner", "--strategies", "bands,peak", "--year", "2025", "--pitch",
                        "--status-file", "/tmp/s.json"]
+    # the API's jobs: the runner stores nothing and hands the records over (a cancel can't leave a trace)
+    assert service.runner_command(["bands"], 2025, "/tmp/s.json", "/tmp/r.json")[-2:] == ["--records-out",
+                                                                                          "/tmp/r.json"]
 
 
 def fake_runner(delay_s: float, status: dict, exit_code: int):
-    """Stands in for the CLI subprocess (a real run takes a minute): sleeps, writes the status file."""
+    """Stands in for the CLI subprocess (a real run takes a minute): sleeps, writes the status file (and no
+    records: the job has nothing to store)."""
 
-    def command(names, year, status_file):
-        code = (f"import json, sys, time; time.sleep({delay_s}); "
+    def command(names, year, status_file, records_file=None):
+        records = f"open({records_file!r}, 'w').write('[]'); " if records_file else ""
+        code = (f"import json, sys, time; time.sleep({delay_s}); {records}"
                 f"open({status_file!r}, 'w').write(json.dumps({status!r})); sys.exit({exit_code})")
         return [sys.executable, "-c", code]
 
@@ -307,6 +312,20 @@ def test_cli_full_year_small_fleet(tmp_path, capsys):
     assert record["metrics"]["coverage"]["fraction"] == 1.0  # the whole of 2025 has prices
     assert record["metrics"]["ticks_replayed"] == 105120
     assert not (tmp_path / "pitch_2025.json").exists()  # not a pitch run
+
+
+def test_cli_records_out_stores_nothing(tmp_path, capsys):
+    """The API's jobs run the CLI with --records-out: it computes, writes the records there and stores nothing."""
+    status_file, records_file, out = tmp_path / "status.json", tmp_path / "records.json", tmp_path / "out"
+    code = runner.main(["--strategies", "peak", "--year", "2025", "--fleet-size", "4", "--no-ceiling", "--no-lag0",
+                        "--pitch", "--out", str(out), "--status-file", str(status_file), "--records-out",
+                        str(records_file)])
+    assert code == 0
+    records = json.loads(records_file.read_text())
+    assert [r["strategy"] for r in records] == ["peak"] and records[0]["metrics"]["insights"]["spike_events"] == 21
+    assert json.loads(status_file.read_text())["run_ids"] == [records[0]["run_id"]]
+    assert not out.exists()  # no JSON export, no pitch set: the job stores them if it isn't cancelled
+    assert "stored: nothing" in capsys.readouterr().out
 
 
 def test_cli_year_without_prices(tmp_path):

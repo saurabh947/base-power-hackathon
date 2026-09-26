@@ -150,13 +150,17 @@ For each 5-minute tick and each location, in this order, using the shared module
 
 - **`start_backtest(strategies, year) -> job_id`**
   - Validates the input and raises `ValueError` with a plain sentence (should map to 400).
-  - Runs `python -m src.backtest.runner --pitch` in a subprocess, so replay CPU never holds the API process's GIL.
+  - Runs `python -m src.backtest.runner --pitch --records-out FILE` in a subprocess (its own process group), so
+    replay CPU never holds the API process's GIL. The runner stores nothing; the job stores the finished records
+    (see "Stopping a re-run" below).
   - Runs one job at a time. While a job runs, it returns that job's id.
   - A finished job's runs become the pitch set.
-- **`get_job(job_id) -> {"status", "run_ids", "error"}`**
+- **`get_job(job_id) -> {"status", "run_ids", "skipped", "error"}`**
+  - `status` is `running`, `done`, `failed` or `cancelled`.
   - Raises `KeyError` for an unknown id (404).
-  - `run_ids` holds the strategy runs plus the ceiling row.
+  - `run_ids` holds the strategy runs plus the ceiling row (empty unless done).
   - `error` is one plain sentence.
+- **`cancel_job(job_id) -> {"status": "cancelled"}`**: `KeyError` (404), `JobNotRunning` (409 `not_running`).
 - **`pitch_results(year=None) -> Results`**
   - Reads the `is_pitch` rows when a database is configured, else `data/results/pitch_<year>.json`.
   - It also falls back to that file if the database fails or has no rows.
@@ -266,6 +270,34 @@ Tests: `tests/test_backtest_insights.py` (revenue identity, hand-checked definit
 `tests/test_backtest_ai_gains.py` (the rules; mini backtests through the JSON store, the service and the API;
 the forecast runs there use synthetic forecast books, labelled as test doubles), `tests/test_backtest_store_pg.py`
 (the database path gives the same object; runs without insights), `tests/test_api_unit.py` (501 bridge, 404).
+
+### Stopping a re-run: `POST /backtest/{job_id}/cancel` (`service.cancel_job`)
+
+- **The job now stores the results itself, not the runner.** `POST /backtest` runs
+  `python -m src.backtest.runner --pitch --records-out FILE` in its own process group: the runner computes the
+  records and writes them to FILE, storing nothing (`run_backtest(save=False)`). When it exits cleanly, the job
+  thread stores them as the pitch set (`store.save_records(..., pitch=True)`: JSON, then backtest_runs), unless the
+  job was cancelled first. That check and the "now storing" mark happen under the job lock, so a cancel either
+  wins (nothing is ever stored) or comes after the point of no return.
+- **Cancel:** a running job is marked `cancelled` at once (`GET /backtest/{id}` says so from then on, with no
+  run_ids), its process group gets SIGTERM (the runner and the ceiling's LP pool die at once; they have no
+  handler) and SIGKILL after `CANCEL_GRACE_S` (3 s) if anything is still alive. The API emits `backtest_done`
+  (severity info): *"The full-year re-run was stopped. The previous results are still shown."*, or, if there were
+  no results before, *"The full-year run was stopped before it finished, so there are no full-year results yet."*
+  It is sent once per job (the cancel call, the job thread and a later `GET /backtest/{id}` share the event key).
+- **409 `not_running`** for a job that is done, failed or already cancelled. A cancel that arrives while a
+  finished job is storing its records (well under a second) waits for that to land and then answers 409: the
+  results are whole and the job is done. **404 `unknown_job`** for an unknown id. A new `POST /backtest` works at
+  once after a cancel (the old process may still be exiting; it can't store anything).
+- Timing: the stand-in runner stops within ~0.1 s of the cancel; one that ignores SIGTERM is killed after the grace
+  period; the real runner (cancelled 1.5 s in) is gone before the call returns.
+- Left behind by a cancel: at most the ceiling's per-kWh curve cache in `data/results/cache/`, which is keyed by the
+  prices and physics (not a result, and exactly what the next run would compute).
+- The cloud job (`fleet-sim-backtest`, the CLI with `--pitch` and no `--records-out`) stores as before.
+- Tests: `tests/test_backtest_cancel.py` (API: cancel while running, nothing stored, the event; SIGKILL after the
+  grace period; 409 after done; 404; start again after a cancel; a cancel during the store; the real runner),
+  `tests/test_backtest_store_pg.py` (no rows from a cancelled job; a finished job's rows are stored by the job),
+  `tests/test_backtest_results.py` (`--records-out`).
 
 ### Picking the race's demo day: `--daily`
 

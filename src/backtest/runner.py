@@ -434,8 +434,12 @@ def run_backtest(
     fast: bool = True,
     out_dir: str | Path | None = None,
     log: Callable[[str], None] = print,
+    save: bool = True,
 ) -> BacktestOutcome:
-    """Run strategies over a year, add the ceiling, export JSON, and persist to Postgres."""
+    """Run strategies over a year, add the ceiling, export JSON, and persist to Postgres.
+
+    save=False stores nothing: the caller gets the records and decides (the API's cancellable jobs).
+    """
     from src.backtest import store
 
     settings = settings or backtest_settings()
@@ -471,6 +475,8 @@ def run_backtest(
         ceiling_record = ceiling_mod.ceiling_record(ctx, out_dir=out_dir, log=log)
         records.append(ceiling_record)
         log(f"ceiling: ${ceiling_record['per_battery_avg_usd']:,.2f}/battery in {time.perf_counter() - t1:.1f}s")
+    if not save:
+        return BacktestOutcome(records, skipped, ceiling_record, False, [])
     saved = store.save_records(records, pitch=pitch, use_db=use_db, out_dir=out_dir, settings=settings, cfg=ctx.cfg)
     return BacktestOutcome(records, skipped, ceiling_record, saved.in_db, saved.paths)
 
@@ -520,7 +526,10 @@ def format_report(outcome: BacktestOutcome) -> str:
             f"(fleet ${c['fleet_usd_year']:,.0f})",
             f"  method: {m['method']}",
         ]
-    lines.append(f"\nstored: {'backtest_runs + ' if outcome.stored_in_db else ''}{', '.join(outcome.json_paths)}")
+    if outcome.stored_in_db or outcome.json_paths:
+        lines.append(f"\nstored: {'backtest_runs + ' if outcome.stored_in_db else ''}{', '.join(outcome.json_paths)}")
+    else:
+        lines.append("\nstored: nothing (the records were handed to the caller)")
     return "\n".join(lines)
 
 
@@ -538,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fleet-size", type=int, help="override fleet.size (e.g. a quick 200-battery run)")
     p.add_argument("--out", help=f"JSON export directory (default: {settings['results_dir']})")
     p.add_argument("--status-file", help="write {run_ids, skipped, error} JSON here when done (used by the API)")
+    p.add_argument("--records-out", help="store nothing: write the finished records here as JSON instead (the API's "
+                                         "cancellable jobs store them once the run is complete)")
     args = p.parse_args(argv)
     if args.no_lag0:
         settings["lag0_variant"] = False
@@ -547,7 +558,13 @@ def main(argv: list[str] | None = None) -> int:
         outcome = run_backtest(names, args.year, settings=settings, pitch=args.pitch,
                                use_db=False if args.no_db else None, ceiling=not args.no_ceiling,
                                fleet_size=args.fleet_size, fast=not args.seam, out_dir=args.out,
-                               log=lambda s: print(s, file=sys.stderr, flush=True))
+                               log=lambda s: print(s, file=sys.stderr, flush=True), save=not args.records_out)
+        if args.records_out:
+            from src.backtest.store import clean
+
+            tmp = Path(args.records_out + ".tmp")
+            tmp.write_text(json.dumps(clean(outcome.records), allow_nan=False))
+            tmp.replace(args.records_out)  # whole or not at all
         status.update(run_ids=outcome.run_ids, skipped=outcome.skipped,
                       ceiling_run_id=outcome.ceiling["run_id"] if outcome.ceiling else None)
         print(format_report(outcome))
