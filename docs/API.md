@@ -62,6 +62,17 @@ Change it only through the integrator.
 | 409 | `already_dead` | That worker is already dead |
 | 409 | `too_few_healthy` | The kill would leave fewer than 2 healthy workers |
 
+**Other error codes:**
+
+| Code | Meaning |
+|---|---|
+| `no_active_run` | Pause, resume or speed was called with no run |
+| `simulator_unavailable` | The coordinator isn't up yet (cold start) |
+| `unknown_worker` | worker_id outside 0–19 |
+| `unknown_battery` | No battery with that id |
+| `not_a_worker` | The pid is not a registered worker, so it is never killed |
+| `invalid_*` | A malformed field, e.g. `invalid_speed` |
+
 **`GET /settings` item shapes:**
 - Preset: `{"id", "label", "date_local", "start_utc", "start_local", "description"}`
 - Strategy: `{"id": "bands", "label": "Simple rule", "description": "…"}`
