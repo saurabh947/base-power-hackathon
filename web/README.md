@@ -52,7 +52,7 @@ rebuilds the Texas outline (below).
 | `npm run mock` | Standalone mock API on port 8787 (`MOCK_PORT` to change) |
 | `npm run typecheck` | `tsc -b` over the app, the mock and the configs |
 | `npm run lint` | oxlint (correctness, suspicious, React hooks, jsx-a11y), warnings fail |
-| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, results rows, "What the AI adds" (uplift maths, wording, year switch, the 2024 spike card), the race and its events, map (projection, outline, layout and status decoding, cells, looks, selection, labels), mock, AA contrast of the site's one theme |
+| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, results rows, "What the AI adds" (uplift maths, wording, year switch, the 2024 spike card), the full-year re-run's Stop, the race and its events, map (projection, outline, layout and status decoding, cells, looks, selection, labels), mock, AA contrast of the site's one theme |
 | `npm run build` | typecheck, `vite build` to `dist/` (no source maps), then `scripts/check-dist.mjs` fails if any mock code shipped |
 | `npm run check` | all of the above |
 
@@ -69,8 +69,9 @@ One setting, read at **build time**:
 - Unset on Vercel (`VERCEL=1`): the build fails on purpose with a message saying what to set.
 
 Presenter mode needs no configuration here. The passcode lives in Secret Manager on the backend; a presenter
-types it after clicking the small "Presenter" link in the footer. The site keeps it in `sessionStorage` only
-(gone when the tab closes) and sends it as the `X-Presenter-Passcode` header.
+types it after clicking the "Presenter mode" link in the header (top right, left of "Show technical details"),
+which reads "Leave presenter mode" while it is on. The site keeps the passcode in `sessionStorage` only (gone
+when the tab closes) and sends it as the `X-Presenter-Passcode` header. The site has no footer.
 
 ## Deploy to Vercel
 
@@ -86,8 +87,8 @@ The human owns the Vercel account; the integrator deploys. The project's **Root 
 4. Deploy: `npx vercel --prod`.
 5. CORS: the API allows `https://*.vercel.app` (docs/API.md). For a custom domain, pass it to
    `scripts/cloud/deploy.sh https://your.domain` so it lands in `CORS_ORIGINS`.
-6. Check: open the site, turn on "Show technical details" and look at the footer: it shows the API URL and the
-   backend version. The Live screen's top bar should say "Live updates".
+6. Check: open the site, turn on "Show technical details" and look at the header: it shows the API URL and the
+   backend version. The Live screen should say "Live updates".
 
 `vercel.json` also rewrites every path to `index.html` (the site uses `/`, `/live` and `/results`), caches the
 hashed files in `/assets` for a year, and sets a few security headers. Vercel runs Node 22 per `engines`.

@@ -6,16 +6,23 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 ## What was built
 
 - **One look for the whole site** (2026-09-26, the human: "change the results and the start page to match the theme
-  of the live page"): every page, the header and the footer use the live map's theme, always dark whatever the
-  browser's colour preference: the dark gray page (#25282c), compact translucent dark panels with light text and
-  small spaced-capital titles like the map's corners, green for the primary action (Start, Watch live, Resume) and
-  links, red only for failures and the map's Texas outline.
+  of the live page"): every page and the header use the live map's theme, always dark whatever the browser's
+  colour preference: the dark gray page (#25282c), compact translucent dark panels with light text and small
+  spaced-capital titles like the map's corners, green for the primary action (Start, Watch live, Resume) and links,
+  red only for failures and the map's Texas outline.
+- **Header, no footer** (2026-09-26, the human): the header has the brand, Start / Live / Results, then on the
+  right the "Presenter mode" link and the "Show technical details" switch (with technical details on, also the API
+  URL and backend version, shortened with "…" when the header is full). There is no footer on any page: its
+  sentence "Prices are real data from ERCOT, the Texas grid operator. The batteries and the money are simulated."
+  is gone (it was nowhere else), and its Presenter link and technical line moved to the header. The Census outline
+  is public domain, so no attribution is needed. The mock-only "Practice data" banner and the map caption stay.
 - **Start** (`/`): headline and subhead from docs/UX.md, with "20,000 home batteries" in a selling battery's green;
   the run-settings card above the big green "Start the simulation" button (Where: "Dallas–Fort Worth, Houston, San
   Antonio, and Austin", the Texas Triangle); a "Change settings" editor for exactly preset, speed, decision method
   and starting charge; "Waking up the simulator… (usually a few seconds)" while `GET /health` is slow or failing;
   "A simulation is running. Watch live" plus "Start over" when `GET /health` reports a run. One calm column,
-  centred between the header and the footer; no map (the map is the Live page's).
+  centred under the header; no map (the map is the Live page's). The "Real prices", "Keeps working when parts
+  crash" and "Honest money" boxes were removed at the human's request (2026-09-26).
 - **Live** (`/live`) opens on the **live map** (docs/UX.md, "Live map"):
   - a full-window, always-dark gray page (#25282c) with Texas as a bright red outline and the 20,000 batteries as
     green dots from `GET /fleet/layout` and `battery_status`;
@@ -25,7 +32,7 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
     city's price with its ¢/kWh, a 6-hour mini line with charge/sell shading and the forecast band); top-right
     money earned (fleet or `totals.by_location`), the race, and power asked for vs delivered (numbers, sparkline,
     On target); bottom-left Pause/Resume, Speed, Reset, Take batteries offline, the presenter-only Crash a
-    controller, "Show charts" and the Presenter link; bottom-right the 20 controllers (those serving the selected
+    controller and "Show charts" (the Presenter link moved to the header); bottom-right the 20 controllers (those serving the selected
     city highlighted, from `workers[].by_location`), batteries online and by state (doubling as the dot legend),
     and the last 3 events;
   - **the race** (2026-09-26, approved by the human): under the money, "RACE ↑ AI forecast ahead by $15,290"
@@ -67,8 +74,17 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Mock** additions: the race (a shadow fleet on the comparison strategy) in snapshots and frames, `race_update`
   events at a spike's start and end, and `GET /results/ai-gains` with the measured numbers from RUNLOG.md; the
   pitch results' per-battery figures now come from the same measured run (the practice banner says so).
-- **Presenter mode**: "Presenter" link (footer, or the map's controls corner) → passcode dialog →
-  `POST /presenter/check`; passcode kept in sessionStorage only and sent as `X-Presenter-Passcode`.
+- **Re-run the full year, Stop** (2026-09-26, the human): a "Stop" button next to "Re-run the full year", enabled
+  only while a re-run runs. It sends `POST /backtest/{job_id}/cancel`: on 200 it says "Stopped. The previous
+  results are still shown." (or "Stopped. No full-year results were saved." when there were none) and the page
+  keeps its results; on 409 `not_running` the next status poll says how the run ended; on 404 the job is
+  forgotten; if the simulator cannot be reached the re-run goes on and a plain error shows. A polled status of
+  `cancelled` (someone else's Stop: the re-run is shared) shows the same message. `src/screens/results/rerun.ts`
+  (tested).
+- **Presenter mode**: the "Presenter mode" link in the header (top right, left of "Show technical details") →
+  passcode dialog ("Enter a passcode to enter presenter mode") → `POST /presenter/check`; passcode kept in
+  sessionStorage only and sent as `X-Presenter-Passcode`. While presenter mode is on, the link reads "Leave
+  presenter mode". Esc closes the dialog and returns focus to the link.
 - **Language**: every panel has a one-line "What is this?" and an optional "How it works"; "Show technical details"
   reveals raw values and spec terms in brackets (on the map too: location ids, raw kW, error_pct, status codes,
   and the map's own sizes and timings); numbers carry units and a human translation.
@@ -122,9 +138,9 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
   dark` (and `<meta name="color-scheme" content="dark">`, so form controls and the first paint are dark too); the
   former light, dark and `data-theme="map"` variants are gone, and the charts no longer rebuild on a
   prefers-color-scheme change. Panels everywhere use the map corners' `--panel` (translucent), `--panel-border`,
-  12 px radius and shadow; their titles are small spaced capitals like the corners' labels. The header and the
-  footer span the window on every page, as on the map, so nothing jumps when moving between pages. On the map the
-  footer is still hidden (its Presenter link is in the controls corner) and toasts sit bottom-centre.
+  12 px radius and shadow; their titles are small spaced capitals like the corners' labels. The header spans the
+  window on every page, as on the map, so nothing jumps when moving between pages. On the map toasts sit
+  bottom-centre.
 - **Colours with a job**: green (`--accent`, the map's battery green) is the primary action and links, with dark
   text on it; red stays for failures and the Texas outline (never the main action); neutral news (info notices and
   events) is blue, so it never reads as "good"; the keyboard focus ring is blue too, distinct from the green
@@ -134,8 +150,8 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
   checks that no colour-scheme or data-theme variant comes back and that every token the stylesheets use exists.
 - **Start without a map**: a faint Texas outline with glowing cities was tried behind the Start content and removed
   at the human's request ("why is there a texas map on the start page? i think its repetitive"): the map belongs
-  on the Live page. Start is one calm column instead, centred between the header and the footer, with the Start
-  button above the fold at 1280 × 800 (even with the practice banner).
+  on the Live page. Start is one calm column instead, centred under the header, with the Start button above the
+  fold at 1280 × 800 (even with the practice banner, which now needs no scrolling at all).
 - **Results rows**: `src/screens/results/model.ts` (tested) orders the methods (simple rule, AI forecast, evening
   peak, then the hindsight ceiling), sizes the bars against the longest, and turns `per_location_usd` into "By city"
   rows, biggest first. Those are fleet totals per city (docs/API.md); the site does not divide them by a city's
@@ -207,8 +223,9 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Per frame**: decode `battery_status` + re-count per cell + restyle 0.4–0.5 ms; paint 0.1–0.2 ms (slowest of the
   last 120 paints 0.4–0.6 ms, during transitions); building the cells after a resize or a new layout 2.5–4.7 ms.
   448 dots at both sizes.
-- **Bundle**: 442.7 KB JS (146.6 KB gzip) and 45.5 KB CSS with "What the AI adds" and the race (425.7 KB, 141.3 KB
-  and 39.6 KB before; 424.2 KB and 37.2 KB before the site-wide theme; 372.4 KB JS before the map).
+- **Bundle**: 442.3 KB JS (146.3 KB gzip) and 45.2 KB CSS with "What the AI adds", the race, the Stop button and
+  without the footer (425.7 KB, 141.3 KB and 39.6 KB before; 424.2 KB and 37.2 KB before the site-wide theme;
+  372.4 KB JS before the map).
 - **Right-hand corners at 1280 × 800** (with the practice banner, a city selected): money corner with the race
   315 px, fleet corner 357 px, 21 px apart; all of Texas: 73 px apart. The race block is 59 px tall.
 - **Results at 1280 × 800**: the "What the AI adds" panel is 642 px tall, so it fits one screen when scrolled to.
@@ -237,6 +254,9 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
   `by_location[city]` gives a city's revenue, `charge_level` and `action`; the live side's charge and action come
   from the latest tick.
 - **`race_update` events**: shown verbatim like every event, with a flag icon, coloured by `severity`.
+- **`POST /backtest/{job_id}/cancel`**: the Stop button; 200 → stopped, 409 `not_running` → the next
+  `GET /backtest/{job_id}` says how it ended, 404 → the job is forgotten. `GET /backtest/{job_id}` status
+  `cancelled` ends the polling with the "Stopped" message; nothing is reloaded, since nothing was stored.
 - **`GET /results/ai-gains`**: `ai` and `baseline` pick the two strategies (default forecast and bands); the
   `is_pitch` year is "(headline year)", any other "(check year)"; `share_of_best`, `surplus_mwh`, `spike_*` as
   documented; 404 `no_results` hides the section.
@@ -275,7 +295,14 @@ compression and the Vercel set-up are done.)
      bars; per city from `race.by_location`; hidden while idle), then power. "What just happened": `race_update`
      events with a flag icon. "Show charts": the race in the money card.
    - Principle 6: green is also the primary action and links; blue is neutral information and the keyboard focus
-     ring. Start: no map (the map belongs on Live).
+     ring. Start: no map (the map belongs on Live), and no "Real prices" / "Keeps working when parts crash" /
+     "Honest money" boxes.
+   - Presenter mode: reached from the "Presenter mode" link in the header (top right, left of "Show technical
+     details"), not the footer; the dialog says "Enter a passcode to enter presenter mode"; while on, the link
+     reads "Leave presenter mode". The Live map's bottom-left corner no longer has a Presenter link.
+   - There is no footer on any page.
+   - Results, "Re-run the full year": a "Stop" button (enabled only while a re-run runs, `POST
+     /backtest/{job_id}/cancel`), then "Stopped. The previous results are still shown."
 2. **Backend, race**: please send `race` in `GET /state` too (it is the snapshot; polling clients read it), label
    the forecast strategy "AI forecast (TimesFM-3)" or similar (the map drops the bracket: "AI forecast"), and give
    the after-a-spike `race_update` severity `good` when the live strategy leads (the flag takes the severity's

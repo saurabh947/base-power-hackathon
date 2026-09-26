@@ -109,7 +109,11 @@ Knobs (environment variables, for either mode):
   crash a controller, wait.
 - Cities that switch action at the same step share one event ("Batteries in all four cities started selling at
   about $1,757/MWh"), and so do price spikes.
-- `POST /backtest` while a job runs returns that job's id; job status includes `skipped` (always empty here).
+- `POST /backtest` while a job runs returns that job's id; job status includes `skipped` (always empty here). A
+  job takes 6 s.
+- `POST /backtest/{job_id}/cancel` stops a running job: `200 {"status": "cancelled"}`, then its status reads
+  `cancelled`, nothing is stored and the previous results stay; a `backtest_done` event says it was stopped.
+  `409 not_running` once it has finished or been stopped, `404 unknown_job` for an unknown id.
 
 ## Files
 
