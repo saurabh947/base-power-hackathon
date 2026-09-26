@@ -122,13 +122,25 @@ async def _watch_parent() -> None:
 
 def _backtest_listener(job_id: str, job: dict) -> None:
     """src.backtest.service calls this from its job thread when a full-year run ends."""
-    if job.get("status") != "done":
-        return
     try:
-        backend().emit("backtest_done", "good", "The full-year results are ready.",
-                       detail={"job_id": job_id, "run_ids": job.get("run_ids")}, once_key=f"backtest:{job_id}")
+        if job.get("status") == "done":
+            backend().emit("backtest_done", "good", "The full-year results are ready.",
+                           detail={"job_id": job_id, "run_ids": job.get("run_ids")}, once_key=f"backtest:{job_id}")
+        elif job.get("status") == "cancelled":
+            _emit_stopped(job_id)
     except Exception as exc:
         print(f"[api] backtest_done event not published: {exc!r}", file=sys.stderr, flush=True)
+
+
+STOPPED_MESSAGE = "The full-year re-run was stopped. The previous results are still shown."
+
+
+def _emit_stopped(job_id: str) -> None:
+    """backtest_done for a cancelled job, once per job (the cancel call, the job thread and a poll may all try)."""
+    svc = importlib.import_module("src.backtest.service")
+    message = svc.stopped_message() if hasattr(svc, "stopped_message") else STOPPED_MESSAGE
+    backend().emit("backtest_done", "info", message, detail={"job_id": job_id, "status": "cancelled", "run_ids": []},
+                   once_key=f"backtest:{job_id}")
 
 
 _listener_added = False
@@ -428,15 +440,36 @@ async def backtest_job(job_id: str):
         job = await run_in_threadpool(svc.get_job, job_id)
     except KeyError:
         raise ctl.ControlError(404, "unknown_job", "There's no full-year run with that ID.") from None
-    if job.get("status") == "done":  # also covered by the service listener; deduped by once_key
+    if job.get("status") in ("done", "cancelled"):  # also covered by the service listener; deduped by once_key
         try:
-            await run_in_threadpool(backend().emit, "backtest_done", "good", "The full-year results are ready.",
-                                    detail={"job_id": job_id, "run_ids": job.get("run_ids")},
-                                    once_key=f"backtest:{job_id}")
+            if job["status"] == "done":
+                await run_in_threadpool(backend().emit, "backtest_done", "good", "The full-year results are ready.",
+                                        detail={"job_id": job_id, "run_ids": job.get("run_ids")},
+                                        once_key=f"backtest:{job_id}")
+            else:
+                await run_in_threadpool(_emit_stopped, job_id)
         except Exception:
             pass
     return {"status": job.get("status"), "run_ids": list(job.get("run_ids") or []),
             "skipped": dict(job.get("skipped") or {}), "error": job.get("error")}
+
+
+@app.post("/backtest/{job_id}/cancel")
+async def backtest_cancel(job_id: str):
+    """Stop a running full-year job: 200 {"status": "cancelled"}; nothing it computed is stored."""
+    svc = _bridge("src.backtest.service")
+    not_running = getattr(svc, "JobNotRunning", ())
+    try:
+        result = await run_in_threadpool(svc.cancel_job, job_id)
+    except KeyError:
+        raise ctl.ControlError(404, "unknown_job", "There's no full-year run with that ID.") from None
+    except not_running:
+        raise ctl.ControlError(409, "not_running", "That full-year run has already finished.") from None
+    try:
+        await run_in_threadpool(_emit_stopped, job_id)
+    except Exception as exc:  # the job thread tries again once the process has stopped
+        print(f"[api] backtest_done event not published: {exc!r}", file=sys.stderr, flush=True)
+    return {"status": result.get("status", "cancelled")}
 
 
 @app.get("/results/pitch")
@@ -448,6 +481,20 @@ async def results_pitch():
     except not_found:
         result = None
     if not result:
+        raise ctl.ControlError(404, "no_results", "No full-year results yet.")
+    return _plain(result)
+
+
+@app.get("/results/ai-gains")
+async def results_ai_gains():
+    """docs/API.md AiGains: what the AI forecast adds over the simple rule, per year (the pitch year first)."""
+    svc = _bridge("src.backtest.service")
+    not_found = getattr(svc, "ResultsNotFound", LookupError)
+    try:
+        result = await run_in_threadpool(svc.ai_gains)
+    except not_found:
+        result = None
+    if not result or not result.get("years"):
         raise ctl.ControlError(404, "no_results", "No full-year results yet.")
     return _plain(result)
 
@@ -556,4 +603,4 @@ def _fallback_snapshot() -> dict:
     return {"type": "snapshot", "run_id": None, "status": "idle", "sim_time_utc": None,
             "speed_tps": idle["speed_tps"], "settings": None, "history": [], "totals": idle["totals"],
             "workers": [], "failed_commands": {"count": 0, "recent": []}, "availability": idle["availability"],
-            "events": [], "forecast": {}, "battery_status": idle_battery_status(CFG.fleet.size)}
+            "events": [], "forecast": {}, "battery_status": idle_battery_status(CFG.fleet.size), "race": None}

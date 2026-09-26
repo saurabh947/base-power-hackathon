@@ -351,6 +351,97 @@ b17600–b19999). Everything below is built against docs/API.md as written.
 | `test_fleet_launcher.py` | SIGTERM → exit 0 with nothing left running; dead coordinator → exit 1; SIGKILLed launcher → no orphans. |
 | `test_contracts_battery.py[redis]` | The Redis BatteryAdapter passes the frozen seam's 25 contract tests. |
 
+## The live race (2026-09-26): a shadow fleet on the simple rule
+
+docs/API.md `Race` and the `race_update` event. Code: `src/sim/race.py`, hooks in the coordinator
+(`_start_race`, `_race_step`, `_race_events`, `snapshot()["race"]`), `race` in the API's snapshot and frames
+(`src/api/live.py`). Tests: `tests/test_race.py` (no services), `tests/test_race_fleet.py` (Redis).
+
+### What it is
+
+- **Strategy:** `race.comparison_strategy(live)`: `bands` ("Simple rule"), or `forecast` when the live run's
+  effective strategy is `bands`. One instance per city from `build_strategy_set` (so `make_strategy(cfg.strategy,
+  tick_seconds, name)` with no extra context, as the live fleet builds them; a forecast instance loads only its
+  city's forecasts, which changes no decision). The label comes from config `backtest.labels`.
+- **Start state:** the same batteries, built the backtest's way (`engine.build_fleets` = `generate_batteries` +
+  `assign_locations`, once per coordinator and checked id-for-id and kWh-for-kWh against the live layout), all at
+  the run's `start_charge_level`.
+- **Each tick,** for each city, exactly the backtest engine's steps: the Strategy through `StrategyTargets` over the
+  live run's own `PriceWindow` (`decision_tick`, the same lag, the same trailing history as the live fleet), then
+  `engine.deliver` (headroom_kw, allocate, battery.step, grid kWh from the SoC change: the function
+  `replay_location` now calls too). The kWh are booked at that tick's RT price exactly as `BacktestLedger.record`
+  books them. It steps right after the live commands go out, while the workers apply them.
+- **Availability overrides are mirrored** (an offline battery has no headroom and holds its charge; H and the
+  strategy's fleet_soc cover the available batteries only, as for the live fleet). **Crashes are not:** the race has
+  no controllers.
+- **`race` is `null`** while idle, while a run is `starting` (the second before its first tick is prepared), for
+  internal fixed-target runs, and when the comparison strategy can't run in any city (a live simple rule with no AI
+  forecasts anywhere, as on a laptop: there is nothing to race). If only some cities have forecasts, those race the
+  AI and the others race the simple rule (both fleets are then identical there). `FLEET_RACE=0` switches it off.
+- **Block** (snapshot, every frame, `GET /state`): `strategy`, `label`, `revenue_usd` (fsum of the cities, as the
+  Ledger totals), `by_location` {`revenue_usd`, `charge_level`, `action`}, `charge_level` (capacity-weighted over all
+  batteries, as `Tick.charge_level`), `live_minus_race_usd` = the live `totals.revenue_usd` minus the race's (same
+  snapshot). Finished and paused runs keep it.
+
+### race_update events
+
+- A spike begins when any city's 5-minute price reaches `api.price_spike_usd_mwh` ($1,000/MWh) and no spike is open;
+  it ends once every city is below half of that (the `price_spike` event's hysteresis). One event each, so at most
+  two per spike episode.
+- Start: both fleets' charge levels **just before** the spike's first step. Prices within 5% of each other are shown
+  as one number, weighted by each city's batteries; otherwise the highest ("as much as"). The AI is named first when
+  it is in the race. Detail: `phase: "spike_started"`, the prices, both charge levels.
+- End: the lead over the whole run so far ("ahead of" / "behind" / "have earned the same so far"). Severity `good`
+  when the live strategy leads (by a dollar or more), `info` otherwise. Detail: `phase: "spike_ended"`, both
+  revenues, what each earned during the spike, `live_minus_race_usd`.
+- Labels everywhere come from config `backtest.labels`: the race's `label`, the `run_started` sentence, the
+  Results, `/settings` and AI gains ("AI forecast (TimesFM-3)", "Simple rule", "Evening peak").
+- Real output (live evening peak, 20,000 batteries, the summer_spike preset from 6 pm at 90%, 2 ticks/s):
+  *"Prices jumped to $1,757 in all four cities. The evening-peak rule had 20% charge left; the simple rule had
+  30%."* then *"The evening-peak rule is now $36,904 behind the simple rule."* With the AI live (the default) the
+  same events read *"... The AI fleet had X% charge left; the simple rule had Y%."* and *"The AI is now $N ahead of
+  the simple rule."* (docs/API.md's examples, word for word in `tests/test_race.py`).
+
+### Parity with src.backtest: bit for bit
+
+- `tests/test_race.py`: the race, driven as the coordinator drives it, equals `src.backtest.runner.replay` for the
+  same window from the same start state, **exactly** (`==` on each city's revenue, the fleet total and every
+  battery's final SoC): bands on the summer_spike evening at the full 20,000, on 2025-01-01 (warm-up in 2024) and on
+  the spike evening, against both the bands fast path and the per-tick seam; the AI forecast (synthetic forecast
+  books); and availability changing mid-run (30% of Houston and a 300-battery block of DFW offline 8-9 pm, compared
+  with a backtest replayed in segments with the same masks; the offline batteries' SoC doesn't move).
+- `tests/test_race_fleet.py`, through the real coordinator and workers: the race's cities equal the backtest's for
+  bands bit for bit while the live evening peak runs next to it (and the live ledger equals the backtest's peak
+  summary), so `live_minus_race_usd` = backtest(peak) - backtest(bands); the 9 pm spike's two events with the right
+  times, words and charge levels; availability mirrored while a SIGKILLed controller is not; no race without
+  forecasts; the AI racing a live simple rule.
+
+### Overhead at 20,000 batteries (M3 Pro)
+
+| | p50 | p99 | max |
+|---|---|---|---|
+| Race step alone, in-process (`test_race.py`), bands / forecast | 0.36 / 0.16 ms | 0.82 / 0.62 ms | 0.86 / 0.67 ms |
+| Inside the live loop at max speed (bench, 288 ticks, race = bands) | 0.61-0.65 ms | 1.7-1.8 ms | 1.8 ms |
+| Inside the live loop at 2 ticks/s (the demo speed; cold CPU between ticks) | 1.8-2.0 ms | 5.7 ms | 6.3 ms |
+
+- The loop doesn't slow down: A/B with `FLEET_RACE=0` at max speed, 40.65 vs 40.40 and 41.38 vs 41.14 ticks/s
+  (noise); the telemetry barrier p50 stays ~21.5 ms, because the race steps inside the barrier wait. At 2 ticks/s
+  the barrier p50 was 41 ms without and 34 ms with it (noise).
+- Cloud Run (4 vCPU) ran the M2 bench about 1.8x slower than the laptop, so expect ~1-4 ms per tick there, next to
+  the 250 ms deadline. To measure it: point `fleet-sim-bench` at the new image and run
+  `python -m src.sim.coordinator bench --ticks 288 --speed max --strategy peak` (the bench now prints `race_ms_p50`,
+  `race_ms_p99`, `race_ms_max`, the race block and the race events). `peak` live means the race runs the simple
+  rule, the race of the default demo.
+
+### Requests for integrator (race)
+
+1. docs/API.md Race: `race` is also `null` while a run is `starting` and when there is nothing to race (a live
+   simple rule with no AI forecasts in any city); with forecasts for only some cities, the other cities race the
+   simple rule against itself.
+2. docs/API.md `race_update`: the end event's severity is `good` when the live strategy leads, else `info`; `detail`
+   carries `phase` (`spike_started` / `spike_ended`), the charge levels or revenues, and `live_minus_race_usd`.
+3. `FLEET_RACE=0` switches the race off without a code change (a new Cloud Run revision with that env var).
+
 ## Open issues
 
 - **Cloud Run speed is unmeasured.** It needs a check once deployed: `/state` workers, plus `barrier_ms` from `python -m src.sim.coordinator bench`. At 10 ticks/s, 20k batteries write about 200k HSET/s into one Redis thread.

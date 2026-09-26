@@ -34,7 +34,7 @@ EDITABLE = ("preset", "speed_tps", "strategy", "start_charge_level")
 EVENT_KINDS = (
     "run_started", "run_paused", "run_resumed", "run_finished", "speed_changed", "run_reset", "worker_suspect",
     "worker_dead", "worker_adopted", "availability_changed", "price_spike", "action_changed", "forecast_issued",
-    "backtest_done",
+    "backtest_done", "race_update",
 )
 SEVERITIES = ("info", "good", "warn")
 

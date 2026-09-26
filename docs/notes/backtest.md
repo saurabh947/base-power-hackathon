@@ -150,13 +150,17 @@ For each 5-minute tick and each location, in this order, using the shared module
 
 - **`start_backtest(strategies, year) -> job_id`**
   - Validates the input and raises `ValueError` with a plain sentence (should map to 400).
-  - Runs `python -m src.backtest.runner --pitch` in a subprocess, so replay CPU never holds the API process's GIL.
+  - Runs `python -m src.backtest.runner --pitch --records-out FILE` in a subprocess (its own process group), so
+    replay CPU never holds the API process's GIL. The runner stores nothing; the job stores the finished records
+    (see "Stopping a re-run" below).
   - Runs one job at a time. While a job runs, it returns that job's id.
   - A finished job's runs become the pitch set.
-- **`get_job(job_id) -> {"status", "run_ids", "error"}`**
+- **`get_job(job_id) -> {"status", "run_ids", "skipped", "error"}`**
+  - `status` is `running`, `done`, `failed` or `cancelled`.
   - Raises `KeyError` for an unknown id (404).
-  - `run_ids` holds the strategy runs plus the ceiling row.
+  - `run_ids` holds the strategy runs plus the ceiling row (empty unless done).
   - `error` is one plain sentence.
+- **`cancel_job(job_id) -> {"status": "cancelled"}`**: `KeyError` (404), `JobNotRunning` (409 `not_running`).
 - **`pitch_results(year=None) -> Results`**
   - Reads the `is_pitch` rows when a database is configured, else `data/results/pitch_<year>.json`.
   - It also falls back to that file if the database fails or has no rows.
@@ -175,6 +179,172 @@ For each 5-minute tick and each location, in this order, using the shared module
 **Forecast.** The runner calls `make_strategy(cfg.strategy, tick_seconds, "forecast")`.
 - While it is not built, the run records a skip marker, and the Results say: "The AI forecast (TimesFM-3) method isn't in these results: it isn't available in this version of the simulator yet."
 - Once it exists it runs through the seam every tick, 210,240 calls per lag. It becomes the headline automatically (`backtest.headline: [forecast, bands]`).
+
+## What the AI adds: `metrics.insights`, `GET /results/ai-gains`, `--daily` (2026-09-26)
+
+### Insights stored with every record
+
+`src/backtest/insights.py` `from_replay(replay, series)` reads the numbers off the headline (lag 3) replay that
+`run_strategy` already has: each city's grid-side kWh per 5-minute tick, its fleet charge level after each tick,
+and the replayed ticks' prices. **No extra replay.** The record stores them as `metrics.insights`:
+
+| Field | Definition |
+|---|---|
+| `sold_mwh`, `bought_mwh` | grid-side energy sold / bought over the year |
+| `avg_sell_usd_mwh`, `avg_buy_usd_mwh` | sell (buy) $ / MWh sold (bought); None when nothing moved |
+| `surplus_mwh` | energy bought while the price was <= $0/MWh (surplus power soaked up) |
+| `spike_mwh` | energy sold while the 5-minute price was >= $1,000/MWh |
+| `spike_events` | spikes: a city's price crossing $1,000/MWh from below. **Counted per city**: the 9 pm spike of 2025-07-11 hit all four cities, so it counts 4. 2025 has 21 (docs/API.md's example), 2024 has 53. |
+| `spike_charge_level` | that city's fleet charge level (capacity-weighted SoC) just before each counted spike's first step, averaged; None with no spikes. A spike at the very first replayed step has no "before" and isn't counted. |
+| `spike_intervals_5min`, `spike_usd_mwh` | city-steps at or above the threshold (2025: 108), and the threshold |
+| `revenue_usd` | sold x price - bought x price: the Ledger's money, recomputed (a cross-check) |
+
+- **Same money as the pitch.** `revenue_usd` equals `fleet_total_usd` to float rounding (test: rel 1e-12). Full
+  year 2025 at 20,000: bands $2,473,370.29 both ways.
+- **Same numbers as RUNLOG "What the AI adds"**, reproduced from local full-year runs (snapshot prices): bands
+  2025 $123.67, sold 42,332 MWh at $77.63, bought at $17.32, surplus 1,239 MWh, 27.9 MWh in spikes, 24% charged
+  when they began; peak 2025 $136.70, 5,365 MWh surplus, 36.9 MWh, 35%; 2024 bands 905 MWh / 76.3 MWh / 24%,
+  peak 3,552 / 298.4 / 64%. The CLI's grid context also matches (11.9 and 19.7 MW in the top 1% load hours;
+  45% and 51% renewable share of charging, grid 37%).
+- **Speed unchanged:** `make backtest-speed` gives bands 21.2 s and peak 32.7 s per strategy (lag 3 + lag 0 +
+  insights) for the full year at 20,000 x 4 cities; from_replay itself is well under 0.1 s.
+- **Not stored or served:** support during ERCOT's top 1% load hours and the wind+solar share of charging (the
+  human dropped the peak-load angle). They stay in the CLI (`grid_context`) and need load and fuel mix for the year
+  (Postgres, or the 2025 snapshot); without that data they print as null.
+- **The engine's steps 2-4 are now one function**, `engine.deliver(target, soc, ...)` (headroom, allocate, step,
+  meter). `replay_location` and the live race both call it; the existing bit-identity tests still pass.
+
+CLI (unchanged invocation; its keys now use the API's names):
+
+```sh
+python -m src.backtest.insights --year 2025 [--strategies bands,forecast,peak] [--fleet-size N] [--json out.json]
+```
+
+### `GET /results/ai-gains` (`service.ai_gains()` -> `results.build_ai_gains`)
+
+Built from stored runs: `store.load_gains_records()` (one slim query on backtest_runs: no curves, no config
+snapshots) when a database is configured, else (or if it fails or holds none) `store.load_gains_records_json()`
+over `data/results/runs/*.json` and the `pitch_<year>_runs.json` sets. Skip markers are ignored.
+
+- **The pitch year** (config `backtest.year`) first: its `is_pitch` set, the newest flagged run per strategy. It is
+  listed when it has a simple-rule run. `uplift` needs the AI run too: a build without forecasts (like a laptop)
+  lists the pitch year with `bands` and `peak` only and **no `uplift`**. In the cloud both runs exist.
+- **Every other year present:** its latest complete set, i.e. the newest successful `bands`, `forecast` and `peak`
+  runs **on the pitch set's fleet** (same size and batteries per city; config.yaml's fleet when there is no pitch
+  set). A year without all three is left out. This keeps the old two-city 2024 runs (or a small test fleet) from
+  mixing into the four-city page. Other years come newest first.
+- `best_possible_per_battery_usd_year` is that year's newest hindsight run on the same fleet, and `share_of_best` =
+  per-battery earnings / it (3 decimals). No hindsight run: both are **left out**.
+- `uplift` = AI minus simple rule: per battery, fleet, and `pct` = uplift / the simple rule's per-battery (None if
+  that is <= 0).
+- Labels come from config `backtest.labels`. Money is rounded to cents, MWh to 0.1, charge level and shares to
+  0.001; `uplift.pct` is a fraction (0.544 = +54.4%).
+- **Beyond the contract, as the website asked:** each year carries `fleet_size` (the batteries its runs simulated),
+  and `spike_events` is the year's count on every strategy (spikes are defined by prices; it is taken from any run
+  of the year that has insights).
+- **Runs stored before `metrics.insights` existed** (everything in Cloud SQL today) are served with their money
+  fields only: the eight insight fields are **left out** of their StrategyGains, and the year stays listed. Re-run
+  the full-year backtests to fill them in (commands below).
+- Nothing qualifies: `404 no_results`, like `/results/pitch`.
+
+Example from local runs (2025 pitch set and 2024, 20,000 batteries, snapshot prices, into Postgres on :5446;
+no forecasts locally, so no AI entry, no `uplift` and no complete 2024 set):
+
+```json
+{"ai": "forecast", "baseline": "bands", "years": [{"year": 2025, "is_pitch": true, "fleet_size": 20000,
+  "best_possible_per_battery_usd_year": 421.29, "strategies": {
+   "bands": {"label": "Simple rule", "per_battery_usd_year": 123.67, "fleet_usd_year": 2473370.29,
+     "share_of_best": 0.294, "surplus_mwh": 1238.8, "spike_mwh": 27.9, "spike_events": 21, "spike_charge_level": 0.237,
+     "sold_mwh": 42331.6, "bought_mwh": 46940.2, "avg_sell_usd_mwh": 77.63, "avg_buy_usd_mwh": 17.32},
+   "peak": {"label": "Evening peak", "per_battery_usd_year": 136.7, "fleet_usd_year": 2734096.76,
+     "share_of_best": 0.324, "surplus_mwh": 5365.4, "spike_mwh": 36.9, "spike_events": 21, "spike_charge_level": 0.347,
+     "sold_mwh": 83202.5, "bought_mwh": 92352.2, "avg_sell_usd_mwh": 56.03, "avg_buy_usd_mwh": 20.87}}}]}
+```
+
+To fill the insight fields in Cloud SQL (after the merge is deployed, `make cloud-deploy`):
+
+```sh
+scripts/cloud/jobs.sh backtest            # the 2025 pitch set again (same numbers, now with metrics.insights)
+gcloud run jobs execute fleet-sim-backtest --project appintellect --region us-east1 --wait \
+  --args='^;^-m;src.backtest.runner;--strategies;bands,forecast,peak;--year;2024'
+```
+
+Tests: `tests/test_backtest_insights.py` (revenue identity, hand-checked definitions, the CLI, `--daily`),
+`tests/test_backtest_ai_gains.py` (the rules; mini backtests through the JSON store, the service and the API;
+the forecast runs there use synthetic forecast books, labelled as test doubles), `tests/test_backtest_store_pg.py`
+(the database path gives the same object; runs without insights), `tests/test_api_unit.py` (501 bridge, 404).
+
+### Stopping a re-run: `POST /backtest/{job_id}/cancel` (`service.cancel_job`)
+
+- **The job now stores the results itself, not the runner.** `POST /backtest` runs
+  `python -m src.backtest.runner --pitch --records-out FILE` in its own process group: the runner computes the
+  records and writes them to FILE, storing nothing (`run_backtest(save=False)`). When it exits cleanly, the job
+  thread stores them as the pitch set (`store.save_records(..., pitch=True)`: JSON, then backtest_runs), unless the
+  job was cancelled first. That check and the "now storing" mark happen under the job lock, so a cancel either
+  wins (nothing is ever stored) or comes after the point of no return.
+- **Cancel:** a running job is marked `cancelled` at once (`GET /backtest/{id}` says so from then on, with no
+  run_ids), its process group gets SIGTERM (the runner and the ceiling's LP pool die at once; they have no
+  handler) and SIGKILL after `CANCEL_GRACE_S` (3 s) if anything is still alive. The API emits `backtest_done`
+  (severity info): *"The full-year re-run was stopped. The previous results are still shown."*, or, if there were
+  no results before, *"The full-year run was stopped before it finished, so there are no full-year results yet."*
+  It is sent once per job (the cancel call, the job thread and a later `GET /backtest/{id}` share the event key).
+- **409 `not_running`** for a job that is done, failed or already cancelled. A cancel that arrives while a
+  finished job is storing its records (well under a second) waits for that to land and then answers 409: the
+  results are whole and the job is done. **404 `unknown_job`** for an unknown id. A new `POST /backtest` works at
+  once after a cancel (the old process may still be exiting; it can't store anything).
+- Timing: the stand-in runner stops within ~0.1 s of the cancel; one that ignores SIGTERM is killed after the grace
+  period; the real runner (cancelled 1.5 s in) is gone before the call returns.
+- Left behind by a cancel: at most the ceiling's per-kWh curve cache in `data/results/cache/`, which is keyed by the
+  prices and physics (not a result, and exactly what the next run would compute).
+- The cloud job (`fleet-sim-backtest`, the CLI with `--pitch` and no `--records-out`) stores as before.
+- Tests: `tests/test_backtest_cancel.py` (API: cancel while running, nothing stored, the event; SIGKILL after the
+  grace period; 409 after done; 404; start again after a cancel; a cancel during the store; the real runner),
+  `tests/test_backtest_store_pg.py` (no rows from a cancelled job; a finished job's rows are stored by the job),
+  `tests/test_backtest_results.py` (`--records-out`).
+
+### Requests for integrator (AI gains, cancel)
+
+1. docs/API.md AiGains: add `fleet_size` to the year example; say which fields can be absent (the eight insight
+   fields for runs stored before insights; `best_possible_per_battery_usd_year` and `share_of_best` without a
+   hindsight run; the AI entry and `uplift` for a pitch year without an AI run), that `spike_charge_level` is null
+   in a year without spikes, and that `spike_events` counts a spike once per city it hits.
+2. Re-run the cloud backtests (commands above) so Cloud SQL's records carry `metrics.insights`; until then the page
+   gets the money fields only.
+3. docs/API.md cancel: the 404 code is `unknown_job` (as `GET /backtest/{id}`); the 409 message is "That full-year
+   run has already finished."
+4. The insights CLI's JSON keys now use the API's names (`surplus_mwh`, `spike_mwh`, `spike_events`,
+   `spike_charge_level` instead of `surplus_absorbed_mwh` and `scarcity_*`); the numbers are the same.
+
+### Picking the race's demo day: `--daily`
+
+```sh
+python -m src.backtest.insights --year 2025 --daily [--pair bands,forecast] [--top 10] [--json out.json]
+```
+
+- Replays the year for the pair (baseline, challenger; default the simple rule and the AI) and books every
+  (tick, city) on its local Central-time date, for the whole day and for the evening (18:00-24:00). It prints the
+  top days by challenger minus baseline for each window, with the year totals (they add up to the Ledger's).
+- **Race columns.** The full-year replay carries each fleet's charge over from the day before, but the live race
+  starts both fleets at the same charge. So each listed day is also replayed as the race would show it: both
+  strategies from the window's start (midnight, or 6 pm) with the fleet at `battery.demo_soc_init` (90%) and a
+  7-day warm-up (`race_window`, tested equal to a backtest built for that window).
+- **Local run, bands vs peak, 2025, 20,000 batteries (35 s):** the whole-day list is led by 2025-05-16 (peak
+  +$130,483 over the year replay; +$127,322 in a race from midnight). On the evening list the race columns show
+  $0 for most days: started at 6 pm with 90% charge, the evening peak and the simple rule both sell at once and do
+  the same thing. The full-year evening leads came from charge carried over from the afternoon. Pick the race's
+  demo day by the race columns.
+- **Forecasts live only in Cloud SQL, so the AI run is a cloud job** (after the merge is deployed; the first line
+  points the backtest job at the new image):
+
+```sh
+scripts/cloud/jobs.sh backtest --no-run
+gcloud run jobs execute fleet-sim-backtest --project appintellect --region us-east1 --wait \
+  --args='^;^-m;src.backtest.insights;--year;2025;--daily;--pair;bands,forecast'
+gcloud beta run jobs logs read fleet-sim-backtest --project appintellect --region us-east1 --freshness=30m \
+  --limit=100 --order=asc
+```
+
+  Add `--year;2024` for the out-of-sample year. The job reads prices and forecasts from Cloud SQL (its `DB_*` env).
 
 ## Open issues
 

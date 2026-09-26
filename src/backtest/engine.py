@@ -14,6 +14,9 @@ Per tick it runs the live path's steps, in the same order and with the same shar
      as the skeleton meters through read()), summed over the location's batteries. The
      caller records it in the Ledger per (tick, location) at that tick's RT price.
 
+Steps 2-4 are `deliver`, which the live race (src/sim/race.py) calls too, so the shadow fleet
+steps exactly like the backtest.
+
 Shortcuts that change no number (tests/test_backtest_engine.py pins each one):
   - A hold (target 0) or a target with no feasible headroom skips steps 2-4: step() with
     all-zero setpoints returns the same SoC, and the meter reads 0.
@@ -262,12 +265,9 @@ def replay_location(
                 target = 0.0  # nothing published yet
         target_out[k] = target
         if target != 0.0:
-            discharge, charge = headroom_kw(soc, cap, power, eff, avail, dt_h, soc_min, soc_max)
-            feasible, setpoints = allocate(target, discharge, charge)
+            feasible, kwh, new_soc = deliver(target, soc, cap, power, eff, avail, dt_h, soc_min, soc_max)
             feasible_out[k] = feasible
-            if feasible != 0.0:
-                new_soc, _ = step(soc, cap, power, eff, avail, setpoints, dt_h, soc_min, soc_max)
-                kwh = grid_kwh_from_soc_change(soc, new_soc, cap, eff)
+            if kwh is not None:
                 delivered_out[k] = float(kwh.sum())
                 revenue += kwh * (prices[i] / 1000.0)
                 if feasible > 0.0:
@@ -286,6 +286,34 @@ def replay_location(
         fleet_soc=fsoc_out, soc_final=soc, revenue_usd=revenue, sold_kwh=sold, bought_kwh=bought,
         active_ticks=active, seconds=time.perf_counter() - t0, soc_trace=soc_trace,
     )
+
+
+def deliver(
+    target: float,
+    soc: np.ndarray,
+    capacity_kwh: np.ndarray,
+    power_kw: np.ndarray,
+    efficiency: np.ndarray,
+    available: np.ndarray,
+    dt_h: float,
+    soc_min: float,
+    soc_max: float,
+) -> tuple[float, np.ndarray | None, np.ndarray]:
+    """Steps 2-4 of one tick for one location's batteries: (feasible_kw, grid kWh per battery, new SoC).
+
+    headroom_kw, then allocate (clip the target to the feasible directional headroom, split it in
+    proportion to each battery's headroom), then battery.step, metered from the SoC change with
+    grid_kwh_from_soc_change. A hold, or a target with no feasible headroom, moves nothing: the
+    kWh are None and the SoC array comes back unchanged (the exact shortcut of the module docstring).
+    """
+    if target == 0.0:
+        return 0.0, None, soc
+    discharge, charge = headroom_kw(soc, capacity_kwh, power_kw, efficiency, available, dt_h, soc_min, soc_max)
+    feasible, setpoints = allocate(target, discharge, charge)
+    if feasible == 0.0:
+        return feasible, None, soc
+    new_soc, _ = step(soc, capacity_kwh, power_kw, efficiency, available, setpoints, dt_h, soc_min, soc_max)
+    return feasible, grid_kwh_from_soc_change(soc, new_soc, capacity_kwh, efficiency), new_soc
 
 
 def fill_ledger(ledger: BacktestLedger, runs: Sequence[tuple[Sequence[PriceTick], np.ndarray]]) -> None:

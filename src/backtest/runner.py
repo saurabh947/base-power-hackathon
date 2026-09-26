@@ -10,7 +10,9 @@ directional headroom, proportional allocation, src.sim.battery physics, and the 
 (20,000 seeded batteries), split between the configured locations.
 
 Every strategy runs twice: at the configured lag (3 ticks, the headline) and at lag 0, the
-spec-literal variant, which is stored in the record's metrics["lag0"]. The perfect-hindsight
+spec-literal variant, which is stored in the record's metrics["lag0"]. The headline replay also
+yields metrics["insights"] (src/backtest/insights.py: surplus power soaked up, energy sold in price
+spikes, trade volume and prices), read off the same replay. The perfect-hindsight
 ceiling comes from src/backtest/ceiling.py. Records go to data/results/ as JSON and, when a
 database is configured, to backtest_runs; --pitch marks them as the Results screen's set.
 
@@ -34,7 +36,7 @@ from typing import Callable, Mapping, Sequence
 
 import numpy as np
 
-from src.backtest import engine
+from src.backtest import engine, insights
 from src.backtest.engine import (  # re-exported: the parity tests of the worker fleet import these
     Fleet,
     LocationRun,
@@ -357,6 +359,8 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     metrics = dict(main_run.metrics)
     metrics["lag_ticks"] = lag
     metrics["replay_seconds"] = round(main_run.seconds, 3)
+    # what the AI adds (GET /results/ai-gains), read off this same replay: no extra replay
+    metrics["insights"] = insights.from_replay(main_run, ctx.series)
     want_lag0 = ctx.settings["lag0_variant"] if lag0 is None else lag0
     if want_lag0 and lag != 0:
         zero = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=0, fast=fast, expected_ticks=ctx.expected_ticks,
@@ -430,8 +434,12 @@ def run_backtest(
     fast: bool = True,
     out_dir: str | Path | None = None,
     log: Callable[[str], None] = print,
+    save: bool = True,
 ) -> BacktestOutcome:
-    """Run strategies over a year, add the ceiling, export JSON, and persist to Postgres."""
+    """Run strategies over a year, add the ceiling, export JSON, and persist to Postgres.
+
+    save=False stores nothing: the caller gets the records and decides (the API's cancellable jobs).
+    """
     from src.backtest import store
 
     settings = settings or backtest_settings()
@@ -467,6 +475,8 @@ def run_backtest(
         ceiling_record = ceiling_mod.ceiling_record(ctx, out_dir=out_dir, log=log)
         records.append(ceiling_record)
         log(f"ceiling: ${ceiling_record['per_battery_avg_usd']:,.2f}/battery in {time.perf_counter() - t1:.1f}s")
+    if not save:
+        return BacktestOutcome(records, skipped, ceiling_record, False, [])
     saved = store.save_records(records, pitch=pitch, use_db=use_db, out_dir=out_dir, settings=settings, cfg=ctx.cfg)
     return BacktestOutcome(records, skipped, ceiling_record, saved.in_db, saved.paths)
 
@@ -496,6 +506,12 @@ def format_report(outcome: BacktestOutcome) -> str:
             f"  top days: " + ", ".join(f"{d['date_local']} ${d['usd']:,.0f}" for d in m["top_days"][:5]),
             f"  replay {m['replay_seconds']:.1f}s, coverage {m['coverage']['fraction']:.4f}",
         ]
+        ins = m.get("insights")
+        if ins:
+            level = ins["spike_charge_level"]
+            lines.append(f"  surplus bought at <= $0: {ins['surplus_mwh']:,.1f} MWh; sold in spikes >= "
+                         f"${ins['spike_usd_mwh']:,.0f}/MWh: {ins['spike_mwh']:,.1f} MWh over {ins['spike_events']} "
+                         f"city spikes (charge level when they began {'n/a' if level is None else f'{level:.1%}'})")
         if "lag0" in m:
             z = m["lag0"]
             lines.append(f"  lag 0 (spec-literal): ${z['per_battery_usd_year']:,.2f}/battery, "
@@ -510,7 +526,10 @@ def format_report(outcome: BacktestOutcome) -> str:
             f"(fleet ${c['fleet_usd_year']:,.0f})",
             f"  method: {m['method']}",
         ]
-    lines.append(f"\nstored: {'backtest_runs + ' if outcome.stored_in_db else ''}{', '.join(outcome.json_paths)}")
+    if outcome.stored_in_db or outcome.json_paths:
+        lines.append(f"\nstored: {'backtest_runs + ' if outcome.stored_in_db else ''}{', '.join(outcome.json_paths)}")
+    else:
+        lines.append("\nstored: nothing (the records were handed to the caller)")
     return "\n".join(lines)
 
 
@@ -528,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fleet-size", type=int, help="override fleet.size (e.g. a quick 200-battery run)")
     p.add_argument("--out", help=f"JSON export directory (default: {settings['results_dir']})")
     p.add_argument("--status-file", help="write {run_ids, skipped, error} JSON here when done (used by the API)")
+    p.add_argument("--records-out", help="store nothing: write the finished records here as JSON instead (the API's "
+                                         "cancellable jobs store them once the run is complete)")
     args = p.parse_args(argv)
     if args.no_lag0:
         settings["lag0_variant"] = False
@@ -537,7 +558,13 @@ def main(argv: list[str] | None = None) -> int:
         outcome = run_backtest(names, args.year, settings=settings, pitch=args.pitch,
                                use_db=False if args.no_db else None, ceiling=not args.no_ceiling,
                                fleet_size=args.fleet_size, fast=not args.seam, out_dir=args.out,
-                               log=lambda s: print(s, file=sys.stderr, flush=True))
+                               log=lambda s: print(s, file=sys.stderr, flush=True), save=not args.records_out)
+        if args.records_out:
+            from src.backtest.store import clean
+
+            tmp = Path(args.records_out + ".tmp")
+            tmp.write_text(json.dumps(clean(outcome.records), allow_nan=False))
+            tmp.replace(args.records_out)  # whole or not at all
         status.update(run_ids=outcome.run_ids, skipped=outcome.skipped,
                       ceiling_run_id=outcome.ceiling["run_id"] if outcome.ceiling else None)
         print(format_report(outcome))

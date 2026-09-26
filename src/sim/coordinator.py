@@ -12,7 +12,9 @@ One tick (5 sim-minutes):
   2. Its target is clipped to the feasible directional headroom and split per battery
      in proportion to feasible headroom (src.sim.allocation). Batteries that are
      offline (availability overrides) or owned by a SUSPECT/DEAD worker get 0.
-  3. One msgpack batch per worker is XADDed to commands:{worker_id}.
+  3. One msgpack batch per worker is XADDed to commands:{worker_id}. While the workers apply it, the
+     live race's shadow fleet (src/sim/race.py: the comparison strategy on the same batteries, prices,
+     lag and availability overrides) steps in-process, exactly as src.backtest would.
   4. Deadline barrier on telemetry: wait until every worker reported or
      min(250 ms, 50% of the tick period) passed (250 ms at max speed). Never forever.
   5. Actual power = sum of reported delivered kW (a missing cohort counts as 0); the
@@ -49,6 +51,7 @@ from src.ledger.backtest import BacktestLedger
 from src.sim import battery_status as bstatus
 from src.sim import control as ctl
 from src.sim import geo
+from src.sim import race as race_mod
 from src.sim.allocation import allocate, fleet_headroom_kw
 from src.sim.battery import fleet_soc, grid_kwh_from_soc_change, headroom_kw
 from src.sim.decision import decision_tick
@@ -425,6 +428,8 @@ class RunState:
     spike_active: dict = field(default_factory=dict)
     fixed: bool = False
     fixed_targets: Mapping | None = None
+    race: race_mod.Race | None = None  # the shadow fleet on the comparison strategy (docs/API.md Race)
+    race_decide: Callable | None = None
 
 
 class Coordinator:
@@ -459,6 +464,9 @@ class Coordinator:
         self.soc_min, self.soc_max = self.cfg.battery.soc_min, self.cfg.battery.soc_max
         self.cap, self.power, self.eff = self.layout.capacity_kwh, self.layout.power_kw, self.layout.efficiency
         self.loc_idx = [self.layout.location_indices(li) for li in range(len(self.layout.locations))]
+        self.loc_slice = {loc: slice(off, off + n) for loc, off, n in zip(self.layout.locations, self.layout.offsets,
+                                                                         self.layout.counts)}  # contiguous blocks
+        self._race_fleets: dict | None = None  # built once: the race's per-city battery arrays
         self._bkey = [self.keys.battery(bid).encode() for bid in self.layout.ids]
         self.nameplate_kw = self.layout.nameplate_kw()
         self.soc = np.full(self.N, self.cfg.battery.soc_init)
@@ -852,6 +860,8 @@ class Coordinator:
         run.initialized = np.zeros(self.N, dtype=bool)
         soc0 = float(s["start_charge_level"])
         self.soc[:] = soc0
+        if not run.fixed:
+            self._start_race(run, soc0)
         self.soc_k[:] = -1
         self.kw[:] = 0.0
         self.tick_log = []
@@ -903,11 +913,114 @@ class Coordinator:
         self._publish_snapshot(force=True)
         return True
 
+    # --- the live race (docs/API.md Race) --------------------------------------------------------
+
+    def strategy_label(self, name: str) -> str:
+        """The UI label of a strategy: config backtest.labels (the race, the Results and /settings use them too)."""
+        labels = (self.raw.get("backtest") or {}).get("labels") or {}
+        return labels.get(name) or ctl.STRATEGY_LABELS.get(name, (name,))[0]
+
+    def race_fleets(self) -> dict:
+        """The race's batteries: generate_batteries + assign_locations (engine.build_fleets, as the backtest builds
+        its fleet), once per coordinator; each run starts them at its own starting charge."""
+        if self._race_fleets is None:
+            from src.backtest.engine import build_fleets
+
+            fleets = build_fleets(self.N, self.cfg.fleet.locations, self.cfg.battery, self.cfg.seed)
+            for loc, f in fleets.items():  # the very batteries the live fleet runs, city by city
+                sl = self.loc_slice[loc]
+                if list(f.battery_ids) != list(self.layout.ids[sl]) or not np.array_equal(f.capacity_kwh, self.cap[sl]):
+                    raise RuntimeError(f"race fleet for {loc} differs from the live fleet")
+            self._race_fleets = fleets
+        return self._race_fleets
+
+    def _start_race(self, run: RunState, soc0: float) -> None:
+        """The shadow fleet for this run: the comparison strategy, one instance per city (make_strategy, as the
+        live fleet builds them), from the same batteries at the same starting charge. None when the comparison
+        strategy can't run anywhere (the AI forecast with no forecasts for any city: there is nothing to race)."""
+        run.race, run.race_decide = None, None
+        if os.environ.get("FLEET_RACE", "1") == "0":  # off switch (ops, and the A/B overhead measurement)
+            return
+        name = race_mod.comparison_strategy(run.strategy_name)
+        try:
+            chosen = build_strategy_set(name, self.cfg, self.layout.locations, start_ts=run.start_ts,
+                                        tick_s=self.tick_s)
+            if chosen.name != name:
+                _log(f"race: no {name!r} strategy for any city ({chosen.warning}); no race this run")
+                return
+            run.race = race_mod.Race.start(name, self.strategy_label(name), self.race_fleets(), soc0, dt_h=self.dt_h,
+                                           soc_min=self.soc_min, soc_max=self.soc_max)
+            run.race_decide = StrategyTargets(chosen.strategies, run.prices, self.lag, self.tick_s)
+        except Exception as exc:  # the race is a side show: it must never stop the live fleet
+            _log(f"race could not start: {exc!r}")
+            run.race, run.race_decide = None, None
+
+    def _race_step(self, run: RunState, k: int, ts: int, decisions: dict) -> dict | None:
+        """Step the shadow fleet for tick k (while the workers apply the live tick). If a price spike starts at
+        this tick, returns both fleets' charge levels from just before it (for the race_update event)."""
+        race = run.race
+        if race is None:
+            return None
+        try:
+            prices = {loc: d.now.price_usd_mwh for loc, d in decisions.items() if d.now is not None}
+            threshold = self.orch.price_spike_usd_mwh
+            spiking = {loc: p for loc, p in prices.items() if p >= threshold}
+            started = None
+            if race.spike is None and spiking:
+                started = {"prices": spiking, "live_level": float((self.soc * self.cap).sum() / self.cap.sum()),
+                           "race_level": race.charge_level()}
+                race.spike = {"k": k, "ts": ts, "live_usd": run.revenue_usd, "race_usd": race.revenue_usd()}
+
+            def decide(loc: str, fsoc: float, headroom: float):
+                dec = run.race_decide(k, ts, loc, fsoc, headroom)
+                return dec.raw_kw, dec.now
+
+            offline = self.availability.offline
+            race.step(decide, {loc: offline[self.loc_slice[loc]] for loc in race.cities})
+            return started
+        except Exception as exc:
+            _log(f"race stopped at tick {k}: {exc!r}")
+            run.race, run.race_decide = None, None
+            return None
+
+    def _race_events(self, run: RunState, k: int, ts: int, decisions: dict, started: dict | None) -> None:
+        """race_update at the start of each price spike (charge levels) and after it ends (the lead so far)."""
+        race = run.race
+        if race is None or run.fixed:
+            return
+        live, other = run.strategy_name, race.strategy
+        if started is not None:
+            shares = {loc: len(c.fleet.battery_ids) for loc, c in race.cities.items()}
+            msg = race_mod.spike_started_message(started["prices"], len(self.layout.locations), live,
+                                                 started["live_level"], other, started["race_level"], shares)
+            self._emit("race_update", "info", msg, sim_ts=ts, detail={
+                "phase": "spike_started", "prices": {loc: round(p, 2) for loc, p in started["prices"].items()},
+                "live": {"strategy": live, "charge_level": round(started["live_level"], 5)},
+                "race": {"strategy": other, "charge_level": round(started["race_level"], 5)}})
+            return
+        if race.spike is None:
+            return
+        prices = [d.now.price_usd_mwh for d in decisions.values() if d.now is not None]
+        if not prices or max(prices) >= 0.5 * self.orch.price_spike_usd_mwh:
+            return
+        spike, race.spike = race.spike, None
+        race_usd = race.revenue_usd()
+        lead = run.revenue_usd - race_usd
+        live_leads = round(lead) > 0  # severity good when the live strategy leads, info otherwise
+        self._emit("race_update", "good" if live_leads else "info", race_mod.spike_ended_message(live, other, lead),
+                   sim_ts=ts, detail={
+                       "phase": "spike_ended", "spike_started_utc": to_utc_iso(spike["ts"]),
+                       "live": {"strategy": live, "revenue_usd": round(run.revenue_usd, 2),
+                                "during_spike_usd": round(run.revenue_usd - spike["live_usd"], 2)},
+                       "race": {"strategy": other, "revenue_usd": round(race_usd, 2),
+                                "during_spike_usd": round(race_usd - spike["race_usd"], 2)},
+                       "live_minus_race_usd": round(lead, 2)})
+
     def _run_started_message(self, run: RunState) -> tuple[str, str]:
         """One sentence: where the replay starts, how fast, and which decision method runs where."""
         where = f"{ctl.local_clock(run.start_ts)} ({ctl.TIME_ZONE_PHRASE})"
         speed = ctl.speed_phrase(run.settings["speed_tps"])
-        label = ctl.STRATEGY_LABELS.get(run.strategy_name, (run.strategy_name,))[0]
+        label = self.strategy_label(run.strategy_name)  # config backtest.labels, as the race, results and settings
         fallback = [loc for loc in self.layout.locations if loc in run.strategy_fallback]
         if not fallback:
             return f"Replaying real prices from {where} at {speed}, using the {ctl.mid_sentence(label)}.", "info"
@@ -1054,6 +1167,7 @@ class Coordinator:
 
         t0 = time.monotonic()
         sent = self._dispatch(run, k, ts, setpoints)
+        race_spike = self._race_step(run, k, ts, decisions)  # the shadow fleet steps while the workers do
         reports = self._collect(k, {h.worker_id for h in sent}, t0 + self.deadline_s())
         barrier_ms = (time.monotonic() - t0) * 1000.0
         t_status = time.perf_counter()
@@ -1136,7 +1250,9 @@ class Coordinator:
         pipe.set(self.keys.battery_status, status_packed)  # rides the tick's pipeline: no extra round trip
         pipe.execute()
         self._tick_events(run, k, ts, decisions, feasible)
+        self._race_events(run, k, ts, decisions, race_spike)
         self.tick_log.append({**record, "k": k, "barrier_ms": round(barrier_ms, 2), "status_ms": round(status_ms, 4),
+                              "race_ms": round(run.race.last_ms, 4) if run.race is not None else None,
                               "reported": len(reports), "sent": len(sent),
                               "raw_kw": {loc: dec.raw_kw for loc, dec in decisions.items()},  # unrounded, for parity
                               "feasible_exact": dict(feasible), "kwh_exact": kwh_by_loc})
@@ -1517,6 +1633,7 @@ class Coordinator:
             "workers": [h.public(self.layout) for h in self.workers],
             "availability": self.availability.summary(),
             "strategy_effective": run.strategy_name if run else None,
+            "race": run.race.public(run.revenue_usd) if run is not None and run.race is not None else None,
             "tick_index": run.k if run else None,
             "next_tick_utc": to_utc_iso(self._next_tick_ts()),
             "coordinator_pid": os.getpid(),
@@ -1738,6 +1855,7 @@ def _bench(args) -> int:
         log = co.tick_log
         errs = [r["error_pct"] for r in log]
         status = [r["status_ms"] for r in log]
+        race_ms = [r["race_ms"] for r in log if r.get("race_ms") is not None]
         packed = bstatus.pack(co.status_codes)
         out = {
             "fleet_size": co.N, "workers": co.n_workers, "ticks": len(log), "speed": speed,
@@ -1752,6 +1870,12 @@ def _bench(args) -> int:
             "battery_status_ms_max": round(max(status), 4) if status else None,
             "battery_status_bytes": len(packed),
             "battery_status_base64_chars": len(base64.b64encode(packed)),
+            "race": (co.run.race.public(co.run.revenue_usd) if co.run is not None and co.run.race is not None
+                     else None),
+            "race_ms_p50": round(float(np.percentile(race_ms, 50)), 4) if race_ms else None,
+            "race_ms_p99": round(float(np.percentile(race_ms, 99)), 4) if race_ms else None,
+            "race_ms_max": round(max(race_ms), 4) if race_ms else None,
+            "race_events": [e["message"] for e in co.events if e["kind"] == "race_update"],
             "killed": {k: v for k, v in killed.items() if k != "cohort"} or None,
         }
         if killed:
