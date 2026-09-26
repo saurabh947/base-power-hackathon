@@ -11,6 +11,6 @@ gcloud run deploy fleet-sim --project "$P" --region "$R" --image "$REPO/api:$TAG
   --cpu 4 --memory 4Gi --min-instances 0 --max-instances 1 --no-cpu-throttling \
   --concurrency 250 --timeout 3600 --allow-unauthenticated \
   --add-cloudsql-instances "$SQL" \
-  --set-env-vars "$DB_ENV,CORS_ORIGINS=$CORS" \
+  --set-env-vars "$DB_ENV,PRICE_SOURCE=postgres,CORS_ORIGINS=$CORS" \
   --set-secrets "$DB_SECRET,/secrets/presenter/passcode=fleet-sim-presenter-passcode:latest"
 gcloud run services describe fleet-sim --project "$P" --region "$R" --format='value(status.url)'

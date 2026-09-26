@@ -66,10 +66,11 @@ def start_backtest(strategies: list[str], year: int) -> str:
 
 
 def get_job(job_id: str) -> dict:
-    """{"status", "run_ids", "error"} for a job started by this process. KeyError if unknown."""
+    """{"status", "run_ids", "skipped", "error"} for a job started by this process. KeyError if unknown."""
     with _lock:
         job = _jobs[job_id]
-        return {"status": job["status"], "run_ids": list(job["run_ids"]), "error": job["error"]}
+        return {"status": job["status"], "run_ids": list(job["run_ids"]),
+                "skipped": dict(job.get("skipped") or {}), "error": job["error"]}
 
 
 def pitch_results(year: int | None = None) -> dict:

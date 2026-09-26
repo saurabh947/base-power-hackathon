@@ -105,6 +105,7 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
  "availability": Availability, "events": [Event], "forecast": {…}}
 ```
 - `snapshot.history` holds the last ≤ 2,000 ticks of the current run.
+- With no run, `snapshot.settings` is `null` and `run_id` is `null`, and `history` is empty.
 - `frame.ticks` holds every tick since the previous frame. Ticks are never sampled.
 - `frame.events` holds only new events.
 - `frame.forecast` is present only when a new forecast was issued.
