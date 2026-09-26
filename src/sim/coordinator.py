@@ -87,6 +87,7 @@ class Orchestration:
     snapshot_interval_s: float = 0.25
     action_event_min_ticks: int = 12
     price_spike_usd_mwh: float = 1000.0
+    race_spike_usd_mwh: float = 1000.0
     control_stale_s: float = 5.0
     maxlen: dict = field(default_factory=lambda: dict(DEFAULT_MAXLEN))
 
@@ -107,6 +108,7 @@ class Orchestration:
             spawn_timeout_s=float(o.get("spawn_timeout_s", 30.0)),
             action_event_min_ticks=int(api.get("action_event_min_ticks", 12)),
             price_spike_usd_mwh=float(api.get("price_spike_usd_mwh", 1000.0)),
+            race_spike_usd_mwh=float(api.get("race_spike_usd_mwh", api.get("price_spike_usd_mwh", 1000.0))),
             control_stale_s=float(api.get("control_timeout_s", 4.0)) + 1.0,
             maxlen={**DEFAULT_MAXLEN, **(o.get("stream_maxlen") or {})},
         )
@@ -963,7 +965,7 @@ class Coordinator:
             return None
         try:
             prices = {loc: d.now.price_usd_mwh for loc, d in decisions.items() if d.now is not None}
-            threshold = self.orch.price_spike_usd_mwh
+            threshold = self.orch.race_spike_usd_mwh
             spiking = {loc: p for loc, p in prices.items() if p >= threshold}
             started = None
             if race.spike is None and spiking:
@@ -1001,7 +1003,7 @@ class Coordinator:
         if race.spike is None:
             return
         prices = [d.now.price_usd_mwh for d in decisions.values() if d.now is not None]
-        if not prices or max(prices) >= 0.5 * self.orch.price_spike_usd_mwh:
+        if not prices or max(prices) >= 0.5 * self.orch.race_spike_usd_mwh:
             return
         spike, race.spike = race.spike, None
         race_usd = race.revenue_usd()

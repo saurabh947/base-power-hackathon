@@ -59,7 +59,7 @@ orchestration:
 
 # Replay presets for the website's Start screen (docs/UX.md). start_utc = replay start.
 presets:
-  default: summer_spike      # AI forecast sells from 8 pm at full power and is still selling at the 9 pm spike
+  default: ai_best_evening   # the 2025 evening where the AI pulled furthest ahead of the simple rule (race table)
   items:
     - id: spike_evening
       label: "Price-spike evening"
@@ -76,6 +76,11 @@ presets:
       date_local: "2025-07-11"
       start_utc: "2025-07-11T23:00:00Z"   # 6:00 pm CDT; both areas ~$1,755/MWh in the 9:00 pm interval
       description: "All four cities jump to about $1,750/MWh at 9 pm."
+    - id: ai_best_evening
+      label: "The AI's best evening"
+      date_local: "2025-05-30"
+      start_utc: "2025-05-30T23:00:00Z"   # 6:00 pm CDT; race from 90%: AI $38,936 vs simple rule $17,536 by midnight
+      description: "The 2025 evening where the AI forecast pulled furthest ahead of the simple rule."
     - id: ordinary_day
       label: "An ordinary day"
       date_local: "2025-06-28"            # daily spread $64/$68 (Houston/North) ~ the 2025 medians $63/$68
@@ -94,6 +99,7 @@ api:        # owner: fleet + API
   frame_interval_s: 1.0       # WebSocket /live frame cadence
   control_timeout_s: 4.0      # how long the API waits for the coordinator's reply
   price_spike_usd_mwh: 1000   # price_spike event threshold
+  race_spike_usd_mwh: 300     # race_update compares the two fleets when any city's price reaches this
   action_event_min_ticks: 12  # at most one action_changed event per hour of market time
   rate_limits:
     run_start_s: 5            # one /run/start per 5 s (global)

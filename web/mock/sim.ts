@@ -120,6 +120,14 @@ export const PRESETS: Preset[] = [
     description: 'All four cities jump to about $1,750/MWh at 9 pm.',
   },
   {
+    id: 'ai_best_evening',
+    label: "The AI's best evening",
+    date_local: '2025-05-30',
+    start_utc: '2025-05-30T23:00:00Z',
+    start_local: '2025-05-30T18:00:00-05:00',
+    description: 'The 2025 evening where the AI forecast pulled furthest ahead of the simple rule.',
+  },
+  {
     id: 'ordinary_day',
     label: 'An ordinary day',
     date_local: '2025-06-28',
@@ -129,10 +137,10 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-/** config.yaml presets.default is summer_spike. */
+/** config.yaml presets.default is ai_best_evening. */
 export const DEFAULT_SETTINGS: Settings = {
-  preset: 'summer_spike',
-  start_utc: '2025-07-11T23:00:00Z',
+  preset: 'ai_best_evening',
+  start_utc: '2025-05-30T23:00:00Z',
   speed_tps: 2,
   strategy: 'forecast',
   start_charge_level: 0.9,

@@ -65,8 +65,8 @@ describe('GET /settings shapes', () => {
     );
     expect(Object.keys(s.strategies[0]).toSorted()).toEqual(['description', 'id', 'label']);
     expect(s.speeds[1]).toEqual({ tps: 2, label: '1 hour every 6 s' });
-    expect(s.presets.map((p) => p.id)).toEqual(['spike_evening', 'morning_spike', 'summer_spike', 'ordinary_day']);
-    expect(s.defaults.preset).toBe('summer_spike'); // config.yaml presets.default
+    expect(s.presets.map((p) => p.id)).toEqual(['spike_evening', 'morning_spike', 'summer_spike', 'ai_best_evening', 'ordinary_day']);
+    expect(s.defaults.preset).toBe('ai_best_evening'); // config.yaml presets.default
     expect(s.defaults.locations).toEqual({ LZ_HOUSTON: 0.35, LZ_NORTH: 0.4, LZ_CPS: 0.13, LZ_AEN: 0.12 });
   });
 });
@@ -406,7 +406,7 @@ describe('the race (docs/API.md Race)', () => {
   });
 
   it('notes the summer night spike: the charge each side had, then who is ahead', () => {
-    const { sim, step } = running(10);
+    const { sim, step } = running(10, 'summer_spike');
     const updates: LiveEvent[] = [];
     for (let i = 0; i < 60 && sim.status !== 'finished'; i++) updates.push(...frame(step()).events.filter((e) => e.kind === 'race_update'));
     expect(updates[0].message).toMatch(/^Prices jumped to \$1,7\d\d in all four cities\. The AI fleet had \d+% charge left; the simple rule had \d+%\.$/);

@@ -23,8 +23,8 @@ Change it only through the integrator.
 
 ```json
 {
-  "preset": "summer_spike",
-  "start_utc": "2025-07-11T23:00:00Z",
+  "preset": "ai_best_evening",
+  "start_utc": "2025-05-30T23:00:00Z",
   "speed_tps": 2,
   "strategy": "forecast",
   "start_charge_level": 0.9,
@@ -238,7 +238,7 @@ StrategyGains is:
 {"id": "…", "wall_utc": "…", "sim_utc": "…", "kind": "…", "severity": "info", "message": "…", "detail": {}}
 ```
 - `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`, `race_update`.
-  - `race_update` is a plain-language comparison with the race fleet. It comes at the start of each price spike (e.g. "Prices jumped to $1,757 in all four cities. The AI fleet had 54% charge left; the simple rule had 21%.") and after it ends ("The AI is now $12,400 ahead of the simple rule.").
+  - `race_update` is a plain-language comparison with the race fleet. A "spike" here is any city's price reaching `api.race_spike_usd_mwh` ($300/MWh), which is lower than the $1,000 `price_spike` alert. It comes at the start of each price spike (e.g. "Prices jumped to $1,757 in all four cities. The AI fleet had 54% charge left; the simple rule had 21%.") and after it ends ("The AI is now $12,400 ahead of the simple rule.").
   - A run finishes when the replay reaches the end of the loaded data.
 - Worker events carry `detail.worker_id` (0-based) and `detail.controller` (1-based, as shown to people). `worker_adopted` also carries `detail.adopted_by` (worker ids) and `detail.ms`.
 - `severity` is `info`, `good` or `warn`.

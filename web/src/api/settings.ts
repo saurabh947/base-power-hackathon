@@ -36,8 +36,8 @@ const STRATEGY_DESCRIPTIONS: Record<string, string> = {
 
 /** The documented defaults (docs/API.md, config.yaml), used only if GET /settings fails. */
 export const DOCUMENTED_DEFAULTS: Settings = {
-  preset: 'summer_spike',
-  start_utc: '2025-07-11T23:00:00Z',
+  preset: 'ai_best_evening',
+  start_utc: '2025-05-30T23:00:00Z',
   speed_tps: 2,
   strategy: 'forecast',
   start_charge_level: 0.9,
@@ -48,6 +48,14 @@ export const DOCUMENTED_DEFAULTS: Settings = {
 };
 
 const DOCUMENTED_PRESETS: Preset[] = [
+  {
+    id: 'ai_best_evening',
+    label: "The AI's best evening",
+    date_local: '2025-05-30',
+    start_utc: '2025-05-30T23:00:00Z',
+    start_local: '2025-05-30T18:00:00-05:00',
+    description: 'The 2025 evening where the AI forecast pulled furthest ahead of the simple rule.',
+  },
   {
     id: 'summer_spike',
     label: 'Summer night spike',
