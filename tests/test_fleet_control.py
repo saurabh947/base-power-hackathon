@@ -123,3 +123,28 @@ def test_plain_language_wording():
         ctl.make_event("chaos", "info", "x")
     with pytest.raises(ValueError):
         ctl.make_event("run_started", "loud", "x")
+
+
+def test_forecast_strategy_falls_back_to_bands_until_it_lands(cfg, monkeypatch):
+    import sys
+
+    import src.strategy
+    from src.sim.coordinator import build_strategies
+    from src.strategy.bands import BandsStrategy
+    from src.strategy.peak import PeakStrategy
+
+    real = src.strategy.make_strategy
+
+    def no_forecast(c, tick_seconds, name=None):
+        if name == "forecast":
+            raise ValueError("unknown strategy 'forecast'")
+        return real(c, tick_seconds, name)
+
+    monkeypatch.setattr(src.strategy, "make_strategy", no_forecast)
+    monkeypatch.setitem(sys.modules, "src.strategy.forecast", None)  # import raises ImportError
+    strategies, name, warning = build_strategies("forecast", cfg, ["LZ_HOUSTON", "LZ_NORTH"])
+    assert name == "bands" and warning and "src.strategy.forecast" in warning
+    assert all(isinstance(s, BandsStrategy) for s in strategies.values())
+    assert strategies["LZ_HOUSTON"] is not strategies["LZ_NORTH"]  # one instance per location
+    peak, name, warning = build_strategies("peak", cfg, ["LZ_HOUSTON"])
+    assert name == "peak" and warning is None and isinstance(peak["LZ_HOUSTON"], PeakStrategy)

@@ -71,6 +71,7 @@ class Orchestration:
     miss_threshold: int = 2
     deadline_cap_ms: float = 250.0
     deadline_fraction: float = 0.5
+    deadline_floor_ms: float = 100.0
     max_speed_deadline_ms: float = 250.0
     block_ms: int = 1000
     load_timeout_s: float = 20.0
@@ -91,6 +92,7 @@ class Orchestration:
             miss_threshold=int(o.get("deadline_miss_threshold", 2)),
             deadline_cap_ms=float(o.get("deadline_cap_ms", 250.0)),
             deadline_fraction=float(o.get("deadline_fraction", 0.5)),
+            deadline_floor_ms=float(o.get("deadline_floor_ms", 100.0)),
             max_speed_deadline_ms=float(o.get("max_speed_deadline_ms", 250.0)),
             block_ms=int(o.get("xread_block_ms", 1000)),
             load_timeout_s=float(o.get("load_timeout_s", 20.0)),
@@ -368,6 +370,7 @@ class Coordinator:
         self.soc_min, self.soc_max = self.cfg.battery.soc_min, self.cfg.battery.soc_max
         self.cap, self.power, self.eff = self.layout.capacity_kwh, self.layout.power_kw, self.layout.efficiency
         self.loc_idx = [self.layout.location_indices(li) for li in range(len(self.layout.locations))]
+        self._bkey = [self.keys.battery(bid).encode() for bid in self.layout.ids]
         self.nameplate_kw = self.layout.nameplate_kw()
         self.soc = np.full(self.N, self.cfg.battery.soc_init)
         self.soc_k = np.full(self.N, -1, dtype=np.int64)
@@ -503,7 +506,8 @@ class Coordinator:
         try:
             pipe = self.r.pipeline(transaction=False)
             for h in live:
-                pipe.xadd(self.keys.commands(h.worker_id), {"m": pack({"t": "stop"})})
+                pipe.xadd(self.keys.commands(h.worker_id), {"m": pack({"t": "stop"})},
+                          maxlen=self.orch.maxlen["commands"], approximate=True)
             pipe.execute()
         except Exception:
             pass
@@ -606,6 +610,7 @@ class Coordinator:
         except Exception as exc:  # never let a bad request take the fleet down
             _log(f"control {cmd!r} failed: {exc!r}")
             reply = {"ok": False, "status": 500, "error": "internal", "message": "Something went wrong in the simulator."}
+        self._publish_snapshot(force=True)  # readers see the new state as soon as the reply lands
         if op_id:
             pipe = self.r.pipeline(transaction=False)
             pipe.lpush(self.keys.reply(op_id), json.dumps(reply))
@@ -706,8 +711,8 @@ class Coordinator:
             if not run.fixed:
                 _log(f"could not load prices: {exc!r}")
                 self.run, self.status = None, "idle"
-                self._emit("run_started", "warn", "The replay couldn't start because its price data is missing.",
-                           detail={"error": repr(exc)})
+                self._emit("run_started", "warn", "The replay couldn't start because its price data couldn't be loaded.",
+                           detail={"error": repr(exc), "price_source": os.environ.get("PRICE_SOURCE", "snapshot")})
                 return False
             prices = None
         run.prices = prices
@@ -843,10 +848,12 @@ class Coordinator:
         return predicate()
 
     def deadline_s(self) -> float:
+        """min(cap, fraction x tick period), but never under the floor (250 ms at 1-2 ticks/s, 100 ms at 5-10)."""
         run = self.run
         if run is None or run.speed is None:
             return self.orch.max_speed_deadline_ms / 1000.0
-        return min(self.orch.deadline_cap_ms / 1000.0, self.orch.deadline_fraction / run.speed)
+        o = self.orch
+        return min(o.deadline_cap_ms / 1000.0, max(o.deadline_floor_ms / 1000.0, o.deadline_fraction / run.speed))
 
     def step(self) -> dict | None:
         """One tick: decide, allocate, dispatch, barrier, account, detect failures, recover."""
@@ -1149,7 +1156,7 @@ class Coordinator:
             self.owner[cohort] = -1  # orphans: retried as soon as a worker is healthy
             return
         run = self.run
-        pipe = self.r.pipeline(transaction=False)
+        writes = []
         n = len(adopters)
         for j, a in enumerate(adopters):
             part = cohort[j::n]
@@ -1162,9 +1169,27 @@ class Coordinator:
             a.pending_init = np.concatenate([a.pending_init, init]).astype(bool)
             if from_worker is not None and from_worker not in a.adopted_from:
                 a.adopted_from.append(from_worker)
+            tail = b"$5\r\nowner\r\n$%d\r\n%d\r\n$11\r\nowner_epoch\r\n$%d\r\n%d\r\n" % (
+                len(str(a.worker_id)), a.worker_id, len(str(a.epoch)), a.epoch)
             for g in part.tolist():
-                pipe.hset(self.keys.battery(self.layout.ids[g]), mapping={F_OWNER: a.worker_id, F_EPOCH: a.epoch})
-        pipe.execute()
+                key = self._bkey[g]
+                writes.append(b"*6\r\n$4\r\nHSET\r\n$%d\r\n%s\r\n%s" % (len(key), key, tail))
+        self._send_raw(writes)
+
+    def _send_raw(self, commands: list[bytes]) -> None:
+        """Pipeline pre-encoded RESP commands on one pooled connection (the hot bulk-write path)."""
+        if not commands:
+            return
+        conn = self.r.connection_pool.get_connection()
+        try:
+            conn.send_packed_command([b"".join(commands)])
+            for _ in range(len(commands)):
+                conn.read_response()
+        except BaseException:
+            conn.disconnect()
+            raise
+        finally:
+            self.r.connection_pool.release(conn)
 
     def _reassign_orphans(self) -> None:
         orphans = np.flatnonzero(self.owner < 0).astype(np.int32)
@@ -1432,8 +1457,9 @@ def _bench(args) -> int:
         }
         if killed:
             ka = killed["after_tick"]
-            out["error_pct_after_kill"] = [(r["k"], r["error_pct"], r["healthy_workers"]) for r in log if ka < r["k"] <= ka + 6]
-            out["events"] = [(e["kind"], e["message"]) for e in co.events if e["kind"].startswith("worker_")]
+            out["error_pct_after_kill"] = [f"tick {r['k']}: {r['error_pct']:.3f}% ({r['healthy_workers']} healthy)"
+                                           for r in log if ka < r["k"] <= ka + 5]
+            out["events"] = [f"{e['kind']}: {e['message']}" for e in co.events if e["kind"].startswith("worker_")]
             out["dead_letter"] = int(co.r.get(co.keys.dead_letter_count) or 0)
         print(json.dumps(out, indent=2))
         return 0 if out["ticks_over_5pct"] == 0 or killed else 1
@@ -1468,8 +1494,10 @@ def main(argv: list[str] | None = None) -> int:
         return _bench(args)
     parent = args.parent_pid if getattr(args, "parent_pid", None) is not None else (
         int(os.environ["FLEET_PARENT_PID"]) if os.environ.get("FLEET_PARENT_PID") else None)
+    env_int = lambda name: int(os.environ[name]) if os.environ.get(name) else None  # noqa: E731
     co = Coordinator(url=getattr(args, "redis_url", None), prefix=getattr(args, "prefix", None),
-                     fleet_size=getattr(args, "fleet_size", None), workers=getattr(args, "workers", None),
+                     fleet_size=getattr(args, "fleet_size", None) or env_int("FLEET_SIZE"),
+                     workers=getattr(args, "workers", None) or env_int("FLEET_WORKERS"),
                      parent_pid=parent, allow_max_speed=os.environ.get("FLEET_ALLOW_MAX_SPEED") == "1")
 
     def _term(signum, _frame):
