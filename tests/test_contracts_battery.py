@@ -33,7 +33,20 @@ def _memory(states: list[BatteryState]) -> BatteryAdapter:
     return InMemoryBatteryAdapter(states, tick_seconds=300, soc_min=SOC_MIN, soc_max=SOC_MAX)
 
 
-FACTORIES = [pytest.param(_memory, id="memory")]
+def _redis(states: list[BatteryState]) -> BatteryAdapter:
+    """Per-battery Redis hashes (src/sim/redis_adapter.py); skips when Redis is unreachable."""
+    import uuid
+
+    from src.sim.redis_adapter import RedisBatteryAdapter
+    from src.sim.redis_layout import reachable, redis_url
+
+    if not reachable(redis_url()):
+        pytest.skip(f"Redis not reachable at {redis_url()}")
+    return RedisBatteryAdapter(states, url=redis_url(), prefix=f"test:contract:{uuid.uuid4().hex[:10]}:",
+                               tick_seconds=300, soc_min=SOC_MIN, soc_max=SOC_MAX, ttl_s=600)
+
+
+FACTORIES = [pytest.param(_memory, id="memory"), pytest.param(_redis, id="redis", marks=pytest.mark.redis)]
 
 
 @pytest.fixture(params=FACTORIES)

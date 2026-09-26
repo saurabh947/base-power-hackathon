@@ -40,6 +40,20 @@ orchestration:
   heartbeat_interval_s: 2   # worker SETs hb:{worker_id} every 2 s
   heartbeat_ttl_s: 6        # key TTL
   deadline_miss_threshold: 2  # DEAD after 2 missed tick deadlines (or heartbeat expiry)
+  deadline_cap_ms: 250      # telemetry barrier: min(cap, max(floor, fraction x tick period))
+  deadline_fraction: 0.5    #   = 250 ms at 1-2 ticks/s, 100 ms at 5-10 ticks/s
+  deadline_floor_ms: 100    # headroom for 20 workers on 4 vCPUs at 10 ticks/s (0 = spec-literal 50 ms)
+  max_speed_deadline_ms: 250  # barrier at 'max' speed (tests/bench)
+  xread_block_ms: 1000      # must stay < 5 s (redis-py socket timeouts)
+  load_timeout_s: 20        # workers must load their cohort at run start within this
+  spawn_timeout_s: 30       # a new worker with no heartbeat by then is DEAD
+  stream_maxlen:            # MAXLEN ~ per stream
+    commands: 64
+    telemetry: 400
+    dead_letter: 20000
+    events: 500
+    ticks: 2100
+    control: 500
 
 # Replay presets for the website's Start screen (docs/UX.md). start_utc = replay start.
 presets:
@@ -73,6 +87,17 @@ data:       # owner: ingest (M1). python -m src.ingest.ercot; notes in docs/note
 
 api:        # owner: fleet + API
   port: 8000
+  default_strategy: forecast  # falls back to bands (with a warning event) until src.strategy.forecast lands
+  default_speed_tps: 2
+  frame_interval_s: 1.0       # WebSocket /live frame cadence
+  control_timeout_s: 4.0      # how long the API waits for the coordinator's reply
+  price_spike_usd_mwh: 1000   # price_spike event threshold
+  action_event_min_ticks: 12  # at most one action_changed event per hour of market time
+  rate_limits:
+    run_start_s: 5            # one /run/start per 5 s (global)
+    run_reset_s: 5            # one /run/reset per 5 s (global)
+    availability_per_s: 10
+    wrong_passcode_per_min: 5 # per IP
 
 backtest:   # owner: backtest (M4). Read by src/backtest/runner.py:backtest_settings()
   year: 2025                            # the pitch year shown on the Results screen
