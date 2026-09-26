@@ -126,6 +126,20 @@ export interface Worker {
   adopted_from: number[];
   /** How many of its batteries are in each location, e.g. {"LZ_NORTH": 400, …}. */
   by_location?: Record<string, number>;
+  /** Capacity-weighted average charge of the batteries it owns now, 0.2-1.0; null when it owns none. */
+  charge_level?: number | null;
+  /**
+   * Usable energy left above the 20% reserve, 0-1: (charge_level − 0.2) / 0.8; null when it owns none. The
+   * controller panel shows this. A crash empties a controller's batteries (0); taking its batteries offline
+   * halves it (docs/API.md, failure model). Missing from an older backend.
+   */
+  usable_charge?: number | null;
+}
+
+/** POST /workers/{worker_id}/restart: a crashed controller is coming back. */
+export interface RestartResponse {
+  worker_id: number;
+  status: WorkerStatus;
 }
 
 export interface FailedCommand {

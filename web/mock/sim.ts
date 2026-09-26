@@ -22,6 +22,16 @@
 // and Austin); idle message every 5 s; the race (a shadow fleet on the
 // comparison strategy) in every snapshot and frame while a run exists.
 //
+// The failure model (docs/API.md, the human's rules): each worker reports the
+// capacity-weighted charge of the batteries it owns (charge_level) and the
+// usable share above the 20% reserve (usable_charge). A crash empties that
+// controller's batteries to the reserve; the others take them over and run
+// them; nothing comes back on its own: POST /workers/{id}/restart (or Reset)
+// brings the controller back, taking its own block back with whatever charge
+// those batteries have by then (worker_recovered). Taking a controller's
+// batteries offline halves their usable charge. The race shadow mirrors both;
+// the potential fleet (all online) never loses charge.
+//
 // The full-year numbers (GET /results/pitch per-battery figures and GET
 // /results/ai-gains) are copied from the real backtest in RUNLOG.md (./gains.ts);
 // the rest of the Results payload (cycles, top days, most city splits) is simulated.
@@ -438,20 +448,27 @@ export function batteryIndex(id: string): number | null {
 }
 
 /**
- * Initial cohorts, as the backend's FleetLayout.default_owners: the fleet in id order split into 20
- * contiguous chunks (numpy.array_split), so each controller serves one city, or two where a city
- * boundary falls inside its chunk (worker 17: 600 San Antonio + 400 Austin).
+ * Worker `w`'s own block of battery indices [start, end), as the backend's FleetLayout.default_owners: the
+ * fleet in id order split into 20 contiguous chunks (numpy.array_split), so each controller serves one city,
+ * or two where a city boundary falls inside its chunk (worker 17: 600 San Antonio + 400 Austin).
  */
-function defaultOwners(out: Uint8Array): void {
+function defaultBlock(w: number): [number, number] {
   const small = Math.floor(FLEET / WORKERS);
   const extra = FLEET % WORKERS;
-  let g = 0;
-  for (let w = 0; w < WORKERS; w++) {
-    const size = small + (w < extra ? 1 : 0);
-    out.fill(w, g, g + size);
-    g += size;
-  }
+  const start = w * small + Math.min(w, extra);
+  return [start, start + small + (w < extra ? 1 : 0)];
 }
+
+/** Initial cohorts: every worker on its own block. */
+function defaultOwners(out: Uint8Array): void {
+  for (let w = 0; w < WORKERS; w++) out.fill(w, ...defaultBlock(w));
+}
+
+/** Usable energy above the 20% reserve, 0-1, for a charge level (docs/API.md Worker.usable_charge). */
+const usableOf = (level: number) => Math.min(1, Math.max(0, (level - SOC_MIN) / (SOC_MAX - SOC_MIN)));
+
+/** Halve the usable energy of a battery at charge `soc` (a controller's batteries taken offline). */
+const halvedSoc = (soc: number) => SOC_MIN + (soc - SOC_MIN) / 2;
 
 /** {location: batteries} among these battery indices, only locations that have some (event details). */
 function byLocation(idx: Iterable<number>): Record<string, number> {
@@ -499,6 +516,8 @@ interface WorkerState extends Worker {
   killedAtTick: number | null;
   killedAtMs: number | null;
   missed: number;
+  /** POST /workers/{id}/restart was called at this time; it takes its batteries back at the next step. */
+  restartAtMs: number | null;
 }
 
 /** Killed or not responding, and not handed over yet: its batteries are "controller down". */
@@ -646,6 +665,31 @@ class RaceFleet {
     return this.revenueBy[loc];
   }
 
+  /** The same batteries as the live fleet's crashed controller, emptied to the reserve (docs/API.md Mirroring). */
+  empty(idx: Iterable<number>): void {
+    for (const g of idx) this.soc[g] = SOC_MIN;
+    this.recount();
+  }
+
+  /** The same batteries as the live fleet's controller taken offline, their usable charge halved. */
+  halve(idx: Iterable<number>): void {
+    for (const g of idx) this.soc[g] = halvedSoc(this.soc[g]);
+    this.recount();
+  }
+
+  private recount(): void {
+    let stored = 0;
+    let capacity = 0;
+    for (const loc of LOCS) {
+      let locStored = 0;
+      for (let n = 0; n < COUNT[loc]; n++) locStored += this.soc[BASE[loc] + n] * CAPACITY[BASE[loc] + n];
+      this.level[loc] = locStored / CAPACITY_BY_LOC[loc];
+      stored += locStored;
+      capacity += CAPACITY_BY_LOC[loc];
+    }
+    this.fleetLevel = stored / capacity;
+  }
+
   toJson(liveRevenue: number): Race {
     return {
       strategy: this.strategy,
@@ -747,6 +791,7 @@ export class MockSim {
       killedAtTick: null,
       killedAtMs: null,
       missed: 0,
+      restartAtMs: null,
     }));
     this.recountWorkers();
   }
@@ -947,16 +992,19 @@ export class MockSim {
         const w = this.workers.find((x) => x.worker_id === Number(req.worker_id));
         if (!w) throw new MockError(404, 'unknown_worker', `There is no worker ${req.worker_id}.`);
         const offline = req.available === false;
-        for (let g = 0; g < FLEET; g++) {
-          if (this.owner[g] === w.worker_id) {
-            this.offWorker[g] = offline ? 1 : 0;
-            affected++;
-          }
+        const owned = this.ownedBy(w.worker_id);
+        // docs/API.md failure model: going offline halves its batteries' usable charge, at that moment (the
+        // race shadow too); while offline they don't move; back online they carry on from there.
+        if (offline && !this.offlineWorkers.has(w.worker_id)) {
+          for (const g of owned) this.soc[g] = halvedSoc(this.soc[g]);
+          this.race.halve(owned);
         }
+        for (const g of owned) this.offWorker[g] = offline ? 1 : 0;
+        affected = owned.length;
         if (offline) this.offlineWorkers.add(w.worker_id);
         else this.offlineWorkers.delete(w.worker_id);
         message = offline
-          ? `${controller(w.worker_id)}'s ${affected.toLocaleString('en-US')} batteries were taken offline. The controller itself keeps running.`
+          ? `${controller(w.worker_id)}'s ${affected.toLocaleString('en-US')} batteries were taken offline, and half their usable charge is lost. The controller itself keeps running.`
           : `${controller(w.worker_id)}'s batteries are back online.`;
         break;
       }
@@ -1025,8 +1073,60 @@ export class MockSim {
     }
     target.killedAtTick = this.tickIndex;
     target.killedAtMs = this.now();
+    target.restartAtMs = null; // crashed again while restarting: it stays down
+    // docs/API.md failure model: a crash empties its batteries to the reserve (the race shadow's too); the
+    // others take them over as they are.
+    const emptied = this.ownedBy(target.worker_id);
+    for (const g of emptied) this.soc[g] = SOC_MIN;
+    this.race.empty(emptied);
     this.hadOutage = true; // race.shows_potential, for the rest of the run
     return { worker_id: target.worker_id, pid: target.pid ?? 0, killed_at_utc: new Date(this.now()).toISOString() };
+  }
+
+  /**
+   * POST /workers/{worker_id}/restart: a crashed controller comes back only this way (or with Reset). It is
+   * "starting" until the next step (a second while paused), then takes its own block back with whatever charge
+   * those batteries have by then, and says so (worker_recovered).
+   */
+  restart(workerId: number): { worker_id: number; status: 'starting' } {
+    const w = Number.isInteger(workerId) ? this.workers.find((x) => x.worker_id === workerId) : undefined;
+    if (!w) throw new MockError(404, 'unknown_worker', `There is no worker ${workerId} (ids run 0 to 19).`);
+    if (w.status !== 'dead' || w.restartAtMs !== null) {
+      throw new MockError(409, 'not_crashed', `${controller(workerId)} has not crashed, so there is nothing to restart.`);
+    }
+    Object.assign(w, { status: 'starting', pid: this.pidSeq++, restartAtMs: this.now(), killedAtTick: null, killedAtMs: null, missed: 0 });
+    return { worker_id: workerId, status: 'starting' };
+  }
+
+  /** A restarted controller takes its own block back (see restart). */
+  private recover(w: WorkerState): void {
+    const [start, end] = defaultBlock(w.worker_id);
+    let stored = 0;
+    let capacity = 0;
+    const block: number[] = [];
+    for (let g = start; g < end; g++) {
+      this.owner[g] = w.worker_id;
+      stored += this.soc[g] * CAPACITY[g];
+      capacity += CAPACITY[g];
+      block.push(g);
+    }
+    Object.assign(w, { status: 'healthy', restartAtMs: null, adopted_from: [] });
+    for (const other of this.workers) other.adopted_from = other.adopted_from.filter((id) => id !== w.worker_id);
+    this.recountWorkers();
+    const usable = Math.round(usableOf(stored / capacity) * 100);
+    this.emit(
+      'worker_recovered',
+      'good',
+      `${controller(w.worker_id)} is back and has taken back its ${block.length.toLocaleString('en-US')} batteries${this.inCities(block)}, at ${usable}% usable charge.`,
+      { ...workerDetail(w), batteries: block.length, by_location: byLocation(block) },
+    );
+  }
+
+  /** Restarts waiting for their step: at a tick, or after a second while nothing ticks (paused, finished). */
+  private recoverPending(nowMs: number | null): void {
+    for (const w of this.workers) {
+      if (w.status === 'starting' && w.restartAtMs !== null && (nowMs === null || nowMs - w.restartAtMs >= 1000)) this.recover(w);
+    }
   }
 
   // ---- the clock -------------------------------------------------------------------
@@ -1086,6 +1186,8 @@ export class MockSim {
     } else if (this.status === 'paused') {
       this.detectWhilePaused(now);
     }
+    // A restart finishes at the next step; while nothing steps, after a second.
+    if (this.status !== 'running') this.recoverPending(now);
     const forecast = this.pendingForecast;
     this.pendingForecast = null;
     const frame: FrameMessage = {
@@ -1175,16 +1277,31 @@ export class MockSim {
     }
   }
 
+  /**
+   * docs/API.md Worker: `charge_level` is the capacity-weighted charge of the batteries a worker owns now, and
+   * `usable_charge` the share above the 20% reserve; both null when it owns none (a crashed one, handed over).
+   */
   private publicWorkers(): Worker[] {
-    return this.workers.map(({ worker_id, status, pid, batteries, last_tick_utc, adopted_from, by_location }) => ({
-      worker_id,
-      status,
-      pid,
-      batteries,
-      last_tick_utc,
-      adopted_from: [...adopted_from],
-      by_location: { ...by_location },
-    }));
+    const stored = new Float64Array(WORKERS);
+    const capacity = new Float64Array(WORKERS);
+    for (let g = 0; g < FLEET; g++) {
+      stored[this.owner[g]] += this.soc[g] * CAPACITY[g];
+      capacity[this.owner[g]] += CAPACITY[g];
+    }
+    return this.workers.map(({ worker_id, status, pid, batteries, last_tick_utc, adopted_from, by_location }) => {
+      const level = batteries > 0 && capacity[worker_id] > 0 ? stored[worker_id] / capacity[worker_id] : null;
+      return {
+        worker_id,
+        status,
+        pid,
+        batteries,
+        last_tick_utc,
+        adopted_from: [...adopted_from],
+        by_location: { ...by_location },
+        charge_level: level === null ? null : round(level, 4),
+        usable_charge: level === null ? null : round(usableOf(level), 4),
+      };
+    });
   }
 
   private emit(kind: string, severity: Severity, message: string, detail: Record<string, unknown> = {}): void {
@@ -1221,6 +1338,7 @@ export class MockSim {
         { real_until_utc: REAL_UNTIL_2026 },
       );
     }
+    this.recoverPending(null);
     const dying = this.detectAtTick();
 
     const price = perLoc(() => 0);

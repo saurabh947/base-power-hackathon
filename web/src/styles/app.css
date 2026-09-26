@@ -1140,7 +1140,7 @@ main.main-start {
   text-align: left;
 }
 
-/* "Crash controller 7?": a small confirmation above a controller tile. */
+/* "Crash controller 7?" or "Restart controller 7?": a small confirmation above a controller's gauge. */
 .crash-pop {
   position: absolute;
   z-index: 30;
@@ -1159,6 +1159,10 @@ main.main-start {
 
 .crash-pop:focus {
   outline: none;
+}
+
+.crash-pop.is-restart {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--panel-border));
 }
 
 .crash-pop-title {

@@ -7,7 +7,7 @@
 // Which batteries a controller runs is replayed from the events (./owners.ts).
 
 import type { LiveEvent } from '../api/types.ts';
-import { applyAdoption, cohortOf, defaultOwners } from './owners.ts';
+import { applyAdoption, applyRecovery, cohortOf, defaultOwners } from './owners.ts';
 import { DOWN, OFFLINE } from './status.ts';
 
 const WORKER_EVENTS = new Set(['worker_suspect', 'worker_dead', 'worker_adopted']);
@@ -29,12 +29,14 @@ function oldestFirst(events: LiveEvent[]): LiveEvent[] {
 
 export class ControllerFlash {
   private owners: Int16Array | null = null;
+  private workers = 20;
   private seen = new Set<string>();
   private lastDownMs = Number.NEGATIVE_INFINITY;
 
   /** Start from the default blocks (a new run, a reset, a new layout) and replay what `history` says. */
   reset(size: number, workers: number, history: LiveEvent[]): void {
     this.owners = defaultOwners(size, workers);
+    this.workers = workers;
     this.seen = new Set();
     this.lastDownMs = Number.NEGATIVE_INFINITY;
     for (const e of oldestFirst(history)) {
@@ -56,6 +58,8 @@ export class ControllerFlash {
         w,
         by.filter((x): x is number => typeof x === 'number'),
       );
+    } else if (this.owners && e.kind === 'worker_recovered' && w !== null) {
+      applyRecovery(this.owners, w, this.workers);
     }
   }
 

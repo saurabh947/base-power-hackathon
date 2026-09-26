@@ -1,17 +1,16 @@
-// The live map's four corner panels (docs/UX.md, Live map > Corners, and "Live map v2"). Each one shows the
-// selected city's numbers, or the whole fleet's for "All of Texas". The clock, money and fleet corners follow
-// the timeline: they read useLiveData, which is the moment being viewed inside the map (src/live/timeTravel.ts).
-// The controls always act on the live run.
+// The live map's four corner panels (docs/UX.md, Live map > Corners, and "Live map v2"); the fifth, the
+// controllers' charge at the centre right, is ChargePanel.tsx. Each one shows the selected city's numbers, or
+// the whole fleet's for "All of Texas". The clock, money and battery corners follow the timeline: they read
+// useLiveData, which is the moment being viewed inside the map (src/live/timeTravel.ts). The controls always act
+// on the live run.
 
-import type { Tick, Worker, WorkerStatus } from '../../../api/types.ts';
+import type { Tick } from '../../../api/types.ts';
 import { AnimatedNumber } from '../../../components/AnimatedNumber.tsx';
 import { Icon } from '../../../components/Icon.tsx';
 import { TechBlock, TechOnly, Term } from '../../../components/Tech.tsx';
-import { useLive } from '../../../live/liveStore.ts';
 import { projectedMoney } from '../../../live/past.ts';
 import { useLiveData, useViewing } from '../../../live/timeTravel.ts';
 import { byBatteries, cityName, useCities } from '../../../lib/cities.ts';
-import { controllerName } from '../../../lib/fleet.ts';
 import {
   fmtClock,
   fmtCount,
@@ -26,19 +25,17 @@ import {
   fmtPriceMwh,
   fmtTimeOfDay,
   fmtUsd,
-  plural,
 } from '../../../lib/format.ts';
 import { useLayoutState, useMapStatus } from '../../../map/feed.ts';
 import { CHARGING, DOWN, OFFLINE, SELLING, WAITING } from '../../../map/status.ts';
 import { useTechnical } from '../../../state/prefs.ts';
 import { ActionChip, ActionIcon } from '../ActionChip.tsx';
-import { CrashButton, CrashPopover, PauseResume, ResetButton, SpeedSelect } from '../controls.tsx';
-import { useCrashAsk } from '../crash.ts';
+import { CrashButton, PauseResume, ResetButton, SpeedSelect } from '../controls.tsx';
 import { eventClass, eventIcon, eventSpoken } from '../eventLook.ts';
 import { RaceBars } from '../RaceBars.tsx';
 import { ConnectionStatus, PredictedBadge, RunStatus, TechCounters } from '../status.tsx';
 import { MiniPowerChart, MiniPriceChart } from './MiniCharts.tsx';
-import { ON_TARGET_PCT, scopeAvailability, scopeTotals, scopeTracking, workerShare, type Scope } from './scope.ts';
+import { ON_TARGET_PCT, scopeAvailability, scopeTotals, scopeTracking, type Scope } from './scope.ts';
 import { Timeline } from './Timeline.tsx';
 
 const lastTick = (s: { history: Tick[] }) => s.history[s.history.length - 1] ?? null;
@@ -347,52 +344,7 @@ export function ControlsCorner({ onOpenAvailability }: { onOpenAvailability: () 
   );
 }
 
-// ---- bottom right: controllers, batteries and the last events -----------------------------
-
-const TILE: Record<WorkerStatus, { label: string; glyph: string }> = {
-  healthy: { label: 'working', glyph: '' },
-  suspect: { label: 'not responding', glyph: '!' },
-  dead: { label: 'crashed', glyph: '✕' },
-  starting: { label: 'starting', glyph: '…' },
-};
-
-interface TileProps {
-  worker: Worker;
-  scope: Scope;
-  offline: boolean;
-  /** Why this tile cannot be crashed now, or null when it can. */
-  blocked: string | null;
-  asking: boolean;
-  onAsk: (workerId: number, button: HTMLElement) => void;
-}
-
-function MiniTile({ worker, scope, offline, blocked, asking, onAsk }: TileProps) {
-  const t = TILE[worker.status] ?? TILE.starting;
-  const share = workerShare(worker, scope);
-  const serving = share > 0;
-  const where = scope === null ? '' : ` ${cityName(scope)}`;
-  const text =
-    worker.status === 'dead' && worker.batteries === 0
-      ? `${controllerName(worker.worker_id)}: ${t.label}, its batteries were handed to the others`
-      : `${controllerName(worker.worker_id)}: ${t.label}, runs ${fmtCount(share)}${where} ${plural(share, 'battery', 'batteries')}${offline ? ' (offline)' : ''}`;
-  const hint = blocked ?? 'Click to crash it';
-  return (
-    <li>
-      <button
-        type="button"
-        className={`mini-tile mini-tile-${worker.status}${scope !== null ? (serving ? ' is-serving' : ' is-idle') : ''}${offline ? ' is-offline' : ''}${asking ? ' is-asking' : ''}`}
-        title={`${text}. ${hint}.`}
-        aria-label={`${text}.${blocked ? '' : ' Press to crash it.'}`}
-        aria-haspopup="dialog"
-        aria-expanded={asking}
-        disabled={blocked !== null}
-        onClick={(e) => onAsk(worker.worker_id, e.currentTarget)}
-      >
-        <span aria-hidden="true">{t.glyph || worker.worker_id + 1}</span>
-      </button>
-    </li>
-  );
-}
+// ---- bottom right: batteries and the last events (the controllers are in ChargePanel.tsx) ----------
 
 /** Legend rows: the same looks as on the map (src/map/looks.ts), doubling as the battery counts. */
 const CODE_ROWS: { code: number; label: string; className: string }[] = [
@@ -419,14 +371,14 @@ function BatteryCounts({ scope }: { scope: Scope }) {
   const cityLevel = source === 'city_level';
   return (
     <div className="corner-block">
-      <h3 className="corner-label corner-label-row">
+      <h2 className="corner-label corner-label-row">
         <span>{scope === null ? 'Batteries' : `Batteries · ${cityName(scope)}`}</span>
         {a ? (
           <span className="corner-label-value">
             <span className="num">{fmtCount(a.available)}</span> of {fmtCount(a.total)} online
           </span>
         ) : null}
-      </h3>
+      </h2>
       {counts && counts.some((n) => n > 0) ? (
         <ul className="code-legend" aria-label="What the dots show">
           {CODE_ROWS.map((r) => (
@@ -494,81 +446,9 @@ function LastEvents() {
   );
 }
 
-export function FleetCorner({ scope }: { scope: Scope }) {
-  const workers = useLiveData((s) => s.workers);
-  const offlineWorkers = useLiveData((s) => s.availability?.offline_workers);
-  const runStatus = useLive((s) => s.status);
-  const viewing = useViewing();
-  const crash = useCrashAsk();
-  const offline = new Set(offlineWorkers ?? []);
-  const healthy = workers.filter((w) => w.status === 'healthy').length;
-  const suspect = workers.filter((w) => w.status === 'suspect').length;
-  const dead = workers.filter((w) => w.status === 'dead').length;
-  const serving = scope === null ? 0 : workers.filter((w) => workerShare(w, scope) > 0).length;
-  const running = runStatus === 'running' || runStatus === 'paused';
-  const blockedFor = (w: Worker): string | null => {
-    if (viewing !== null) return 'Go back to live to crash a controller';
-    if (!running) return 'Start a simulation first';
-    if (w.status !== 'healthy') return `It is ${TILE[w.status]?.label ?? 'not working'}`;
-    if (healthy <= 2) return 'At least 2 controllers must keep working';
-    return null;
-  };
+export function BatteriesCorner({ scope }: { scope: Scope }) {
   return (
-    <section className="corner corner-br" aria-label={`Controllers and batteries, ${scopeLabel(scope)}`}>
-      <h2 className="corner-label corner-label-row">
-        <span>
-          <Term plain="Controllers" tech="worker processes" />
-        </span>
-        {workers.length ? (
-          <span className="corner-label-value">
-            {healthy} of {workers.length} working
-          </span>
-        ) : null}
-      </h2>
-      {workers.length ? (
-        <>
-          {suspect || dead ? (
-            <p className="corner-line">
-              {suspect ? (
-                <span className="chip chip-warn">
-                  <Icon name="alert" size={13} />
-                  {suspect} not responding
-                </span>
-              ) : null}
-              {dead ? (
-                <span className="chip chip-fail">
-                  <Icon name="x" size={13} />
-                  {dead} crashed
-                </span>
-              ) : null}
-            </p>
-          ) : null}
-          <div className="mini-tiles-wrap">
-            <ul className="mini-tiles" aria-label="Controllers (click one to crash it)">
-              {workers.map((w) => (
-                <MiniTile
-                  key={w.worker_id}
-                  worker={w}
-                  scope={scope}
-                  offline={offline.has(w.worker_id)}
-                  blocked={blockedFor(w)}
-                  asking={crash.target?.workerId === w.worker_id}
-                  onAsk={crash.ask}
-                />
-              ))}
-            </ul>
-            {crash.target ? <CrashPopover key={crash.target.workerId} target={crash.target} onClose={crash.close} /> : null}
-          </div>
-          {scope !== null ? (
-            <p className="corner-sub">
-              Highlighted: the {serving} serving {cityName(scope)}.
-            </p>
-          ) : null}
-        </>
-      ) : (
-        <p className="corner-line muted">The 20 controllers appear here when a simulation is running.</p>
-      )}
-      <hr className="corner-rule" />
+    <section className="corner corner-br" aria-label={`Batteries and what just happened, ${scopeLabel(scope)}`}>
       <BatteryCounts scope={scope} />
       <hr className="corner-rule" />
       <LastEvents />

@@ -117,6 +117,23 @@ describe('the controllers at an earlier moment, rebuilt from the events', () => 
     expect(after[2].by_location).toEqual({ LZ_HOUSTON: 2, LZ_NORTH: 5 });
     expect(after[0].adopted_from).toEqual([1]);
   });
+
+  it('take its own batteries back after a restart (worker_recovered)', () => {
+    const restarted = [event('worker_recovered', 8, { worker_id: 1, controller: 2, batteries: 5 }), ...events];
+    const back = workersAt(template, restarted, tickMs(history[8]), cities);
+    expect(back.map((w) => w.status)).toEqual(['healthy', 'healthy', 'healthy', 'healthy']);
+    expect(back.map((w) => w.batteries)).toEqual([5, 5, 5, 5]);
+    expect(back[1].by_location).toEqual({ LZ_HOUSTON: 5 });
+    expect(back.every((w) => w.adopted_from.length === 0)).toBe(true);
+  });
+
+  it('leave their charge unknown: it is not in the events', () => {
+    const charged = template.map((w) => ({ ...w, charge_level: 0.6, usable_charge: 0.5 }));
+    for (const w of workersAt(charged, events, tickMs(history[4]), cities)) {
+      expect(w.usable_charge).toBeUndefined();
+      expect(w.charge_level).toBeUndefined();
+    }
+  });
 });
 
 describe('pastState: the live view as it was', () => {
@@ -151,16 +168,17 @@ describe('pastState: the live view as it was', () => {
     expect([s.status, s.runId, s.settings]).toEqual([live.status, live.runId, live.settings]);
   });
 
-  it('takes the controllers, availability and race from what this page recorded then', () => {
+  it('takes the controllers (with their charge), availability and race from what this page recorded then', () => {
     const record: FrameRecord = {
       tMs: tickMs(history[3]),
       status: new Uint8Array(10_000),
-      workers: [worker(0, {})],
+      workers: [{ ...worker(0, {}), usable_charge: 0.25, charge_level: 0.4 }],
       availability: { available: 20_000, total: 20_000, by_location: {}, offline_workers: [] },
       race: { ...(live.race as NonNullable<LiveState['race']>), revenue_usd: 2 },
     };
     const s = pastState(live, tickMs(history[3]), record);
     expect(s.workers).toBe(record.workers);
+    expect(s.workers[0].usable_charge).toBe(0.25);
     expect(s.availability).toBe(record.availability);
     expect(s.race?.revenue_usd).toBe(2);
     expect(s.batteryStatus).toBeNull(); // the map reads the recorded status itself

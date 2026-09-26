@@ -161,9 +161,12 @@ describe('always dark', () => {
   });
 
   it('defines every colour token the stylesheets use', () => {
-    // --map-left/top/width/height are set by the map at run time and always come with a fallback.
-    const used = new Set([...`${appCss}\n${mapCss}`.matchAll(/var\(--([a-z0-9-]+)\s*\)/gi)].map((m) => m[1]));
-    for (const name of used) expect(tokens[name], `--${name}`).toBeDefined();
+    // --map-left/top/width/height and the gauges' --fill, --ghost and --was are set at run time and always come
+    // with a fallback; a panel's own properties (the gauges' --edge, --juice, …) are declared in the stylesheets.
+    const css = `${appCss}\n${mapCss}`;
+    const local = readTokens(css);
+    const used = new Set([...css.matchAll(/var\(--([a-z0-9-]+)\s*\)/gi)].map((m) => m[1]));
+    for (const name of used) expect(tokens[name] ?? local[name], `--${name}`).toBeDefined();
   });
 
   it('uses only hex colours for the tokens that text and marks sit on or are drawn in', () => {

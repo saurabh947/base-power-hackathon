@@ -998,89 +998,398 @@ html.map-mode .toasts {
   text-align: center;
 }
 
-/*
- * Controllers: 20 mini tiles. Status is in the glyph and the text too, never colour alone. Each tile is a
- * button: clicking a working one asks "Crash controller 7?" just above it.
- */
-.mini-tiles-wrap {
+/* ---- centre right: charge by controller (ChargePanel.tsx) ---------------------------------------- */
+
+/* LiveMap sets --corner-mr-top: the vertical centre, moved only as far as it must to clear the other corners. */
+.corner-slot-mr {
+  top: var(--corner-mr-top, 42%);
+  right: 12px;
+}
+
+/* A number, so the gauges' fill (and the split colour of their numbers) can glide to a new level. */
+@property --fill {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+/* "CHARGE BY CONTROLLER   20 of 20 working" on one line, even in the 296 px corner at 1280 × 800. */
+.charge .corner-label-row {
+  gap: 0 6px;
+  letter-spacing: 0.045em;
+}
+
+.charge .corner-label-row > span:first-child {
+  white-space: nowrap;
+}
+
+.charge .corner-label-value {
+  font-size: 12px;
+}
+
+.charge-line {
+  gap: 3px 8px;
+}
+
+.charge-hint,
+.charge-serving {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Controllers whose batteries were taken offline: dashed, like the map's hollow red rings. */
+.chip-offline {
+  border: 1px dashed var(--fail);
+  background: transparent;
+  color: var(--fail);
+}
+
+.gauges-wrap {
   position: relative;
 }
 
-.mini-tiles {
+.gauges {
   display: grid;
   grid-template-columns: repeat(10, minmax(0, 1fr));
-  gap: 4px;
+  gap: 5px 0;
   margin: 2px 0 0;
   padding: 0;
   list-style: none;
 }
 
-.mini-tile {
+.gauges li {
+  display: flex;
+  justify-content: center;
+}
+
+/*
+ * One controller: a small upright battery (a cap on top) filled from the bottom to its usable charge, with its
+ * number inside, dark over the fill and light above it. Status is in the outline and the glyph too, never the
+ * colour alone: green working, amber not responding, red with ✕ crashed, dashed red with a ghost mark offline.
+ */
+.gauge {
+  --edge: rgba(74, 222, 128, 0.6);
+  --juice: var(--ok);
+  --num-on: var(--accent-text);
+  --num-off: var(--text);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: default;
+  transition:
+    --fill 0.7s ease-out,
+    opacity 0.2s;
+}
+
+.gauge::before {
+  content: '';
+  width: 8px;
+  height: 3px;
+  border-radius: 2px 2px 0 0;
+  background: var(--edge);
+}
+
+.gauge-cell {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 26px;
+  border: 1.5px solid var(--edge);
+  border-radius: 4px;
+  background: var(--bar-track);
+  overflow: hidden;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.gauge-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--fill, 0) * 100%);
+  background: var(--juice);
+}
+
+.gauge-num {
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
-  width: 100%;
-  height: 22px;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
-  border-radius: 5px;
-  background: var(--ok-soft);
-  color: var(--ok);
-  font: inherit;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 750;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
+  background: linear-gradient(to top, var(--num-on) calc(var(--fill, 0) * 100%), var(--num-off) calc(var(--fill, 0) * 100%));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.gauge.can-crash,
+.gauge.can-restart {
   cursor: pointer;
-  transition:
-    opacity 0.2s,
-    border-color 0.15s,
-    background-color 0.15s;
 }
 
-.mini-tile:hover:not(:disabled),
-.mini-tile.is-asking {
-  border-color: var(--fail);
-  background: var(--fail-soft);
-  color: var(--fail);
+/* What a click would do: crash a working one (red), restart a crashed one (green). */
+.gauge.can-crash:hover .gauge-cell,
+.gauge.can-crash.is-asking .gauge-cell {
+  border-color: var(--outage);
+  box-shadow: 0 0 0 1px var(--outage);
 }
 
-.mini-tile:disabled {
-  cursor: default;
-}
-
-.mini-tile-suspect {
-  border-color: var(--warn);
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-
-.mini-tile-dead {
-  border-color: var(--fail);
-  background: var(--fail-soft);
-  color: var(--fail);
-}
-
-.mini-tile-starting {
-  border-color: var(--hold);
-  background: var(--hold-soft);
-  color: var(--hold);
-}
-
-.mini-tile.is-serving {
+.gauge.can-restart:hover .gauge-cell,
+.gauge.can-restart.is-asking .gauge-cell {
   border-color: var(--ok);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 55%, transparent);
+  box-shadow: 0 0 0 1px var(--ok);
 }
 
-.mini-tile.is-idle {
-  opacity: 0.35;
+.gauge:focus-visible {
+  outline: none;
 }
 
-/* A disabled button must not look faded unless it is a controller outside the selected city. */
-.mini-tile:disabled:not(.is-idle) {
+.gauge:focus-visible .gauge-cell {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.gauge.is-suspect {
+  --edge: var(--warn);
+}
+
+.gauge.is-starting {
+  --edge: var(--hold);
+}
+
+.gauge.is-crashed {
+  --edge: var(--outage);
+  --num-off: var(--fail);
+}
+
+.gauge.is-crashed .gauge-cell {
+  background: var(--fail-soft);
+}
+
+.gauge.is-crashed .gauge-num {
+  font-size: 13px;
+}
+
+/* Offline: half the charge gone and the rest holding still (hatched), the old level as a dashed ghost mark. */
+.gauge.is-offline {
+  --edge: var(--outage);
+  --juice: repeating-linear-gradient(135deg, rgba(74, 222, 128, 0.62) 0 2px, rgba(74, 222, 128, 0.26) 2px 4px);
+  --num-on: var(--text);
+}
+
+.gauge.is-offline .gauge-cell {
+  border-style: dashed;
+}
+
+.gauge-ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--ghost, 0) * 100%);
+  border-top: 2px solid rgba(238, 240, 242, 0.95);
+  background: repeating-linear-gradient(0deg, rgba(238, 240, 242, 0.16) 0 2px, transparent 2px 4px);
+}
+
+/* A city is selected: the controllers serving it stay bright, the others fade. */
+.gauge.is-idle {
+  opacity: 0.3;
+}
+
+.gauge.is-serving .gauge-cell {
+  box-shadow: 0 0 0 1.5px rgba(238, 240, 242, 0.45);
+}
+
+/* Before this page was opened: no charge is known, so the gauges are dimmed and empty. */
+.charge.is-unknown .gauges {
+  opacity: 0.45;
+}
+
+/* A sudden drop (a crash, going offline): a red flash, and where it was fades away. */
+.gauge-was {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--was, 0) * 100%);
+  border-top: 1.5px solid var(--outage);
+  background: rgba(255, 90, 90, 0.38);
+  animation: gauge-was 1.4s ease-in forwards;
+}
+
+.gauge.is-drop .gauge-cell {
+  animation: gauge-drop 1.4s ease-out;
+}
+
+/* A restart: it glows green and fills up to its batteries' charge. */
+.gauge.is-refill {
+  transition-duration: 1.2s, 0.2s;
+}
+
+.gauge.is-refill .gauge-cell {
+  animation: gauge-refill 1.4s ease-out;
+}
+
+@keyframes gauge-was {
+  0%,
+  35% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes gauge-drop {
+  0%,
+  40% {
+    box-shadow:
+      0 0 0 2px var(--outage),
+      0 0 14px rgba(255, 90, 90, 0.75);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes gauge-refill {
+  0%,
+  50% {
+    box-shadow:
+      0 0 0 2px var(--ok),
+      0 0 14px rgba(74, 222, 128, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* The tip on hover or keyboard focus: "Controller 7 · 52%", what is going on, and what a click does. */
+.gauge-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 20;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  max-width: 230px;
+  padding: 7px 10px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-raised);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%);
+  transition:
+    opacity 0.12s,
+    visibility 0.12s;
+  pointer-events: none;
+}
+
+.gauge-tip strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gauge-tip em {
+  color: var(--text);
+  font-style: normal;
+}
+
+.gauge:hover .gauge-tip,
+.gauge:focus-visible .gauge-tip {
   opacity: 1;
+  visibility: visible;
 }
 
-.mini-tile.is-offline {
-  background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255, 255, 255, 0.14) 3px 5px);
+.gauge.is-asking .gauge-tip {
+  display: none;
+}
+
+/* Near the panel's sides the tip opens inwards, so it stays on screen. */
+.gauges li:nth-child(10n + 1) .gauge-tip,
+.gauges li:nth-child(10n + 2) .gauge-tip,
+.gauges li:nth-child(10n + 3) .gauge-tip {
+  left: 0;
+  transform: none;
+}
+
+.gauges li:nth-child(10n + 8) .gauge-tip,
+.gauges li:nth-child(10n + 9) .gauge-tip,
+.gauges li:nth-child(10n) .gauge-tip {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+/* Short windows (1280 × 800): a little tighter, so the three right-hand panels fit with everything showing. */
+@media (max-height: 860px) and (min-width: 861px) {
+  .charge {
+    gap: 3px;
+    padding-top: 8px;
+    padding-bottom: 9px;
+  }
+
+  .gauges {
+    row-gap: 4px;
+  }
+
+  .gauge-cell {
+    height: 24px;
+  }
+}
+
+/* Still short of room on the right (LiveMap sets data-tight): the last 2 events, not 3. */
+.livemap[data-tight] .mini-feed-item:nth-child(n + 3) {
+  display: none;
+}
+
+/* Taller windows have room for taller gauges. */
+@media (min-height: 861px) and (min-width: 861px) {
+  .gauges {
+    row-gap: 7px;
+  }
+
+  .gauge-cell {
+    width: 22px;
+    height: 32px;
+  }
+}
+
+@media (min-height: 861px) and (min-width: 1600px) {
+  .gauge-cell {
+    width: 24px;
+    height: 36px;
+    border-radius: 5px;
+  }
+
+  .gauge::before {
+    width: 10px;
+  }
+
+  .gauge-num {
+    font-size: 12px;
+  }
 }
 
 /*

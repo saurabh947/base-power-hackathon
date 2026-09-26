@@ -46,7 +46,7 @@ export function RaceBars({ scope }: { scope: Scope }) {
   const title = `Race against ${raceName(race)}`;
   const what = `A copy of the same batteries runs ${raceName(race)} on the same prices, side by side.`;
   const potentialWhat = view.potential
-    ? `${POTENTIAL_LABEL} (projected): what the same strategy would have earned with every battery online and no controller crashes.`
+    ? `${POTENTIAL_LABEL} (projected): what the same strategy would have earned with every battery online, no controller crashes and no charge lost to them.`
     : null;
   const projectedNote = projected ? 'Sums include money projected on the AI’s predicted prices.' : null;
   return (

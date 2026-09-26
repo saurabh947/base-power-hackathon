@@ -112,8 +112,9 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
   const clients = new Set<WebSocket>();
   const runLimit = new RateLimiter(1, 5000);
   const availabilityLimit = new RateLimiter(10, 1000);
-  // docs/API.md: POST /chaos/kill is public, one call per 2 s for everyone together.
+  // docs/API.md: POST /chaos/kill is public, one call per 2 s for everyone together; restarts likewise.
   const killLimit = new RateLimiter(1, 2000);
+  const restartLimit = new RateLimiter(1, 2000);
 
   // A frame every second while a run exists; an idle message every 5 s when none does.
   const timer = setInterval(() => {
@@ -207,6 +208,11 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
     const cancel = /^\/backtest\/([^/]+)\/cancel$/.exec(path);
     if (method === 'POST' && cancel) {
       return send(res, 200, sim.cancelBacktest(decodeURIComponent(cancel[1])));
+    }
+    const restart = /^\/workers\/([^/]+)\/restart$/.exec(path);
+    if (method === 'POST' && restart) {
+      limited(restartLimit, 'Only one controller can be restarted every 2 seconds. Try again shortly.');
+      return send(res, 200, sim.restart(Number(decodeURIComponent(restart[1]))));
     }
     if (method === 'GET' && path.startsWith('/backtest/')) {
       return send(res, 200, sim.backtestStatus(decodeURIComponent(path.slice('/backtest/'.length))));

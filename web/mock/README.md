@@ -7,7 +7,10 @@ including the pinned details: `worker_id` 0–19 shown as "Controller N+1", batt
 map fields (`GET /fleet/layout`, `battery_status`, `totals.by_location`, `workers[].by_location` and battery
 `city`/`lonlat`), the race (`race` in snapshots and frames, with `potential` and `shows_potential`, and
 `race_update` events), the years (`years` and each preset's `year` in `GET /settings`, `year` in settings,
-`predicted` ticks and the `prediction_started` event), the public `POST /chaos/kill` and `GET /results/ai-gains`.
+`predicted` ticks and the `prediction_started` event), the public `POST /chaos/kill` and `GET /results/ai-gains`,
+and the failure model: each worker's `charge_level` and `usable_charge`, a crash that empties a controller's
+batteries and stays down, `POST /workers/{worker_id}/restart` with `worker_recovered`, and a controller taken
+offline losing half its usable charge.
 
 ## What is real and what is simulated
 
@@ -60,6 +63,23 @@ A preset without loaded prices answers **501** `not_in_mock` on `POST /run/start
   contiguous blocks of 1,000: controllers 1-7 run Houston, 8-15 Dallas–Fort Worth, 16-17 San Antonio, 18 runs 600
   San Antonio and 400 Austin, 19-20 Austin (`workers[].by_location` lists only the cities a controller holds, and
   is empty once it is dead). A crashed controller's batteries go round-robin, in id order, to the healthy ones.
+- **Each controller's charge** (docs/API.md Worker): `charge_level` is the capacity-weighted charge of the
+  batteries it runs now, `usable_charge` = (`charge_level` − 0.2) / 0.8, the share above the 20% reserve; both
+  are `null` once it runs none (crashed and handed over, or restarting).
+- **The failure model** (docs/API.md, the human's rules):
+  - A crash (`POST /chaos/kill`) empties that controller's batteries to the reserve at once (`usable_charge` 0;
+    the race shadow's same batteries too). The others take them over as before and run them, recharging them
+    when it's cheap, so their own gauges dip. **Nothing comes back on its own**: the controller stays `dead`
+    until Reset or a user restart.
+  - `POST /workers/{worker_id}/restart` (public, one per 2 s like crashes): `200 {"worker_id", "status":
+    "starting"}`, `409 not_crashed` unless it is `dead`, `404 unknown_worker`. At the next step (a second later
+    while paused or finished) it takes its own block back with whatever charge those batteries have by then and
+    emits `worker_recovered` ("Controller 7 is back and has taken back its 1,000 batteries in Houston, at 12%
+    usable charge.", with `detail.worker_id`, `controller`, `batteries` and `by_location`).
+  - Taking a controller's batteries offline (`/availability` scope `worker`) halves their usable charge at that
+    moment (the race's too); while offline they don't move; back online they carry on from there. Going offline
+    again while offline changes nothing. City and single-battery offline change no charge.
+  - The potential fleet (all online) never loses charge, so `shortfall_usd` counts the lost energy.
 - **Positions** (`GET /fleet/layout`, `layout.ts`): seeded Gaussian blobs around real places in each metro
   (downtowns, suburbs, satellite cities), kept inside the Texas outline, rounded to 0.001° like the API. The same
   fleet always gets the same map.
@@ -118,13 +138,14 @@ Knobs (environment variables, for either mode):
   `battery_status`, so after an availability change with no run the site fetches `GET /state` to redraw the map.
 - `GET /fleet/layout` sends its version as an `ETag` and answers a matching `If-None-Match` with 304.
 - Rate limits match docs/API.md: start and reset share one call per 5 s, availability 10 per second, crashes
-  one per 2 s for everyone together; limited calls answer 429 with `retry_after_s` and `Retry-After`.
+  one per 2 s for everyone together, restarts likewise (their own limiter); limited calls answer 429 with
+  `retry_after_s` and `Retry-After`.
 - `POST /chaos/kill` is public (no passcode) and takes an optional `worker_id` (0–19; a random working one
   without it): 409 `already_dead` for a controller that is already down, 409 `too_few_healthy` when only two
   are left working, 404 `unknown_worker` for another number.
 - A crashed controller misses two 5-minute steps: at the first it is "not responding", at the second it is marked
-  crashed; its batteries miss both steps' orders (those become failed commands) and show as code 4, and are handed
-  over after the second. Worker events carry `detail.worker_id`, `detail.controller` and, for `worker_suspect`
+  crashed; its batteries (emptied at the crash) miss both steps' orders (those become failed commands when there
+  was anything to do) and show as code 4, and are handed over after the second. Worker events carry `detail.worker_id`, `detail.controller` and, for `worker_suspect`
   and `worker_adopted`, `detail.by_location`; `worker_adopted` adds `adopted_by` and `ms`. While paused,
   detection uses wall-clock heartbeats instead (2 s, then 6 s), which is the easiest way to watch a crash on the
   map: pause, crash a controller, watch its batteries pulse red, then the hand-over.
@@ -140,7 +161,7 @@ Knobs (environment variables, for either mode):
 
 | File | Purpose |
 |---|---|
-| `sim.ts` | The simulated run, the race, the years and the 2026 prediction (pure; unit-tested in `sim.test.ts` and `v2.test.ts`, which also calls the public crash over HTTP) |
+| `sim.ts` | The simulated run, the race, the years, the 2026 prediction and the failure model (pure; unit-tested in `sim.test.ts`, `v2.test.ts` and `failures.test.ts`, which also call the public crash and restart over HTTP) |
 | `gains.ts` | `GET /results/ai-gains`: the measured 2025 numbers copied from RUNLOG.md |
 | `layout.ts` | Simulated battery positions for `GET /fleet/layout` |
 | `api.ts` | HTTP routes, errors, rate limits, WebSocket broadcast, CORS |

@@ -50,11 +50,24 @@ describe('friendlyError', () => {
   it('names the crash errors plainly and says what to do next', () => {
     const dead = friendlyError(new ApiError(409, 'already_dead', 'That worker is already dead.', null), 'kill');
     expect(dead.title).toBe('That controller has already crashed.');
-    expect(dead.detail).toBe('Pick one that is still working. Crashed controllers stay down until someone presses Reset.');
+    expect(dead.detail).toBe(
+      'Pick one that is still working. Crashed controllers stay down until someone restarts them (click one) or presses Reset.',
+    );
     const few = friendlyError(new ApiError(409, 'too_few_healthy', null, null), 'kill');
     expect(few.title).toBe('At least 2 controllers must keep working.');
     expect(few.detail).toBe('Press Reset to bring the crashed controllers back, then try again.');
     expect(friendlyError(new ApiError(404, 'unknown_worker', null, null), 'kill').detail).toBe('Controllers are numbered 1 to 20.');
+  });
+
+  it('explains the restart errors: not down, the rate limit and an unknown controller', () => {
+    const up = friendlyError(new ApiError(409, 'not_crashed', 'Controller 7 is running.', null), 'restart');
+    expect(up.title).toBe('That controller is not down.');
+    expect(up.detail).toBe('Only a crashed controller can be restarted. It may have just been restarted by someone else.');
+    const soon = friendlyError(new ApiError(429, 'rate_limited', null, 2), 'restart');
+    expect(soon.title).toBe('One restart every 2 seconds, please.');
+    expect(soon.detail).toBe('Everyone shares one fleet, so restarts are spaced out. Try again in 2 seconds.');
+    expect(soon.retryAfterS).toBe(2);
+    expect(friendlyError(new ApiError(404, 'unknown_worker', null, null), 'restart').title).toBe('There is no such controller.');
   });
 
   it('does not repeat the server sentence for "no_results", and says what to do', () => {
@@ -103,6 +116,16 @@ describe('request', () => {
     expect(second[0].endsWith('/chaos/kill')).toBe(true);
     expect(first[1]).toMatchObject({ method: 'POST', headers: {} });
     expect(first[1].body).toBeUndefined();
+  });
+
+  it('restarts a crashed controller with a bare POST to /workers/{worker_id}/restart', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ worker_id: 6, status: 'starting' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(api.restart(6)).resolves.toEqual({ worker_id: 6, status: 'starting' });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url.endsWith('/workers/6/restart')).toBe(true);
+    expect(init).toMatchObject({ method: 'POST', headers: {} });
+    expect(init.body).toBeUndefined();
   });
 
   it('does not send a body or content type on GET', async () => {

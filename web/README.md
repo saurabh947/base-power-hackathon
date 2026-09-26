@@ -54,7 +54,7 @@ rebuilds the Texas outline (below).
 | `npm run mock` | Standalone mock API on port 8787 (`MOCK_PORT` to change) |
 | `npm run typecheck` | `tsc -b` over the app, the mock and the configs |
 | `npm run lint` | oxlint (correctness, suspicious, React hooks, jsx-a11y), warnings fail |
-| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings (years and their presets), results rows, "What the AI adds" (uplift maths, wording, the pitch year only), the full-year re-run's Stop, the race (with the all-online third bar) and its events, map (projection, outline, layout and status decoding, cells, dot looks, zoom viewports, selection, labels), the timeline (past state, frame recorder, track), crash errors, mock (2026 prediction, race potential, status while paused, public kill over HTTP), AA contrast of the site's one theme |
+| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings (years and their presets), results rows, "What the AI adds" (uplift maths, wording, the pitch year only), the full-year re-run's Stop, the race (with the all-online third bar) and its events, map (projection, outline, layout and status decoding, cells, dot looks, zoom viewports, selection, labels, controller ownership), the charge gauges (fill, crashed and offline looks, city highlight, animations), the timeline (past state, frame recorder, track), crash and restart errors, mock (2026 prediction, race potential, status while paused, the failure model, public kill and restart over HTTP), AA contrast of the site's one theme |
 | `npm run build` | typecheck, `vite build` to `dist/` (no source maps), then `scripts/check-dist.mjs` fails if any mock code shipped |
 | `npm run check` | all of the above |
 
@@ -121,9 +121,22 @@ mock/           simulated API for dev and tests only (never in dist/)
 
 The Live screen is a full-window map (docs/UX.md, "Live map" and "Live map v2"): a dark gray page, Texas as a
 bright red outline, and the 20,000 batteries as dots coloured by what they are doing, with the four corners
-holding the timeline, clock and price, money and power, the controls, and the controllers, batteries and latest
-events. The older detailed layout with its price and power charts ("Show charts") was removed at the human's
-request: the map page shows the same things.
+holding the timeline, clock and price, money and power, the controls, and the batteries and latest events, and
+at the centre right "Charge by controller". The older detailed layout with its price and power charts ("Show
+charts") was removed at the human's request: the map page shows the same things.
+
+- **Charge by controller** (`map/ChargePanel.tsx`, model in `map/gauges.ts`, tested): the 20 controllers as
+  small battery gauges, 1-10 over 11-20, each filled to its `usable_charge` (the energy left above the 20%
+  reserve) with its number inside, and "N of 20 working" with chips for any not responding, crashed or offline.
+  Green when working, an amber outline when not responding, red with ✕ once crashed (0%, "—" once its batteries
+  were handed over), a dashed red outline with a hatched fill and a ghost mark at the old level when its
+  batteries were taken offline (half their charge is lost). Hover or keyboard focus shows the controller, its
+  charge and what a click does; clicking a working one asks "Crash controller 7?", a crashed one "Restart
+  controller 7?" (`POST /workers/{worker_id}/restart`). A crash, going offline and a restart animate (a red
+  drop, a green refill). Selecting a city dims the controllers that do not serve it. It follows the timeline:
+  the frames this page recorded hold every controller's charge; before the page was opened the gauges are dimmed
+  with a one-line hint. LiveMap places it at the vertical centre of the right edge, clear of the money and
+  battery corners; in a short window with everything showing, the battery corner lists 2 events instead of 3.
 
 - **Projection.** `src/map/albers.ts` implements the ellipsoidal Albers equal-area conic (Snyder 1987) with the
   EPSG:3083 parameters; it matches PROJ's reference values. The outline and the dots use the same function.
@@ -144,11 +157,14 @@ request: the map page shows the same things.
   lasts about two ticks, so at 5-10 ticks a second a frame can miss it: then the
   `worker_suspect`/`worker_dead`/`worker_adopted` events trigger the same look on that controller's batteries,
   which `src/map/owners.ts` replays from the default blocks and each hand-over's `adopted_by`.
-- **Crashing a controller** is public: "Crash a controller" in the controls corner crashes a random one, and
-  clicking a controller tile asks "Crash controller 7?" in a small popover first. One crash every 2 s for
-  everyone: the button counts down ("Next crash in 2 s"), a 429 says "One crash every 2 seconds, please.", and
-  the 409s get plain sentences ("That controller has already crashed.", "At least 2 controllers must keep
-  working."); see `src/screens/live/crash.ts` and `src/api/errors.ts` (tested).
+- **Crashing and restarting a controller** is public: "Crash a controller" in the controls corner crashes a
+  random one, and clicking a controller's gauge asks "Crash controller 7?" in a small popover first. A crash
+  empties that controller's batteries and it stays down: nothing comes back on its own; clicking its gauge asks
+  "Restart controller 7?", and it takes its batteries back with whatever charge they have by then (Reset brings
+  everything back). One crash every 2 s for everyone, restarts likewise: the buttons count down ("Next crash in
+  2 s"), a 429 says "One crash every 2 seconds, please." (or restart), and the 409s get plain sentences ("That
+  controller has already crashed.", "At least 2 controllers must keep working.", "That controller is not
+  down."); see `src/screens/live/crash.ts` and `src/api/errors.ts` (tested).
 - **Zoom, one level** (`src/map/viewports.ts`, tested). The map loads on all of Texas; "+", a double-click or
   the "+" key zooms to the Texas Triangle (the box around the four metros' batteries with a margin, centred
   between the corner panels); "−", Esc or the "−" key zooms out. The zoom is a 650 ms scaling about the one
@@ -159,8 +175,9 @@ request: the map page shows the same things.
   prediction shaded. Dragging it, or ←/→ (Shift for an hour, Home/End), shows the map and every corner as they
   were (a "Viewing 7:45 pm · Back to live" chip; End on the timeline also returns); the simulation keeps running. The page
   records each frame's `battery_status` (packed, 8 MB cap, thinning the older half beyond it,
-  `src/live/recorder.ts`); before the page was opened the corners rebuild the moment from the tick history
-  (`src/live/past.ts`) and the map shows city totals only, which a one-line hint says.
+  `src/live/recorder.ts`) and its controllers with their charge; before the page was opened the corners rebuild
+  the moment from the tick history (`src/live/past.ts`), the map shows city totals only and the charge gauges are
+  dimmed, which one-line hints say.
 - **2026.** On ticks with `predicted: true` the clock gets a "Predicted" badge, the money is labelled
   "projected", the timeline shades the predicted part (the corner's mini price line dashes it), and
   `prediction_started` shows in the event feed.
@@ -170,7 +187,7 @@ request: the map page shows the same things.
 - **Cities.** Labels are real buttons placed beside each cluster (avoiding the corner panels); clicking a city's
   dots also selects it; the "All of Texas" chip, Esc or clicking empty map go back. The corners then show that
   city: per-location tick values, `totals.by_location`, `availability.by_location`, and the controllers with
-  batteries there (`workers[].by_location`) highlighted.
+  batteries there (`workers[].by_location`) highlighted in "Charge by controller".
 - **The race.** The money corner shows the live fleet against a copy of the same batteries on the simple rule
   (`race` in every frame, docs/API.md): "RACE ↑ AI forecast ahead by $15,290" over two bars, for all of Texas or
   the selected city (`race.by_location`), hidden while idle. When `race.shows_potential` is true (batteries have

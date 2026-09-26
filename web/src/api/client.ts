@@ -12,6 +12,7 @@ import type {
   Forecast,
   HealthResponse,
   KillResponse,
+  RestartResponse,
   Results,
   RunStatus,
   SettingsResponse,
@@ -119,6 +120,8 @@ export const api = {
   /** Crash a controller (public; one per 2 s for everyone): a random healthy one, or `workerId` (0-19). */
   kill: (workerId?: number) =>
     request<KillResponse>('POST', workerId === undefined ? '/chaos/kill' : `/chaos/kill?worker_id=${encodeURIComponent(workerId)}`),
+  /** Bring a crashed controller back (public; rate-limited like kill): 409 not_crashed if it isn't down. */
+  restart: (workerId: number) => request<RestartResponse>('POST', `/workers/${encodeURIComponent(workerId)}/restart`),
   backtest: (strategies: string[], year: number) =>
     request<{ job_id: string }>('POST', '/backtest', { body: { strategies, year } }),
   backtestStatus: (jobId: string) => request<BacktestStatus>('GET', `/backtest/${encodeURIComponent(jobId)}`),

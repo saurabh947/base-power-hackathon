@@ -441,7 +441,7 @@ describe('the race (docs/API.md Race)', () => {
     expect(sim.snapshot().race?.live_minus_race_usd).toBeGreaterThan(0);
   });
 
-  it('mirrors availability, but not controller crashes', () => {
+  it('mirrors availability, and the charge a crash empties, but not the crash itself', () => {
     const offline = running(10, 'spike_evening');
     offline.sim.setAvailability({ scope: 'location', location: 'LZ_HOUSTON', offline_fraction: 1 });
     const before = offline.sim.snapshot().race?.by_location.LZ_HOUSTON;
@@ -450,20 +450,21 @@ describe('the race (docs/API.md Race)', () => {
     expect(offline.sim.snapshot().race?.by_location.LZ_HOUSTON).toEqual({ ...before, action: 'hold' });
     expect(offline.sim.snapshot().race?.by_location.LZ_NORTH?.revenue_usd).not.toBe(0);
 
-    // A live simple-rule fleet sells in Houston from 6:45 pm on the summer evening; crashing a Houston
-    // controller then costs the live fleet orders, while the race (the AI forecast here) carries on untouched.
+    // docs/API.md Mirroring: a crash empties that controller's batteries in the race too, so the race compares
+    // only decisions; the all-online potential fleet keeps its charge, so the shortfall counts the lost energy.
     const calm = simpleRuleRun();
     const crash = simpleRuleRun();
     crash.sim.kill(0);
+    const houston = (s: ReturnType<typeof calm.sim.snapshot>) => s.race?.by_location.LZ_HOUSTON.charge_level ?? Number.NaN;
+    // 1,000 of Houston's 7,000 batteries emptied at once, in the race as well.
+    expect(houston(crash.sim.snapshot())).toBeLessThan(houston(calm.sim.snapshot()) - 0.05);
     for (let i = 0; i < 6; i++) {
       calm.step();
       crash.step();
     }
     const [a, b] = [calm.sim.snapshot(), crash.sim.snapshot()];
-    expect(b.failed_commands.count).toBeGreaterThan(0);
     expect(b.totals.revenue_usd).not.toBe(a.totals.revenue_usd);
-    const bare = (r: typeof a.race) => ({ ...r, live_minus_race_usd: 0, potential: null, shows_potential: null });
-    expect(bare(b.race)).toEqual(bare(a.race));
+    expect(b.race?.potential?.revenue_usd).toBe(a.race?.potential?.revenue_usd);
     // The crash shows the third bar; the calm run does not need it.
     expect([a.race?.shows_potential, b.race?.shows_potential]).toEqual([false, true]);
   });
