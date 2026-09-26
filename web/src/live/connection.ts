@@ -3,8 +3,8 @@
 // - Reconnects with exponential backoff and jitter. A connection that was open
 //   and then closed (Cloud Run closes WebSockets after 60 minutes) reconnects
 //   almost at once; the server sends a fresh snapshot on every connect.
-// - A watchdog closes a socket that goes quiet: the server sends something
-//   every second, even when idle.
+// - A watchdog closes a socket that goes quiet: the server sends a frame
+//   every second during a run and an idle message every 5 s otherwise.
 // - If the WebSocket cannot open a few times in a row (a proxy or network that
 //   blocks WebSockets), it falls back to polling GET /state and keeps retrying
 //   the WebSocket in the background.
@@ -140,7 +140,7 @@ export class LiveConnection {
     this.failuresBeforePolling = options.failuresBeforePolling ?? 3;
     this.pollIntervalMs = options.pollIntervalMs ?? 2_000;
     this.socketRetryWhilePollingMs = options.socketRetryWhilePollingMs ?? 30_000;
-    this.staleAfterMs = options.staleAfterMs ?? 10_000;
+    this.staleAfterMs = options.staleAfterMs ?? 15_000; // idle messages come every 5 s
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000;
   }
 

@@ -48,6 +48,13 @@ describe('friendlyError', () => {
     expect(friendlyError(new ApiError(403, 'forbidden', null, null), 'kill').title).toBe("That passcode wasn't accepted.");
   });
 
+  it('does not repeat the server sentence for "no_results", and says what to do', () => {
+    const f = friendlyError(new ApiError(404, 'no_results', 'No full-year results yet.', null), 'results');
+    expect(f.title).toBe('No full-year results yet.');
+    expect(f.detail).toBe('Press "Re-run the full year" to calculate them.');
+    expect(f.unreachable).toBe(false);
+  });
+
   it('keeps the raw status for "Show technical details"', () => {
     expect(friendlyError(new ApiError(404, 'unknown_battery', 'No battery has that ID.', null), 'battery').technical).toBe(
       'HTTP 404 · unknown_battery · No battery has that ID.',

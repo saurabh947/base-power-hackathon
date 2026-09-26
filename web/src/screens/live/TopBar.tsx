@@ -7,6 +7,7 @@ import { Icon } from '../../components/Icon.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
 import { reconnectNow, useConnection, useLive } from '../../live/liveStore.ts';
 import { fmtClock, fmtDate, fmtSpeedShort, fmtSpeed, localDateOf, fmtLocalDate } from '../../lib/format.ts';
+import { controllerName } from '../../lib/fleet.ts';
 import { presenterPasscode, useIsPresenter, leavePresenter } from '../../state/presenter.ts';
 import { showToast } from '../../state/toasts.ts';
 import { pauseRun, resetRun, resumeRun, setSpeed } from './actions.ts';
@@ -19,10 +20,18 @@ function Clock() {
   if (!simTime) {
     return <div className="clock">{status === 'idle' ? 'No simulation running' : 'Replay clock'}</div>;
   }
+  // fmtClock gives "May 16, 2025, 7:45 pm, Houston time"; when space is tight, "Houston time" moves
+  // to the next line as a whole instead of being cut off.
+  const [when, zone] = fmtClock(simTime).split(/, (?=Houston time$)/);
   return (
     <div className="clock">
       <span className="sr-only">Replay time: </span>
-      {fmtClock(simTime)}
+      <span className="nowrap">{when}</span>
+      {zone ? (
+        <>
+          , <span className="nowrap">{zone}</span>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -205,35 +214,33 @@ function CrashControl() {
     if (result) {
       showToast({
         kind: 'success',
-        title: `Controller ${result.worker_id} crashed.`,
+        title: `${controllerName(result.worker_id)} crashed.`,
         detail: 'Watch the others take over its batteries, and the power gap close.',
-        technical: `pid ${result.pid} killed at ${result.killed_at_utc}`,
+        technical: `worker_id ${result.worker_id}, pid ${result.pid}, killed at ${result.killed_at_utc}`,
       });
       setTarget('random');
     }
   };
 
+  // Presenter only. "Leave presenter mode" lives in the footer.
   return (
-    <span className="speed-control">
+    <span className="crash-control">
       <label className="sr-only" htmlFor="crash-target">
         Which controller to crash
       </label>
       <select id="crash-target" value={target} onChange={(e) => setTarget(e.target.value)} disabled={!can}>
-        <option value="random">Random controller</option>
+        <option value="random">Random</option>
         {workers
           .filter((w) => w.status !== 'dead')
           .map((w) => (
             <option key={w.worker_id} value={String(w.worker_id)}>
-              Controller {w.worker_id}
+              {controllerName(w.worker_id)}
             </option>
           ))}
       </select>
       <button type="button" className="btn btn-danger" onClick={() => void crash()} disabled={!can || busy}>
         <Icon name="crash" />
         {busy ? 'Crashing…' : 'Crash a controller'}
-      </button>
-      <button type="button" className="icon-btn" onClick={leavePresenter} aria-label="Leave presenter mode" title="Leave presenter mode">
-        <Icon name="lock" size={16} />
       </button>
     </span>
   );

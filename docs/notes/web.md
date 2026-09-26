@@ -38,7 +38,7 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Memory caps**: 2,000 ticks (same as `snapshot.history`), 50 events, 4 toasts.
 - **Live connection**: opened while the Live screen is mounted, closed 30 s after leaving. Backoff 0.5 s → 15 s
   with ±25% jitter; a connection that lived ≥ 10 s and closes (Cloud Run's 60-minute limit) reconnects after
-  ~0.5 s; quiet sockets (10 s without a message) are closed by a watchdog and handshakes time out after 15 s
+  ~0.5 s; quiet sockets (15 s without a message; idle messages come every 5 s) are closed by a watchdog and handshakes time out after 15 s
   (a slow Cloud Run cold start can therefore reach polling first, which is fine); after 3 failed WebSocket attempts it
   polls `GET /state` every 2 s and retries the WebSocket every 30 s. A frame with an unknown `run_id` triggers a
   `GET /state` resync.
@@ -47,46 +47,47 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Chart window**: 6 h (default), 24 h or whole replay, at least 6 h wide so a new run draws into empty space;
   it extends to the end of the latest forecast. The price chart shows one area at a time (Houston by default,
   since the demo spike is Houston's); both areas' current prices and actions are always listed above it.
-- **Presets the backend cannot serve**: the site shows the server's error sentence (the mock uses 501 for
-  presets outside its May 16–17 fixture).
+- **Presets the backend cannot serve**: the site shows the server's error sentence (the mock answers 501 for a
+  preset without loaded prices).
 - **Mock**: dev server at `/__mock` (no second process), standalone on :8787; passcode `presenter` (mock only).
-  `scripts/check-dist.mjs` fails the build if mock markers appear in `dist/`.
+  Real prices for all four presets in `config.yaml` (two days each). `scripts/check-dist.mjs` fails the build if
+  mock markers appear in `dist/`.
+- **Production builds** have no source maps.
 
-## Assumptions about docs/API.md (the site tolerates both readings unless noted)
+## How the site follows the pinned contract (docs/API.md, commit 0a2396f)
 
-- `GET /state` returns the snapshot object; `"type": "snapshot"` is added if missing.
-- `error_pct` is already a percentage (0.02 means 0.02%, as in the example); "On target" means ≤ 5.
-- `top_days[].usd` is the whole fleet's revenue that day; the site also shows it divided by `fleet_size`.
-- `per_location_usd` is the fleet's yearly revenue per area.
-- The site shows "Controller {worker_id}" verbatim, to match `events[].message`; it assumes nothing about the id
-  range.
-- Crash markers on the power chart come from `worker_dead` events and read `detail.worker_id` when present.
-- A dead worker reports `batteries: 0` after adoption; the tile then says "Handed to others".
+- **Controllers**: `worker_id` 0–19 is shown as "Controller N" with N = worker_id + 1 in tiles, the crash picker,
+  toasts, the availability drawer and the battery card (`src/lib/fleet.ts: controllerName`). Event messages are
+  shown verbatim. Crash markers and the "Latest handover" line read `detail.controller` (falling back to
+  `detail.worker_id + 1`), `detail.adopted_by` and `detail.ms`.
+- **Battery ids**: fleet-wide `b00000`–`b19999`. "Find a battery" takes a number (0–19,999) or an id (`b123`,
+  `b00123`), rejects anything outside the fleet, and says which area it is in; the area ranges come from
+  `settings.fleet_size` and `settings.locations` with the same split as `src/sim/fleet.location_counts` (tested
+  against the Python on the same inputs).
+- **`GET /settings`**: reads Preset `{id, label, date_local, start_utc, start_local, description}`, Strategy
+  `{id, label, description}` and Speed `{tps, label}`. Malformed items are skipped and a failed request falls back
+  to the documented defaults. Speed options are worded by the site ("1 hour of market time every 6 seconds").
+- **WebSocket**: the idle message `{"type": "idle", "status": "idle", "run_id": null, "last_run": …}` clears the
+  run view (after a reset the old tiles and offline counts are stale), and `last_run` feeds "The last replay
+  earned $X" on the Live screen. The quiet-socket watchdog is 15 s, since idle messages come every 5 s.
+  `sim_time_utc` and `speed_tps` are read from the snapshot.
+- **`run_finished`**: status `finished` shows "Replay finished" with the final gross wholesale value, energy sold
+  and bought, and buttons to start a new replay or see full-year results.
+- **404s**: `no_results` shows "No full-year results yet." with the Re-run button (the server sentence is not
+  repeated). The site does not call `GET /forecast`; forecasts arrive on the WebSocket, and with none there is no
+  band. `GET /backtest/{id}` 404 (a job the server forgot) quietly clears the saved job.
+- **Backtest**: `skipped` reasons are shown after a re-run ("AI forecast (TimesFM-3) was left out: …").
+- **Amounts**: `top_days[].usd`, `per_location_usd` and `revenue_usd` are fleet totals; `error_pct` is a
+  percentage ("On target" means ≤ 5).
 
 ## Requests for integrator
 
-1. **Pin the `Choice` shape** in `GET /settings` (`strategies`, `speeds`), e.g. `{"value": 2, "label": "…",
-   "description": "…"}`. The site accepts bare values, `{value}`, `{id}`, `{speed_tps}` or `{strategy}` for now.
-2. **Pin the `idle` WebSocket message** body. The site accepts `{"type": "idle"}` with optional `status`,
-   `events`, `availability` and `workers`, and also treats a `frame` whose status is `idle` as idle.
-3. **CORS must allow the request headers `Content-Type` and `X-Presenter-Passcode`** (JSON bodies and presenter
-   calls are preflighted) and should expose `Retry-After`.
-4. **429 bodies**: please include `message` as well as `retry_after_s` (API.md says every error has one; its
-   429 example does not). The site words 429 itself either way.
-5. **Battery ids**: API.md says `LZ_HOUSTON-000123` but `src/sim/fleet.py` makes `b00000`. Please confirm the
-   public format and whether the number is per area (000000–009999) or fleet-wide. The "Find a battery" form
-   builds `{area}-{6 digits}` from a number and also accepts a full ID.
-6. **Worker ids**: confirm 0–19 or 1–20, and that `events[].message` says "Controller N" with the same N.
-7. **No-results answer**: what does `GET /results/pitch` return before any backtest? The site shows "No
-   full-year results yet" plus the Re-run button for 404 and 501, and for an empty `strategies` list.
-8. **End of a replay**: consider an event kind `run_finished` (the list has none); the site handles
-   `status: "finished"` with a "This replay has finished" notice.
-9. **Snapshot fields**: it would help if `snapshot` carried `sim_time_utc` and the current `speed_tps` (the site
-   falls back to the last tick and `settings.speed_tps`; after `POST /run/speed`, `settings.speed_tps` should
-   reflect the new speed).
-10. **`worker_dead` events**: include `detail.worker_id` (number) so crash markers can be labelled.
-11. **Vercel**: Root Directory `web`; set `VITE_API_BASE_URL` to the Cloud Run URL for Production (and Preview if
-    used); a Vercel build without it fails on purpose. `.vercelignore` in `web/` keeps `.env*` out of uploads.
-12. **Forecast label**: the site calls the band "AI forecast, likely range" and names TimesFM-3 only in the
-    decision-method label from `GET /settings`/results; if the model switch moves to TimesFM 2.5, send the new
-    label there and the site follows.
+1. **docs/API.md leftover**: the `POST /availability` battery example still says
+   `"battery_id": "LZ_HOUSTON-000123"`; it should read `"b00123"`.
+2. **Vercel**: Root Directory `web`; set `VITE_API_BASE_URL` to the Cloud Run URL for Production (and Preview if
+   used); a Vercel build without it fails on purpose. `.vercelignore` in `web/` keeps `.env*` out of uploads.
+3. **After `POST /run/speed`**, `snapshot.speed_tps` and `settings.speed_tps` should both show the new speed (the
+   site reads `speed_tps` first).
+4. **Forecast label**: the site calls the band "AI forecast, likely range" and names TimesFM-3 only in the
+   decision-method label from `GET /settings`/results; if the model switch moves to TimesFM 2.5, send the new
+   label there and the site follows.

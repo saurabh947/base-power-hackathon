@@ -116,10 +116,21 @@ describe('Houston time', () => {
     expect(fmtClock('2025-01-15T13:30:00Z')).toBe('Jan 15, 2025, 7:30 am, Houston time');
   });
 
-  it('drops :00 in compact times', () => {
+  it('drops :00 in compact times, and says midnight and noon in words', () => {
     expect(fmtTimeOfDay('2025-05-16T21:00:00Z', { compact: true })).toBe('4 pm');
     expect(fmtTimeOfDay('2025-05-16T21:00:00Z')).toBe('4:00 pm');
     expect(fmtTimeOfDay('2025-05-17T05:00:00Z', { compact: true })).toBe('12 am');
+    expect(fmtTimeOfDay('2025-06-28T05:00:00Z', { compact: true, words: true })).toBe('midnight');
+    expect(fmtTimeOfDay('2025-06-28T17:00:00Z', { compact: true, words: true })).toBe('noon');
+    expect(
+      fmtPresetLabel({
+        id: 'ordinary_day',
+        label: 'An ordinary day',
+        date_local: '2025-06-28',
+        start_utc: '2025-06-28T05:00:00Z',
+        description: 'A typical day with small ups and downs.',
+      }),
+    ).toBe('An ordinary day, Jun 28, 2025, from midnight');
   });
 
   it('reads calendar dates without shifting them a day', () => {
@@ -136,6 +147,7 @@ describe('Houston time', () => {
         label: 'Price-spike evening',
         date_local: '2025-05-16',
         start_utc: '2025-05-16T21:00:00Z',
+        description: 'Prices jump above $2,000/MWh around 7:45 pm.',
       }),
     ).toBe('Price-spike evening, May 16, 2025, from 4 pm');
   });

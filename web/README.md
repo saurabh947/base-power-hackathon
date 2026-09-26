@@ -16,7 +16,7 @@ npm run dev          # http://localhost:5173, with the built-in mock API
 ```
 
 With `VITE_API_BASE_URL` unset, `npm run dev` serves a **mock API** at `/__mock` on the dev server itself, so the
-whole site works offline. The mock replays **real** ERCOT prices for May 16–17, 2025; everything else it serves
+whole site works offline. The mock replays **real** ERCOT prices for each replay preset (two days each); everything else it serves
 is **simulated**, and the site shows a "Practice data" banner while connected to it. See
 [`mock/README.md`](mock/README.md).
 
@@ -52,7 +52,7 @@ and `make web-check` (see `mk/web.mk`).
 | `npm run typecheck` | `tsc -b` over the app, the mock and the configs |
 | `npm run lint` | oxlint (correctness, suspicious, React hooks, jsx-a11y), warnings fail |
 | `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, mock, AA contrast |
-| `npm run build` | typecheck, `vite build` to `dist/`, then `scripts/check-dist.mjs` fails if any mock code shipped |
+| `npm run build` | typecheck, `vite build` to `dist/` (no source maps), then `scripts/check-dist.mjs` fails if any mock code shipped |
 | `npm run check` | all of the above |
 
 ## Configuration
@@ -114,7 +114,7 @@ mock/           simulated API for dev and tests only (never in dist/)
   `setData`. History is capped at 2,000 ticks and events at 50.
 - **Live connection**: reconnects with exponential backoff and jitter (Cloud Run closes WebSockets after 60
   minutes, so a long-lived connection that closes comes back within about half a second). A watchdog closes a
-  socket that is quiet for 10 s, and a handshake that has not finished after 15 s counts as a failed attempt.
+  socket that is quiet for 15 s (idle messages come every 5 s), and a handshake that has not finished after 15 s counts as a failed attempt.
   After three failed WebSocket attempts it polls `GET /state` every 2 s and keeps retrying the WebSocket every
   30 s.
 - **Accessibility**: keyboard-only use works throughout (skip link, native dialogs, radio groups, a real

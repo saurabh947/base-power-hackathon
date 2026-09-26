@@ -103,8 +103,17 @@ describe('crashMarkers', () => {
       message: '',
       detail,
     });
-    expect(crashMarkers([e('worker_dead', { worker_id: 7 }), e('worker_suspect'), e('worker_dead')])).toEqual([
+    // detail.controller is 1-based (what people see); detail.worker_id is 0-based.
+    expect(
+      crashMarkers([
+        e('worker_dead', { worker_id: 6, controller: 7 }),
+        e('worker_dead', { worker_id: 11 }),
+        e('worker_suspect', { worker_id: 3, controller: 4 }),
+        e('worker_dead'),
+      ]),
+    ).toEqual([
       { x: S0 + 600, label: 'Controller 7' },
+      { x: S0 + 600, label: 'Controller 12' },
       { x: S0 + 600, label: 'Crash' },
     ]);
   });

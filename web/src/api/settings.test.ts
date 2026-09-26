@@ -11,22 +11,48 @@ import {
 } from './settings.ts';
 
 describe('GET /settings readers', () => {
-  it('accepts the likely Choice shapes for speeds and labels them in plain words', () => {
-    expect(readSpeeds([1, 2, 5, 10]).map((s) => s.value)).toEqual([1, 2, 5, 10]);
-    expect(readSpeeds([{ value: 5, label: 'x' }, { speed_tps: 2 }, { id: '10' }]).map((s) => s.value)).toEqual([2, 5, 10]);
-    expect(readSpeeds([{ value: 2 }])[0].label).toBe('1 hour of market time every 6 seconds');
-    expect(readSpeeds('nonsense').map((s) => s.value)).toEqual([1, 2, 5, 10]);
+  it('reads Speed {tps, label} and words it the site\'s way', () => {
+    const speeds = readSpeeds([
+      { tps: 5, label: '1 hour every 2.4 s' },
+      { tps: 2, label: '1 hour every 6 s' },
+      { tps: 2, label: 'duplicate' },
+    ]);
+    expect(speeds).toEqual([
+      { value: 2, label: '1 hour of market time every 6 seconds' },
+      { value: 5, label: '1 hour of market time every 2.4 seconds' },
+    ]);
+    expect(readSpeeds([{ label: 'no tps' }, 'nonsense']).map((s) => s.value)).toEqual([1, 2, 5, 10]);
+    expect(readSpeeds(undefined).map((s) => s.value)).toEqual([1, 2, 5, 10]);
   });
 
-  it('prefers server labels for strategies and falls back to the glossary', () => {
-    const list = readStrategies(['bands', { value: 'forecast', label: 'AI forecast (TimesFM 2.5)' }, { id: 'peak' }]);
-    expect(list.map((s) => s.label)).toEqual(['Simple rule', 'AI forecast (TimesFM 2.5)', 'Evening peak']);
-    expect(list.every((s) => s.description.length > 0)).toBe(true);
+  it('reads Strategy {id, label, description}, with the glossary as a fallback', () => {
+    const list = readStrategies([
+      { id: 'bands', label: 'Simple rule', description: 'From the server.' },
+      { id: 'forecast', label: 'AI forecast (TimesFM 2.5)' },
+      { id: 'peak', description: 'Evening.' },
+      { label: 'no id' },
+    ]);
+    expect(list.map((s) => [s.value, s.label])).toEqual([
+      ['bands', 'Simple rule'],
+      ['forecast', 'AI forecast (TimesFM 2.5)'],
+      ['peak', 'Evening peak'],
+    ]);
+    expect(list[0].description).toBe('From the server.');
+    expect(list[1].description.length).toBeGreaterThan(0);
     expect(readStrategies(undefined)).toHaveLength(3);
   });
 
-  it('keeps only valid presets and editable keys', () => {
-    expect(readPresets([{ id: 'a', label: 'A' }, { id: 3 }])).toEqual([{ id: 'a', label: 'A' }]);
+  it('keeps presets that have an id, label and start_utc, and only editable keys', () => {
+    const good = {
+      id: 'summer_spike',
+      label: 'Summer night spike',
+      date_local: '2025-07-11',
+      start_utc: '2025-07-11T23:00:00Z',
+      start_local: '2025-07-11T18:00:00-05:00',
+      description: 'Both areas jump to about $1,750/MWh at 9 pm.',
+    };
+    expect(readPresets([good, { id: 'a', label: 'A' }, { id: 3 }])).toEqual([good]);
+    expect(readPresets([{ id: 'a' }])[0].id).toBe('spike_evening'); // documented fallback
     expect(readEditable(['preset', 'fleet_size', 'strategy'])).toEqual(['preset', 'strategy']);
     expect(readEditable(null)).toEqual(['preset', 'speed_tps', 'strategy', 'start_charge_level']);
   });

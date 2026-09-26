@@ -117,10 +117,11 @@ export function friendlyError(err: unknown, context: ErrorContext = 'load'): Fri
       return { ...base, title: "That can't happen right now.", detail: server ?? 'The simulation changed. Try again.' };
     case 404:
       if (context === 'battery') {
-        return { ...base, title: 'No battery has that ID.', detail: server ?? 'Check the area and number, then try again.' };
+        return { ...base, title: 'No battery has that ID.', detail: server ?? 'Battery IDs run from b00000 to b19999.' };
       }
-      if (context === 'results') {
-        return { ...base, title: 'No full-year results yet.', detail: server ?? 'Run the full year to calculate them.' };
+      if (context === 'results' || err.code === 'no_results') {
+        // The server's sentence is the same as this title (docs/API.md), so say what to do instead.
+        return { ...base, title: 'No full-year results yet.', detail: 'Press "Re-run the full year" to calculate them.' };
       }
       return { ...base, title: 'Not found.', detail: server ?? 'The simulator does not know about that.' };
     case 400:

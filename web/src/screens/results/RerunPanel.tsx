@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { api } from '../../api/client.ts';
+import { api, ApiError } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
 import { Icon } from '../../components/Icon.tsx';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { Panel } from '../../components/Panel.tsx';
 import { TechOnly } from '../../components/Tech.tsx';
-import { fmtDuration } from '../../lib/format.ts';
+import { fmtDuration, strategyName } from '../../lib/format.ts';
 import { readStorage, writeStorage } from '../../lib/storage.ts';
 
 const JOB_KEY = 'fleet-sim.backtest-job';
@@ -36,11 +36,13 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
   const [job, setJob] = useState<Job | null>(loadJob);
   const [error, setError] = useState<FriendlyError | null>(null);
   const [finished, setFinished] = useState(false);
+  const [skipped, setSkipped] = useState<[string, string][]>([]);
   const [now, setNow] = useState(() => Date.now());
 
   const start = async () => {
     setError(null);
     setFinished(false);
+    setSkipped([]);
     try {
       const { job_id } = await api.backtest(['bands', 'forecast', 'peak'], year);
       const next = { id: job_id, startedAtMs: Date.now() };
@@ -67,6 +69,7 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
         if (status.status === 'done') {
           stop(null);
           setFinished(true);
+          setSkipped(Object.entries(status.skipped ?? {}).filter(([, why]) => typeof why === 'string'));
           onDone();
         } else if (status.status === 'failed') {
           stop({
@@ -79,8 +82,13 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
         }
       } catch (err) {
         if (cancelled) return;
+        // A job id the server no longer knows (it restarted) is simply forgotten.
+        if (err instanceof ApiError && err.status === 404) {
+          stop(null);
+          return;
+        }
         const f = friendlyError(err, 'backtest');
-        // Keep polling through blips; give up on real answers such as 404.
+        // Keep polling through blips; give up on real answers.
         if (!f.unreachable) stop(f);
       }
     };
@@ -129,7 +137,17 @@ export function RerunPanel({ year, onDone }: { year: number; onDone: () => void 
             </TechOnly>
           </>
         ) : null}
-        {finished ? <Notice kind="info" title="Done. The numbers on this page are up to date." /> : null}
+        {finished ? (
+          <Notice kind="info" title="Done. The numbers on this page are up to date.">
+            {skipped.length
+              ? skipped.map(([strategy, why]) => (
+                  <div key={strategy}>
+                    {strategyName(strategy)} was left out: {why}
+                  </div>
+                ))
+              : null}
+          </Notice>
+        ) : null}
         {error ? <ErrorNotice error={error} /> : null}
       </div>
     </Panel>
