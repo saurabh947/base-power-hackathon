@@ -369,6 +369,9 @@ class AvailabilityState:
       rest of the area is online. The same fraction always picks the same batteries
       (a fixed permutation per location), and a bigger fraction is a superset.
     - scope=worker: every battery the worker currently owns (the process keeps running).
+      `offline_by` remembers which controller's switch took each battery down, so bringing that controller back
+      online returns all of them, wherever they are now, and a restarted controller gets back online the
+      batteries that went down only because another controller ran them at the time (release_collateral).
     - scope=battery: one battery.
     - scope=all: every battery.
     """
@@ -376,11 +379,13 @@ class AvailabilityState:
     def __init__(self, layout, seed: int) -> None:
         self.layout = layout
         self.offline = np.zeros(layout.size, dtype=bool)
+        self.offline_by = np.full(layout.size, -1, dtype=np.int16)  # worker whose offline switch took it down
         self.offline_workers: set[int] = set()
         self._perm = [np.random.default_rng([int(seed), 1729, li]).permutation(n) for li, n in enumerate(layout.counts)]
 
     def clear(self) -> None:
         self.offline[:] = False
+        self.offline_by[:] = -1
         self.offline_workers.clear()
 
     def apply(self, req: Mapping, owners: np.ndarray, n_workers: int) -> dict:
@@ -401,6 +406,7 @@ class AvailabilityState:
             area_off = np.zeros(len(idx), dtype=bool)
             area_off[self._perm[li][:n_off]] = True
             self.offline[idx] = area_off
+            self.offline_by[idx] = -1  # a direct user choice on these batteries now
             detail.update(location=loc, offline_fraction=float(frac), offline=n_off, total=len(idx))
         elif scope == "worker":
             w = req.get("worker_id")
@@ -409,10 +415,15 @@ class AvailabilityState:
                                    f"There's no controller with worker_id {w!r}; ids run from 0 to {n_workers - 1}.")
             available = _bool(req.get("available"))
             idx = np.flatnonzero(owners == w)
-            self.offline[idx] = not available
             if available:
+                # everything this controller's switch took down, wherever it is now, plus what it owns
+                idx = np.union1d(idx, np.flatnonzero(self.offline_by == w)).astype(np.int64)
+                self.offline[idx] = False
+                self.offline_by[idx] = -1
                 self.offline_workers.discard(w)
             else:
+                self.offline[idx] = True
+                self.offline_by[idx] = w
                 self.offline_workers.add(w)
             detail.update(worker_id=w, controller=w + 1, available=available, batteries=int(len(idx)),
                           by_location=self.layout.counts_by_location(idx))
@@ -424,24 +435,45 @@ class AvailabilityState:
                 raise ControlError(404, "unknown_battery", f"There is no battery called {bid!r}.") from None
             available = _bool(req.get("available"))
             self.offline[g] = not available
+            self.offline_by[g] = -1
             detail.update(battery_id=bid, available=available)
         elif scope == "all":
             available = _bool(req.get("available", True))
             self.offline[:] = not available
+            self.offline_by[:] = -1
             if available:
                 self.offline_workers.clear()
             detail.update(available=available)
         else:
             raise ControlError(400, "invalid_scope", "scope must be one of: location, worker, battery, all.")
-        # a worker stays listed only while all of its current batteries are still offline
-        for w in list(self.offline_workers):
-            mine = owners == w
-            if mine.any() and not self.offline[mine].all():
-                self.offline_workers.discard(w)
+        self._prune_offline_workers(owners)
         changed = self.offline != before
         detail["affected"] = int(changed.sum())
         detail["changed_idx"] = np.flatnonzero(changed)
         return detail
+
+    def release_collateral(self, idx: np.ndarray, worker_id: int, owners: np.ndarray) -> dict:
+        """A restarted controller takes its batteries `idx` back: those that went offline only because ANOTHER
+        controller ran them when that controller's switch was turned off come back online (the human's rule).
+        Batteries a user took offline directly (city, battery) or with this controller's own switch stay offline.
+        Returns {'changed_idx': ..., 'from': {other worker: count}}."""
+        idx = np.asarray(idx, dtype=np.int64)
+        src = self.offline_by[idx]
+        hit = idx[self.offline[idx] & (src >= 0) & (src != worker_id)]
+        sources: dict[int, int] = {}
+        for w in self.offline_by[hit].tolist():
+            sources[int(w)] = sources.get(int(w), 0) + 1
+        self.offline[hit] = False
+        self.offline_by[hit] = -1
+        self._prune_offline_workers(owners)
+        return {"changed_idx": hit, "from": sources}
+
+    def _prune_offline_workers(self, owners: np.ndarray) -> None:
+        """A worker stays listed only while all of its current batteries are still offline."""
+        for w in list(self.offline_workers):
+            mine = owners == w
+            if mine.any() and not self.offline[mine].all():
+                self.offline_workers.discard(w)
 
     def summary(self) -> dict:
         by_location = {}

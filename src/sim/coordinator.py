@@ -1044,8 +1044,18 @@ class Coordinator:
             h.pending_load = np.empty(0, dtype=np.int32)
             h.pending_init = np.empty(0, dtype=bool)
             h.ready_run = None
+        # batteries that went offline only because another controller ran them when its switch was turned off
+        # come back online with their own controller (the human's rule); user-chosen offline stays
+        rel = self.availability.release_collateral(home, h.worker_id, self.owner)
+        back = rel["changed_idx"]
+        if len(back):
+            pipe = self.r.pipeline(transaction=False)
+            for g in back.tolist():
+                pipe.hset(self.keys.battery(self.layout.ids[g]), F_AVAIL, 1)
+            pipe.execute()
+            self._publish_overlay()
         h.recovery.update(take_back_ms=(time.perf_counter() - t0) * 1000.0, taken_from=holders,
-                          batteries=int(len(home)))
+                          batteries=int(len(home)), back_online=int(len(back)), back_online_from=rel["from"])
         self._snapshot_dirty = True
         return True
 
@@ -1065,12 +1075,17 @@ class Coordinator:
                 msg += ", starting from empty." if (usable or 0.0) < 0.005 else f", now {usable:.0%} charged."
         else:
             msg = f"{who} is back."
+        if rec.get("back_online"):
+            others = geo.join_names([ctl.controller(w) for w in sorted(rec.get("back_online_from", {}))])
+            msg += (f" {ctl.fmt_int(rec['back_online'])} of them had gone offline while {others} ran them, "
+                    f"and are back online.")
         running = self.run is not None
         self._emit("worker_recovered", "good", msg, detail={
             "worker_id": h.worker_id, "controller": h.worker_id + 1, "batteries": int(len(home)), "pid": h.pid,
             "by_location": self.layout.counts_by_location(home), "usable_charge": usable if running else None,
             "charge_level": worker_charge_level(home, self.soc, self.cap) if running else None,
-            "taken_from": rec.get("taken_from", []), "ms": round(ms, 1),
+            "taken_from": rec.get("taken_from", []), "back_online": int(rec.get("back_online", 0)),
+            "ms": round(ms, 1),
             "take_back_ms": round(rec.get("take_back_ms", 0.0), 3)})
         _log(f"worker {h.worker_id} recovered in {ms:.0f} ms (take-back {rec.get('take_back_ms', 0.0):.1f} ms)")
         self._snapshot_dirty = True

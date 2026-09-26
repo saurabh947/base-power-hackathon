@@ -512,3 +512,8 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   - The 2026 backtest replays real prices to Sep 19, then the AI's predicted p50, with the real/projected split on every strategy and the ceiling.
   - Each year has its own pitch set; 2025 is untouched.
 - **Tests:** 611 backend and 434 website.
+- **Restart clears stranded offline batteries (the human's request).** `AvailabilityState.offline_by` records which controller's switch took each battery offline.
+  - A user restart brings back online the returning batteries that went offline only because another controller ran them.
+  - Turning a controller back online returns everything its switch took down, wherever those batteries are now.
+  - User-chosen offline (city, battery, the controller's own switch) stays.
+  - Tests: `tests/test_availability_sources.py` and `test_failure_model.py::test_a_restart_brings_back_online_what_went_offline_with_another_controller`.

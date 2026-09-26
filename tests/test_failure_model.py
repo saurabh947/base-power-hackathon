@@ -370,3 +370,33 @@ def test_the_potential_shortfall_includes_the_energy_a_crash_destroyed(coordinat
     assert shortfall == pytest.approx(potential - co.run.revenue_usd, abs=1e-6)
     assert shortfall == pytest.approx(lost_revenue, rel=1e-6)  # the energy the crash destroyed, at its prices
     print(f"\nshortfall ${shortfall:,.2f} = the crashed cohort's lost sales ${lost_revenue:,.2f}")
+
+
+def test_a_restart_brings_back_online_what_went_offline_with_another_controller(coordinator):
+    """The human's rule: a controller that was running a crashed controller's batteries is switched off; when the
+    crashed controller is restarted, those batteries come back online with it (user-chosen offline stays)."""
+    co = coordinator()
+    co.start({"start_utc": MORNING, "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.5},
+             max_ticks=80, internal=True)
+    co.step()
+    victim = co.workers[2]
+    home = np.flatnonzero(co.home == 2)
+    os.kill(victim.pid, signal.SIGKILL)
+    for _ in range(3):
+        co.step()
+    assert victim.status == "dead"
+    held_by_0 = home[co.owner[home] == 0]
+    assert len(held_by_0) > 0  # controller 1 runs some of controller 3's batteries now
+    co.handle_control({"cmd": "availability", "args": {"scope": "worker", "worker_id": 0, "available": False}})
+    assert co.availability.offline[held_by_0].all()
+    co.handle_control({"cmd": "restart", "args": {"worker_id": 2}})
+    assert co.serve_until(lambda: events(co, "worker_recovered"), timeout_s=30)
+    recovered = events(co, "worker_recovered")[-1]
+    assert not co.availability.offline[home].any()  # all of controller 3's batteries are online again
+    assert recovered["detail"]["back_online"] == len(held_by_0)
+    assert recovered["message"].endswith(f"{len(held_by_0)} of them had gone offline while Controller 1 ran them, "
+                                         "and are back online.")
+    own = np.flatnonzero(co.owner == 0)
+    assert co.availability.offline[own].all()  # controller 1's own switch is still off
+    co.handle_control({"cmd": "availability", "args": {"scope": "worker", "worker_id": 0, "available": True}})
+    assert not co.availability.offline.any()

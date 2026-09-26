@@ -172,6 +172,10 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
   - On a user restart the controller takes its original batteries back, with whatever charge they have by then (owner-epoch fenced).
 - **Controller offline.** Taking a controller offline (`/availability` scope `worker`) **halves** the usable charge of its batteries at that moment.
   - While offline they don't move. **Only a user brings them back online** (nothing automatic), and they resume from the halved level.
+  - The backend remembers which controller's switch took each battery down.
+    - Turning that controller back online returns **all** of those batteries, wherever they are now.
+    - A user **restart** also brings back online the returning batteries that went offline only because another controller ran them at the time. `worker_recovered` then says "…N of them had gone offline while Controller K ran them, and are back online." and carries `detail.back_online`.
+    - City-slider, single-battery and a controller's own offline stay until the user undoes them.
   - City and single-battery offline don't change charge.
 - **Mirroring.** The race shadow applies the same emptying and halving to the same batteries, so the race compares only decisions. The `potential` fleet never loses charge, so `shortfall_usd` includes the lost energy.
 
