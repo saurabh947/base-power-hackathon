@@ -6,9 +6,9 @@ the 7 snapshot locations, native load 2025 and fuel mix 2025. Skips unless
 Postgres is reachable AND the ingest has loaded 2024-2025.
 
 Known, documented differences (docs/notes/data.md):
-- system_load 2025-11-02 06:00 and 07:00 UTC: the snapshot (built with
-  gridstatus) has the fall-back hour's two passes swapped. Postgres keeps
-  ERCOT's order ("02:00 DST" is the repeated, CST hour).
+- system_load 2025-11-02 06:00 and 07:00 UTC: the gridstatus-built snapshot
+  had the fall-back hour's two passes swapped. The integrator corrected the
+  snapshot to ERCOT's order on 2026-09-25, so both backends now agree there.
 - 4 system_load values differ in the last bit: the workbook stores 17
   significant digits, and the snapshot holds them rounded.
 """
@@ -87,7 +87,7 @@ def test_fuel_mix_2025_identical():
     pd.testing.assert_frame_equal(series_pg.fuel_mix(a, b), series.fuel_mix(a, b), check_exact=True)
 
 
-def test_system_load_2025_identical_except_the_snapshots_fall_back_swap():
+def test_system_load_2025_identical_but_for_last_bit_rounding():
     a, b = year_window(2025)
     pg, snap = series_pg.system_load(a, b), series.system_load(a, b)
     assert pg.name == snap.name and pg.index.name == snap.index.name and pg.dtype == snap.dtype
@@ -95,10 +95,9 @@ def test_system_load_2025_identical_except_the_snapshots_fall_back_swap():
     description, ok = describe_load_diff(snap, pg)
     assert ok, description
     h1, h2 = pd.Timestamp("2025-11-02T06:00Z"), pd.Timestamp("2025-11-02T07:00Z")  # 01:00 CDT, 01:00 CST
-    assert pg[h1] == snap[h2] and pg[h2] == snap[h1]
-    others = pg.index.difference([h1, h2])
-    assert np.allclose(pg[others], snap[others], rtol=4 * np.finfo(float).eps, atol=0)
-    assert (pg[others] != snap[others]).sum() == 4
+    assert pg[h1] == snap[h1] and pg[h2] == snap[h2]  # fall-back hour in ERCOT's order in both
+    assert np.allclose(pg, snap, rtol=4 * np.finfo(float).eps, atol=0)
+    assert (pg != snap).sum() == 4
     assert pg[h1] > pg[h2]  # ERCOT's order: overnight load falls from the first pass to the second
 
 
@@ -113,7 +112,8 @@ def test_the_public_api_dispatches_to_postgres(monkeypatch):
 
 
 def test_postgres_covers_the_hours_the_snapshot_backend_misses_at_new_year():
-    """series._prices picks files by the UTC year of the bounds, so it misses 2026-01-01 00:00-06:00 UTC
-    (still ERCOT 2025, in the 2025 file). Postgres has them. Reported to the integrator."""
+    """2026-01-01 00:00-06:00 UTC is still ERCOT 2025 (in the 2025 file). Both backends return it
+    (the snapshot backend used to miss it; fixed by reading the previous year's file too)."""
     a, b = datetime(2026, 1, 1, 0, tzinfo=UTC), datetime(2026, 1, 1, 6, tzinfo=UTC)
     assert len(series_pg.rt_prices("LZ_HOUSTON", a, b)) == 24
+    pd.testing.assert_series_equal(series_pg.rt_prices("LZ_HOUSTON", a, b), series.rt_prices("LZ_HOUSTON", a, b), check_exact=True)

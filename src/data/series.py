@@ -60,7 +60,9 @@ def fuel_mix(start: datetime, end: datetime) -> pd.DataFrame:
 
 def _prices(market: str, location: str, start: datetime, end: datetime) -> pd.Series:
     parts = []
-    for year in range(pd.Timestamp(start).year, pd.Timestamp(end).year + 1):
+    # Files hold ERCOT (Central-time) years, which end at 06:00 UTC on Jan 1, so the
+    # previous year's file can hold the first hours of a UTC year.
+    for year in range(pd.Timestamp(start).year - 1, pd.Timestamp(end).year + 1):
         path = SNAPSHOT_DIR / f"ercot_{market}_{year}_hubs.parquet"
         if path.exists():
             df = _read(path.stem)

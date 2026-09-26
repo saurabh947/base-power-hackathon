@@ -9,3 +9,5 @@ They are committed so tests and local dev run offline. The canonical store is Po
 | ercot_da_2025_hubs.parquet / _2024_ | DA hourly settlement point prices (report 13060), same locations |
 | ercot_hourly_native_load_2025.parquet | Hourly native load by weather zone plus the ERCOT total |
 | ercot_fuel_mix_15min_2025.parquet | 15-min generation by fuel. Values are MW; the source file's MWh-per-15-min figures were multiplied by 4 |
+
+**Correction (2026-09-25).** The gridstatus-built `ercot_hourly_native_load_2025.parquet` had the two passes of the 2025-11-02 fall-back hour swapped. The 06:00Z and 07:00Z rows are now in ERCOT's order, matching the M1 ingest. `tests/test_series_parity.py` pins this. Four load values still differ from Postgres in the last bit: the workbook stores 17 significant digits, and the snapshot holds them rounded.

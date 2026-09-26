@@ -55,15 +55,15 @@ presets:
       date_local: "2025-04-07"
       start_utc: "2025-04-07T08:00:00Z"   # 3:00 am CDT; Houston peaks $3,860/MWh around 6:45 am
       description: "The year's highest price, just before 7 am."
-    - id: winter_spike
-      label: "Winter morning spike"
-      date_local: "2025-01-15"
-      start_utc: "2025-01-15T10:00:00Z"   # 4:00 am CST; HB_NORTH peaks $2,385 at 7:30 am (verify for LZ_*)
-      description: "A cold-morning price jump around 7:30 am."
+    - id: summer_spike
+      label: "Summer night spike"
+      date_local: "2025-07-11"
+      start_utc: "2025-07-11T23:00:00Z"   # 6:00 pm CDT; both areas ~$1,755/MWh in the 9:00 pm interval
+      description: "Both areas jump to about $1,750/MWh at 9 pm."
     - id: ordinary_day
       label: "An ordinary day"
-      date_local: "2025-03-19"            # placeholder until the data owner picks a median-spread day
-      start_utc: "2025-03-19T05:00:00Z"
+      date_local: "2025-06-28"            # daily spread $64/$68 (Houston/North) ~ the 2025 medians $63/$68
+      start_utc: "2025-06-28T05:00:00Z"
       description: "A typical day with small ups and downs."
 
 # Area sections, one owner each; read via src.config.load_raw_config().
