@@ -57,8 +57,13 @@ def no_database(monkeypatch):
 
 def api_example() -> dict:
     text = (REPO_ROOT / "docs" / "API.md").read_text()
-    block = re.search(r"\*\*Results\*\* \(`GET /results/pitch`\)\s*```json\s*(\{.*?\})\s*```", text, re.S)
+    block = re.search(r"\*\*Results\*\* \(`GET /results/pitch[^`]*`\).*?```json\s*(\{.*?\})\s*```", text, re.S)
     return json.loads(block.group(1))
+
+
+# docs/API.md "Real and projected years": carried by every Results (the prose names them; the JSON example predates
+# them), with real_until_utc null and projected 0 for a fully real year
+SPLIT_KEYS = {"real_per_battery_usd", "projected_per_battery_usd"}
 
 
 # --- the Results contract ---------------------------------------------------------------------
@@ -68,10 +73,13 @@ def test_results_keys_are_exactly_the_api_contract(mini):
     out, outcome = mini
     results = build_results(outcome.records, year=2025, settings=mini_settings())
     example = api_example()
-    assert set(results) == set(example)
-    assert set(results["ceiling"]) == set(example["ceiling"])
+    assert set(results) == set(example) | {"real_until_utc"} and results["real_until_utc"] is None
+    assert set(results["ceiling"]) == set(example["ceiling"]) | SPLIT_KEYS
+    for s in [*results["strategies"], results["ceiling"]]:
+        # a fully real year: all of it real, nothing projected
+        assert (s["real_per_battery_usd"], s["projected_per_battery_usd"]) == (s["per_battery_usd_year"], 0.0)
     for s in results["strategies"]:
-        assert set(s) == set(example["strategies"][0])
+        assert set(s) == set(example["strategies"][0]) | SPLIT_KEYS
         assert set(s["per_location_usd"]) == set(LOCS)
         for d in s["top_days"]:
             assert set(d) == set(example["strategies"][0]["top_days"][0])

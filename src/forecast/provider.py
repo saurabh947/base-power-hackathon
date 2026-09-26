@@ -109,38 +109,42 @@ class ForecastBook:
         source: str | None = None,
         cache_dir: Path | None = None,
         virtual: bool = False,
+        price_source: str | None = None,
     ) -> ForecastBook:
         """Every stored forecast of (model, series, location) issued in [start, end). virtual=True (the forecast
         strategy asks for it; rt_price only): after each year's real_until_utc, the virtual forecasts sliced from the
-        AI's prediction replace any real ones issued there."""
+        AI's prediction replace any real ones issued there. price_source: where real_until_utc is read ('postgres' or
+        'snapshot'; default: env PRICE_SOURCE, as the live fleet); the backtest passes its own prices' source."""
         model, source, cache_dir = _resolve(model, source, cache_dir)
         if source == "db":
             df = store.read_db(model, series, location, start, end)
         else:
             df = store.read_parquet(cache_dir, model, series, location, start, end)
         if virtual and series == "rt_price":
-            df = with_virtual(df, location, model, source, start, end)
+            df = with_virtual(df, location, model, source, start, end, price_source=price_source)
         return cls.from_frame(df, location, series, model)
 
 
-def predicted_periods(raw=None) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """[(real_until_utc, year end)] of the configured years whose real prices end before the year does."""
+def predicted_periods(raw=None, *, price_source: str | None = None) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """[(real_until_utc, year end)] of the configured years whose real prices end before the year does
+    (price_source: where to read real_until_utc; default: env PRICE_SOURCE)."""
     from src.data import years
 
     out = []
     for year in years.configured_years(raw):
-        y = years.info(year)
+        y = years.info(year, source=price_source)
         if y.available and y.real_until_utc is not None:
             out.append((pd.Timestamp(y.real_until_utc), pd.Timestamp(y.end_utc)))
     return out
 
 
-def with_virtual(df: pd.DataFrame, location: str, model: str, source: str, start=None, end=None) -> pd.DataFrame:
+def with_virtual(df: pd.DataFrame, location: str, model: str, source: str, start=None, end=None, *,
+                 price_source: str | None = None) -> pd.DataFrame:
     """Store rows with the virtual forecasts of every predicted period put in (see the module docstring)."""
     from src.forecast import predictions
     from src.forecast.settings import load_settings
 
-    periods = predicted_periods()
+    periods = predicted_periods(price_source=price_source)
     if not periods:
         return df
     cfg = load_settings().rt_price

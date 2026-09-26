@@ -1,12 +1,19 @@
-"""The Results object of docs/API.md (GET /results/pitch), built from a pitch set of records.
+"""The Results object of docs/API.md (GET /results/pitch?year=), built from a year's pitch set of records.
 
 Keys are exactly the contract's. Everything else a reader needs (the lag-0 comparison, the
 one-cycle-a-day ceiling, a strategy that was skipped and why) is a plain-language line in
 `assumptions`, written for the Results screen's "How we got this number" (docs/UX.md).
+
+Real and projected money (docs/API.md "Real and projected years"): a year whose real prices end early (2026)
+carries `real_until_utc`, and every strategy and the ceiling split their per-battery figure into
+`real_per_battery_usd` (before it) and `projected_per_battery_usd` (the AI-predicted rest), which add up to
+`per_battery_usd_year` to the cent. A fully real year: `real_until_utc` null, projected 0. Records stored before
+the split existed are fully real years (2024, 2025).
 """
 from __future__ import annotations
 
-from typing import Sequence
+from datetime import datetime
+from typing import Mapping, Sequence
 
 from src.sim import geo
 
@@ -42,12 +49,15 @@ def build_results(records: Sequence[dict], *, year: int, settings: dict | None =
         if name not in ran:
             continue
         r, m = ran[name], ran[name]["metrics"]
+        real_pb, projected_pb = split_per_battery(m)
         strategies.append({
             "strategy": name,
             "label": labels.get(name) or r.get("label") or name,
             "run_id": r["run_id"],
             "is_headline": name == headline,
             "per_battery_usd_year": _money(m["per_battery_usd_year"]),
+            "real_per_battery_usd": real_pb,
+            "projected_per_battery_usd": projected_pb,
             "fleet_usd_year": _money(m["fleet_usd_year"]),
             "usd_per_kwh_year": _money(m["usd_per_kwh_year"]),
             "usd_per_kw_year": _money(m["usd_per_kw_year"]),
@@ -58,23 +68,62 @@ def build_results(records: Sequence[dict], *, year: int, settings: dict | None =
 
     everything = [*latest.values(), *([ceiling] if ceiling else [])]
     finished = [r["finished_at"] for r in everything if r.get("finished_at")]
+    real_until = next((u for u in (real_until_of(r) for r in [*ran.values(), *([ceiling] if ceiling else [])])
+                       if u), None)
+    ceiling_block = None
+    if ceiling is not None:
+        c_real, c_projected = split_per_battery(ceiling["metrics"])
+        ceiling_block = {
+            "label": labels.get(HINDSIGHT) or ceiling.get("label"),
+            "per_battery_usd_year": _money(ceiling["metrics"]["per_battery_usd_year"]),
+            "real_per_battery_usd": c_real,
+            "projected_per_battery_usd": c_projected,
+            "fleet_usd_year": _money(ceiling["metrics"]["fleet_usd_year"]),
+        }
     return {
         "year": year,
         "generated_utc": max(finished) if finished else None,
+        "real_until_utc": real_until,
         "fleet_size": fleet.get("size"),
         "fleet_power_mw": round(fleet["power_kw_total"] / 1000.0, 1) if "power_kw_total" in fleet else None,
         "fleet_energy_mwh": round(fleet["capacity_kwh_total"] / 1000.0, 1) if "capacity_kwh_total" in fleet else None,
-        "assumptions": assumptions(year, source, ran, skipped, headline, ceiling, labels),
+        "assumptions": assumptions(year, source, ran, skipped, headline, ceiling, labels, real_until=real_until),
         "strategies": strategies,
-        "ceiling": None if ceiling is None else {
-            "label": labels.get(HINDSIGHT) or ceiling.get("label"),
-            "per_battery_usd_year": _money(ceiling["metrics"]["per_battery_usd_year"]),
-            "fleet_usd_year": _money(ceiling["metrics"]["fleet_usd_year"]),
-        },
+        "ceiling": ceiling_block,
     }
 
 
-def assumptions(year, source, ran, skipped, headline, ceiling, labels) -> list[str]:
+def real_until_of(record: Mapping | None) -> str | None:
+    """The real_until_utc a record was replayed against (None: real prices all year, or stored before the split)."""
+    if not record:
+        return None
+    split = (record.get("metrics") or {}).get("split") or {}
+    return split.get("real_until_utc") or (record.get("params") or {}).get("real_until_utc") or None
+
+
+def split_per_battery(metrics: Mapping) -> tuple[float | None, float | None]:
+    """(real_per_battery_usd, projected_per_battery_usd) in cents that add up to per_battery_usd_year exactly
+    (projected = the rounded total minus the rounded real part). A fully real year, or a record stored before the
+    split existed: (the total, 0)."""
+    total = _money(metrics.get("per_battery_usd_year"))
+    split = metrics.get("split") or {}
+    if total is None:
+        return None, None
+    if not split.get("real_until_utc") or split.get("real_per_battery_usd") is None:
+        return total, 0.0
+    real = _money(split["real_per_battery_usd"])
+    return real, round(total - real, 2)
+
+
+def _day_words(real_until_utc: str) -> str:
+    """'Sep 19, 2026': the last local day with real prices."""
+    from src.data.years import last_real_day
+
+    d = last_real_day(datetime.fromisoformat(real_until_utc.replace("Z", "+00:00")))
+    return f"{d:%b} {d.day}, {d.year}"
+
+
+def assumptions(year, source, ran, skipped, headline, ceiling, labels, *, real_until: str | None = None) -> list[str]:
     params = (source or {}).get("params", {})
     fleet = params.get("fleet", {})
     ranges = fleet.get("battery_ranges", {})
@@ -85,6 +134,18 @@ def assumptions(year, source, ran, skipped, headline, ceiling, labels) -> list[s
         "Excludes retail and delivery charges, payments for grid-support services, and battery wear.",
         "The fleet is assumed too small to move market prices.",
     ]
+    if real_until:
+        model = ((params.get("prices") or {}).get("after_real_until") or {}).get("model") or "timesfm-3.0"
+        name = "TimesFM-3" if model.startswith("timesfm-3") else "TimesFM 2.5" if model.startswith("timesfm-2.5") \
+            else model
+        day = _day_words(real_until)
+        lines[0] = (f"Gross wholesale energy value at real-time prices from ERCOT, the Texas grid operator "
+                    f"(15-minute settlement), for every 5-minute step of {year} up to {day}.")
+        lines.insert(1, f"ERCOT's real prices end on {day}. After that, the prices are the AI's prediction ({name}, "
+                        "its median), so the money after that date is a projection, shown separately.")
+        if "forecast" in ran:
+            lines.insert(2, "After real prices end, the AI forecast method trades on hourly slices of that same "
+                            "prediction, so it knows those prices in advance and its projected money flatters it.")
     if fleet and ranges:
         (p_lo, p_hi), (c_lo, c_hi) = ranges["power_kw"], ranges["capacity_kwh"]
         lines.append(
@@ -170,46 +231,76 @@ def _newest(records):
     return max(records, key=lambda r: (r.get("finished_at") or "", r.get("started_at") or ""), default=None)
 
 
-def build_ai_gains(records: Sequence[dict], *, pitch_year: int, settings: dict | None = None,
+def build_ai_gains(records: Sequence[dict], *, pitch_year: int, year: int | None = None, settings: dict | None = None,
                    default_signature: tuple | None = None) -> dict:
     """docs/API.md AiGains from slim records (src.backtest.store.load_gains_records / load_gains_records_json).
 
-    - The pitch year: its is_pitch set (the newest flagged run per strategy), listed when it has a simple-rule
-      run. `uplift` (AI minus simple rule; pct = uplift / simple rule) needs the AI run too, so it and the AI's
-      entry are absent in a build without forecasts; in the cloud both exist.
-    - Every other year: the latest complete set, i.e. the newest successful bands, forecast and peak runs on the
-      pitch set's fleet (same size and cities; config.yaml's fleet when there is no pitch set). A year without
+    - The requested year (`year`, default: the pitch year, config backtest.year) first: its own is_pitch set (the
+      newest flagged run per strategy; is_pitch is per year), listed when it has a simple-rule run, with
+      `is_pitch: true`. `uplift` (AI minus simple rule; pct = uplift / simple rule) needs the AI run too, so it and
+      the AI's entry are absent in a build without forecasts; in the cloud both exist.
+    - Every other year, newest first, with `is_pitch: false`: its own pitch set when that has bands, forecast and
+      peak, else its latest complete set (the newest successful bands, forecast and peak runs), always on the
+      requested set's fleet (same size and cities; config.yaml's fleet when there is no such set). A year without
       all three is left out.
-    - best_possible_per_battery_usd_year: that year's newest hindsight run on the same fleet; it and every
-      share_of_best (per-battery earnings / it) are absent when the year has none.
+    - best_possible_per_battery_usd_year: that year's hindsight run (the flagged one of its pitch set, else the
+      newest) on the same fleet; it and every share_of_best (per-battery earnings / it) are absent without one.
     - The insight fields come from metrics.insights. A run stored before insights existed has none of them:
       they are left out of its StrategyGains (the money fields are always there). `spike_events` is the year's
       count (spikes are defined by prices), the same on every strategy, taken from any run of the year with it.
-    - Each year also carries `fleet_size` (the batteries its runs simulated).
-    Labels come from config backtest.labels. Years: the pitch year first, then the others, newest first.
+    - Each year also carries `fleet_size` (the batteries its runs simulated) and `real_until_utc` (null for a year
+      of real prices). Money is the year's total (real + projected); every StrategyGains and the uplift also split
+      their per-battery figure into `real_per_battery_usd` and `projected_per_battery_usd` (docs/API.md Results).
+    Labels come from config backtest.labels.
     """
     from src.backtest.runner import HINDSIGHT, backtest_settings
 
     settings = settings or backtest_settings()
     labels = settings["labels"]
+    wanted = int(year if year is not None else pitch_year)
     usable = [r for r in records if r.get("year") is not None and r.get("fleet_total_usd") is not None
               and r.get("per_battery_avg_usd") is not None]
-    pitch = {}
-    for name in (*GAIN_ORDER, HINDSIGHT):
-        newest = _newest([r for r in usable if r["is_pitch"] and r["year"] == pitch_year and r["strategy"] == name])
-        if newest is not None:
-            pitch[name] = newest
+    pitch = _flagged(usable, wanted, (*GAIN_ORDER, HINDSIGHT))
     signature = fleet_signature(pitch.get(AI) or pitch.get(BASELINE)) or default_signature
     years = []
     if BASELINE in pitch:
-        years.append(_gains_year(pitch_year, pitch, is_pitch=True, labels=labels))
-    for year in sorted({r["year"] for r in usable} - {pitch_year}, reverse=True):
-        mine = [r for r in usable if r["year"] == year and fleet_signature(r) == signature]
-        latest = {name: _newest([r for r in mine if r["strategy"] == name]) for name in (*GAIN_ORDER, HINDSIGHT)}
-        if all(latest[name] is not None for name in GAIN_ORDER):
-            years.append(_gains_year(year, {k: v for k, v in latest.items() if v is not None}, is_pitch=False,
-                                     labels=labels))
+        years.append(_gains_year(wanted, pitch, is_pitch=True, labels=labels))
+    for other in sorted({r["year"] for r in usable} - {wanted}, reverse=True):
+        mine = [r for r in usable if r["year"] == other and fleet_signature(r) == signature]
+        chosen = _flagged(mine, other, (*GAIN_ORDER, HINDSIGHT))  # that year's own pitch set, when it is complete
+        if not all(name in chosen for name in GAIN_ORDER):
+            latest = {name: _newest([r for r in mine if r["strategy"] == name]) for name in (*GAIN_ORDER, HINDSIGHT)}
+            chosen = {k: v for k, v in latest.items() if v is not None}
+        elif HINDSIGHT not in chosen:
+            best = _newest([r for r in mine if r["strategy"] == HINDSIGHT])
+            if best is not None:
+                chosen[HINDSIGHT] = best
+        if all(name in chosen for name in GAIN_ORDER):
+            years.append(_gains_year(other, chosen, is_pitch=False, labels=labels))
     return {"ai": AI, "baseline": BASELINE, "years": years}
+
+
+def _flagged(records: Sequence[dict], year: int, names: Sequence[str]) -> dict:
+    """{strategy: the newest is_pitch run of `year`} (the pitch flag is per year)."""
+    out = {}
+    for name in names:
+        newest = _newest([r for r in records if r["is_pitch"] and r["year"] == year and r["strategy"] == name])
+        if newest is not None:
+            out[name] = newest
+    return out
+
+
+def gain_split(run: Mapping) -> tuple[str | None, float | None, float | None]:
+    """(real_until_utc, real_per_battery_usd, projected_per_battery_usd) of a slim record, in cents that add up to
+    its per-battery total. A run of a fully real year, or one stored before the split existed: (None, total, 0)."""
+    total = _money(run.get("per_battery_avg_usd"))
+    split = run.get("split") if isinstance(run.get("split"), Mapping) else {}
+    if total is None:
+        return None, None, None
+    if not split.get("real_until_utc") or split.get("real_per_battery_usd") is None:
+        return None, total, 0.0
+    real = _money(split["real_per_battery_usd"])
+    return split["real_until_utc"], real, round(total - real, 2)
 
 
 def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
@@ -218,7 +309,8 @@ def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
     best = runs.get(HINDSIGHT)
     best_pb = float(best["per_battery_avg_usd"]) if best else None
     main = runs.get(BASELINE) or runs.get(AI) or next(iter(runs.values()))
-    out: dict = {"year": int(year), "is_pitch": bool(is_pitch), "fleet_size": (main.get("fleet") or {}).get("size")}
+    out: dict = {"year": int(year), "is_pitch": bool(is_pitch), "fleet_size": (main.get("fleet") or {}).get("size"),
+                 "real_until_utc": next((u for u in (gain_split(r)[0] for r in runs.values()) if u), None)}
     if best_pb is not None:
         out["best_possible_per_battery_usd_year"] = _money(best_pb)
     # spikes are defined by prices, so their count is the year's, the same for every strategy (taken from any run
@@ -231,7 +323,10 @@ def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
     if ai is not None and base is not None:
         diff = float(ai["per_battery_avg_usd"]) - float(base["per_battery_avg_usd"])
         base_pb = float(base["per_battery_avg_usd"])
-        out["uplift"] = {"per_battery_usd_year": _money(diff),
+        uplift = _money(diff)
+        real = round(gain_split(ai)[1] - gain_split(base)[1], 2)
+        out["uplift"] = {"per_battery_usd_year": uplift, "real_per_battery_usd": real,
+                         "projected_per_battery_usd": round(uplift - real, 2),
                          "pct": round(diff / base_pb, 3) if base_pb > 0 else None,
                          "fleet_usd_year": _money(float(ai["fleet_total_usd"]) - float(base["fleet_total_usd"]))}
     return out
@@ -239,7 +334,9 @@ def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
 
 def _strategy_gains(name: str, run: dict, best_pb: float | None, labels: dict, *, spike_events: int | None = None) -> dict:
     per_battery = float(run["per_battery_avg_usd"])
+    _, real, projected = gain_split(run)
     out = {"label": labels.get(name) or run.get("label") or name, "per_battery_usd_year": _money(per_battery),
+           "real_per_battery_usd": real, "projected_per_battery_usd": projected,
            "fleet_usd_year": _money(run["fleet_total_usd"])}
     if best_pb:
         out["share_of_best"] = round(per_battery / best_pb, 3)

@@ -158,6 +158,14 @@ def rt_intervals(location: str, start: datetime, end: datetime) -> tuple[object,
                 os.environ["SERIES_BACKEND"] = old
 
 
+def price_source() -> str:
+    """Where src.data.series reads real prices: 'postgres' (a database is configured) or 'snapshot'. The name
+    src.data.years takes, so a year's real_until_utc comes from the very data the backtest replays."""
+    from src.data import series
+
+    return "postgres" if series.backend() == "postgres" else "snapshot"
+
+
 def feed_from_series(locations: Iterable[str], start: datetime, end: datetime):
     """PriceFeed over src.data.series RT prices. Returns (feed, backend name).
 
