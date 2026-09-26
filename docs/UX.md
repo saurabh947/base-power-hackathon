@@ -13,10 +13,12 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
    - "ERCOT" is first introduced as "ERCOT, the Texas grid operator".
    - Load zones are shown as cities: LZ_HOUSTON "Houston", LZ_NORTH "Dallas–Fort Worth", LZ_CPS "San Antonio", LZ_AEN "Austin". Names come from `GET /fleet/layout`.
 6. **Color has meaning, and color is never the only signal** (also use icon or label):
-   - **green** = batteries, money and primary actions (the map's dots: brighter green while selling, a ring while charging)
+   - **green** = selling, money and primary actions
+   - **blue** = charging
+   - **violet** = the AI forecast and its prediction
    - **grey** = waiting or offline
    - **blue** = neutral information and keyboard focus
-   - **red** only for failures and the Texas outline
+   - **red** = outages (offline or crashed batteries), failures and the Texas outline
 7. **Desktop-first**, with readable text at 1280px. Keyboard-accessible, visible focus and AA contrast. **One always-dark theme site-wide**, matching the live map: dark gray page, translucent dark panels, green primary actions. Red is only for failures and the Texas outline.
 8. **Honest labels.**
    - Replays say "Replaying real prices from May 16, 2025".
@@ -157,9 +159,12 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
   - The track is a mini price line for the run so far, with green bands where the fleet was selling and blue bands where it was buying, and small ▲/▼ markers at the highs and lows.
   - Dragging, or the ← → keys, shows the map and corners **as they were at that moment**, with a "Viewing 7:45 pm · Back to live" chip. The simulation keeps running.
   - Map dots for the past come from the frames this page has seen. Before the page was opened, the corners still work from history, and the map shows the city totals only.
-- **Availability drawer.**
-  - "Bring every battery back online" moves to the **top** of the panel.
-  - The "Find a battery" section is removed.
+- **Availability drawer** (opens on the LEFT, with a light backdrop, so the cities stay visible).
+  - "Bring every battery back online" is at the **top** of the panel.
+  - The "Find a battery" section is removed (superseding the earlier "Find a battery" line).
+- **Crash a controller:** a public button, or click a controller tile for a "Crash controller 7?" popover. A countdown shows until the next crash is allowed.
+- **Zoom:** the + / − buttons sit in the scope pill next to "All of Texas".
+- **Race (compact):** the map corner shows an "All online" row plus one line, "projected · Outages cost $X so far".
 - **Race.** When batteries or controllers went offline (`race.shows_potential`), a **third bar** appears: "All batteries online (projected)", from `race.potential`, together with the shortfall. So the race shows actual AI vs simple rule vs what the AI would have earned with everything online.
 - **Year.** The Start settings get **Year: 2025 / 2026** (no 2024). For 2026, prices are real until `real_until_utc`, then the AI's prediction.
   - The timeline shades the predicted part.

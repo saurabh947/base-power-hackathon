@@ -14,7 +14,9 @@ class PriceTick:
     - ts: tz-aware UTC start of the tick. ERCOT RT settlement point prices are
       native 15-minute; each interval is forward-filled to its own three ticks
       (ts, ts+5min, ts+10min) and never across a gap.
-    - price_usd_mwh: USD/MWh, finite, may be negative. Never invented.
+    - price_usd_mwh: USD/MWh, finite, may be negative. Real ERCOT prices, never invented,
+      with one labelled exception: after a year's real_until (2026), replay ticks carry the
+      AI's p50 prediction instead, and the API flags those ticks `predicted`.
     - demand_mw / fuel_mix: optional context; None when not ingested.
     """
     ts: datetime            # UTC, 5-minute grid

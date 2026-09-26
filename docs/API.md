@@ -78,7 +78,7 @@ Change it only through the integrator.
 | `unknown_worker` | worker_id outside 0–19 |
 | `unknown_battery` | No battery with that id |
 | `not_a_worker` | The pid is not a registered worker, so it is never killed |
-| `invalid_*` | A malformed field, e.g. `invalid_speed` |
+| `invalid_*` | A malformed field, e.g. `invalid_speed` or `invalid_year` (a preset from another year, or a year with no data) |
 | `simulator_restarting` | 503 from `/run/start` when the controllers aren't back within 15 s of a Reset. Carries `retry_after_s` and a `Retry-After` header, like a 429. |
 
 **`GET /settings` item shapes:**
@@ -87,7 +87,8 @@ Change it only through the integrator.
   - `{"year": 2025, "label": "2025", "description": "Real ERCOT prices for the whole year.", "real_until_utc": null}`
   - `{"year": 2026, "label": "2026", "description": "Real prices through Sep 20, then the AI's prediction.", "real_until_utc": "2026-09-21T05:00:00Z"}`
   - `real_until_utc` is the end of the last real interval.
-  - `GET /settings` adds `"years": [Year]`.
+  - `GET /settings` adds `"years": [Year]`. A year with no data loaded is left out of `years` and `presets`.
+  - After `real_until_utc`, the AI forecast strategy acts on hourly "virtual" forecasts sliced from its own long-range prediction, so its projected earnings there flatter it. These virtual forecasts emit no `forecast_issued` events, but `frame.forecast` still updates.
 - Strategy: `{"id": "bands", "label": "Simple rule", "description": "…"}`
 - Speed: `{"tps": 2, "label": "1 hour every 6 s"}`
 
@@ -203,6 +204,8 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 ```
 - `live_minus_race_usd` is the live fleet's `totals.revenue_usd` minus the race's. Positive means the live strategy is ahead.
 - `potential` is a second shadow fleet: the live strategy with every battery online and no controller crashes. `shortfall_usd` is `potential.revenue_usd` minus the live revenue, which is what outages cost.
+- `shortfall_usd` can be negative. That happens when an outage saved charge that later sold at a higher price.
+- `potential` can be `null` if that shadow fleet fails to build.
 - `shows_potential` turns true (and stays true for the run) once any battery was taken offline or any controller crashed. The UI shows the third bar only then.
 - `race` is `null` while idle, while a run is starting, and when there is nothing to race: a live simple rule with no forecasts in any city.
 - The after-spike `race_update` has severity `good` when the live strategy leads, and `info` otherwise.

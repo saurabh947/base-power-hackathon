@@ -4,19 +4,14 @@
 **Backend:** Cloud Run `fleet-sim`, project `appintellect`, us-east1.
 
 ## Once, before demo day
-1. Set your presenter passcode. Only you can crash controllers. Run this in a terminal. The passcode is never shown, and never saved in your shell history:
-   ```bash
-   read -rs "PASS?Presenter passcode: " && printf '%s' "$PASS" | gcloud secrets versions add fleet-sim-presenter-passcode --project=appintellect --data-file=- && unset PASS
-   ```
-   The running backend reads the new passcode within a few minutes. To be sure, redeploy with `make cloud-deploy`.
-2. Optional, for judging day only: keep the backend warm so nobody waits for it to wake up. This costs about $7/day; set it back to `0` afterwards.
+1. Optional, for judging day only: keep the backend warm so nobody waits for it to wake up. This costs about $7/day; set it back to `0` afterwards.
    ```bash
    gcloud run services update fleet-sim --project appintellect --region us-east1 --min-instances 1
    ```
 
 ## Two minutes before
 - Open the site; the first visit wakes the simulator.
-- Click **Presenter mode** (top right, next to "Show technical details") and enter your passcode. The **Crash a controller** button appears on the Live screen.
+- **Crash a controller** is open to everyone. It's on the Live screen's controls, or click any controller's tile. At most one crash every 2 s; **Reset** brings every controller back.
 - On the Start screen the defaults read: 20,000 home batteries · Dallas–Fort Worth, Houston, San Antonio and Austin · **The AI's best evening, May 30, 2025, from 6 pm** · 1 hour every 6 s · AI forecast (TimesFM-3) · 90% charged.
 
 ## The 3 minutes
@@ -31,8 +26,7 @@ The replay runs at 1 hour of market time every 6 seconds.
 | ~0:25 | ~9:45 pm | The feed reads "The AI is now $21,330 ahead of the simple rule." | "Same batteries, same prices, only the decisions differ: $38,900 vs $17,500 tonight." |
 | optional | | Click **Houston** on the map | "Every city has its own price, money and race. These seven controllers run Houston." |
 | 1:30 | | Open **Results** | "Over all of 2025 that's $191 per battery per year, $3.8M for this fleet." |
-| 1:50 | | Scroll to **What the AI adds** | "+$67 per battery per year, +54% over the simple rule: $1.35M more for the fleet. It gets 45% of the way to perfect hindsight, soaks up 5.7× more free or negative-priced power, and in 2024 it went into price spikes twice as charged." |
-| 2:30 | | Flip the switch to **2024 (check year)** | "2024 is a second full year to check it holds: +$158 per battery, +139%." |
+| 1:50 | | Scroll to **What the AI adds** | "+$67 per battery per year, +54% over the simple rule: $1.35M more for the fleet. It gets 45% of the way to perfect hindsight and soaks up 5.7× more free or negative-priced power." |
 
 - **Too fast?** Use **Pause**, or set the speed to *1 hour every 12 s*.
 - **Next run:** press **Reset**. That brings all 20 controllers back and every battery online.

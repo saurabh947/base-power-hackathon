@@ -452,3 +452,37 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   The midnight figures equal the backtest race table.
 - **Stop.** The cloud test: start a re-run → cancel returns 200 `cancelled` → a second cancel returns 409 `not_running` → the pitch results are unchanged.
 - **Tests:** 540 backend and 344 website tests passing. DEMO.md is rewritten for the new flow.
+
+## v2: public crashes, 2025/2026, the AI's 2026 prediction, new map (2026-09-26, the human's feedback)
+
+- **Presenter mode is gone**, with all its code (endpoint, passcode, header link, dialog, deploy mount). The older RUNLOG lines about a presenter passcode are superseded.
+  - Crashing a controller is public: the Live button or a controller tile's popover. It is rate-limited to one per 2 s and never leaves fewer than 2 healthy controllers.
+  - Reset still restarts every controller and brings every battery online.
+  - The Secret Manager secret `fleet-sim-presenter-passcode` is deleted once the new revision is live.
+- **Years.** The Start settings offer 2025 or 2026 (no 2024). Each year has a "From January 1" preset.
+- **2026 presets:**
+  - "Biggest evening spike of 2026": Apr 24, $1,052–1,232 in all four cities at 7:45 pm.
+  - "Where real prices end": the default for 2026, computed from `real_until`.
+- **2026 data.** Real ERCOT data through Sep 19, 2026 (`real_until_utc` = 2026-09-20T05:00Z). ERCOT's current-year annual file is republished weekly.
+  - The 2026 RT workbook's empty Oct–Dec sheets broke the parser. That is fixed, and the self-check now handles a partial year.
+- **The AI's 2026 prediction.** `python -m src.forecast.predict --year 2026` runs TimesFM-3 univariate from the cutoff to Dec 31, chaining 7-day chunks.
+  - The p10–p90 band is floored at the first week's band, because feeding back p50 collapses it.
+  - Replay after the cutoff uses p50; those ticks are flagged `predicted`, and a `prediction_started` event marks the switch.
+  - The AI acts on virtual hourly forecasts sliced from its own prediction, so projected earnings flatter it. That is labelled.
+  - Checked on 2025 (cut on Sep 20, compared with real Q4): the average level is within $1–8/MWh, but the band covers only 46–57% of real prices.
+- **Race third bar.** `race.potential` is the live strategy with every battery online and no crashes. It shows once an outage happens, with "Outages cost $X so far".
+- **Map v2:**
+  - green solid = selling, blue = charging, small gray = waiting, red ring = offline, red pulse = controller crashed
+  - outages are drawn where the batteries are
+  - one zoom level to the Texas Triangle
+  - a timeline scrubber in the top-left
+  - "Find a battery" removed, and "Bring every battery back online" at the top of the drawer
+- **Why the dots didn't turn red.**
+  - Colours were blended by battery count, so a crashed controller's share barely tinted a dot.
+  - Offline was drawn dim gray.
+  - The availability drawer covered East Texas.
+  - `battery_status` only updated on ticks, so nothing changed while paused.
+
+  All four are fixed.
+- **Results.** "What the AI adds" shows 2025 only, with three cards; the 2024 switch and the spike card are removed.
+- **Tests.** 590 backend (Redis + Postgres) and 408 website.
