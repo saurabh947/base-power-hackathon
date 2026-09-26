@@ -583,7 +583,6 @@ legend {
   border-left-width: 4px;
   border-radius: 10px;
   background: var(--panel-solid);
-  box-shadow: var(--panel-shadow);
   font-size: 15px;
 }
 
@@ -900,36 +899,22 @@ legend {
 
 /* ---- start screen ---------------------------------------------------------------- */
 
-/* The Start page fills the window below the header; a faint Texas sits behind its content. */
+/* One calm column, centred in the space between the header and the footer (vertically too, when it fits). */
 main.main-start {
   display: flex;
   flex-direction: column;
   padding: 0;
 }
 
-.start-stage {
-  position: relative;
-  isolation: isolate;
-  flex: 1 0 auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  overflow: hidden;
-}
-
-/* One column of content on the left; Texas and its four glowing cities to the right of it. */
 .start {
   width: 100%;
+  /* 760 px of content plus the page's side padding. */
+  max-width: 808px;
+  margin: auto;
   display: grid;
-  justify-items: start;
-  gap: 18px;
-  padding-top: 24px;
+  gap: 20px;
+  padding-top: 28px;
   padding-bottom: 48px;
-}
-
-.start > * {
-  width: 100%;
-  max-width: 760px;
 }
 
 .start-intro {
@@ -938,7 +923,7 @@ main.main-start {
 }
 
 .start h1 {
-  font-size: 42px;
+  font-size: 44px;
   font-weight: 800;
   letter-spacing: -0.028em;
   line-height: 1.08;
@@ -956,30 +941,6 @@ main.main-start {
   color: var(--text-muted);
   max-width: 42em;
   text-wrap: pretty;
-}
-
-/* Frosted glass: the Texas behind them shows through, blurred, as the map does behind its corners. */
-.start .panel,
-.start .notice,
-.start-facts li {
-  backdrop-filter: var(--panel-blur);
-  -webkit-backdrop-filter: var(--panel-blur);
-}
-
-.start .notice {
-  background: var(--panel);
-}
-
-.start .notice-waiting {
-  background: color-mix(in srgb, var(--hold-soft) 88%, transparent);
-}
-
-.start .notice-warn {
-  background: color-mix(in srgb, var(--warn-soft) 90%, transparent);
-}
-
-.start .notice-error {
-  background: color-mix(in srgb, var(--fail-soft) 90%, transparent);
 }
 
 .run-card {
@@ -1151,80 +1112,6 @@ main.main-start {
 .start-facts svg {
   flex: none;
   color: var(--accent);
-}
-
-/* The decorative Texas: the map's red outline, faint, with the four cities glowing green (aria-hidden). */
-.texas-backdrop {
-  position: absolute;
-  z-index: -1;
-  top: 0;
-  /* The same box as the content (.page), so Texas lines up with the column's right edge. */
-  left: max(0px, calc((100% - 1280px) / 2));
-  right: max(0px, calc((100% - 1280px) / 2));
-  /* The first screenful: opening the settings editor makes the page longer without moving Texas. */
-  height: min(100%, calc(100vh - 52px));
-  pointer-events: none;
-}
-
-.texas-backdrop svg {
-  position: absolute;
-  top: 3%;
-  right: 16px;
-  width: auto;
-  max-width: calc(100% - 32px);
-  height: 94%;
-  overflow: visible;
-}
-
-/* Stroke widths are in the SVG's kilometres: about 1.5 px for the line at 1280 × 800. */
-.tx-glow {
-  fill: none;
-  stroke: var(--map-outline);
-  stroke-width: 10;
-  stroke-linejoin: round;
-  opacity: 0.18;
-  animation: tx-fade-in 1.4s ease-out 1.2s both;
-}
-
-/* pathLength="1": a dash as long as the whole outline, slid into place to draw it once. */
-.tx-line {
-  fill: none;
-  stroke: var(--map-outline);
-  stroke-width: 2.6;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-  stroke-dasharray: 1;
-  opacity: 0.38;
-  animation: tx-draw 2.2s cubic-bezier(0.45, 0.05, 0.25, 1) both;
-}
-
-.tx-city {
-  animation: tx-fade-in 1.2s ease-out both;
-}
-
-/* The map's battery green (src/map/style.ts, PALETTE.charging). */
-.tx-dot {
-  fill: rgb(84, 204, 128);
-}
-
-@keyframes tx-draw {
-  from {
-    stroke-dashoffset: 1;
-  }
-}
-
-@keyframes tx-fade-in {
-  from {
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tx-glow,
-  .tx-line,
-  .tx-city {
-    animation: none;
-  }
 }
 
 /* ---- live screen, detailed layout ("Show charts") --------------------------------------------- */
@@ -2032,10 +1919,13 @@ dialog::backdrop {
 }
 
 .city-result-name {
+  min-width: 0;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+.city-result-name .tech {
+  display: block;
 }
 
 .city-result-bar {
@@ -2239,38 +2129,16 @@ dialog::backdrop {
 /* ---- responsive ------------------------------------------------------------------------ */
 
 @media (min-width: 1600px) {
-  .start.page {
-    max-width: 1440px;
-  }
-
-  .texas-backdrop {
-    left: max(0px, calc((100% - 1440px) / 2));
-    right: max(0px, calc((100% - 1440px) / 2));
-  }
-
-  .start > * {
-    max-width: 800px;
+  .start {
+    max-width: 848px;
   }
 
   .start h1 {
-    font-size: 52px;
+    font-size: 50px;
   }
 
   .lede {
     font-size: 20px;
-  }
-}
-
-/* No room beside the column: Texas moves behind it, centred. */
-@media (max-width: 1100px) {
-  .start {
-    justify-items: center;
-  }
-
-  .texas-backdrop svg {
-    right: auto;
-    left: 50%;
-    transform: translateX(-50%);
   }
 }
 
@@ -2305,9 +2173,16 @@ dialog::backdrop {
   .tile-name {
     font-size: 12.5px;
   }
+}
 
+/* Phones: the three results figures stack. */
+@media (max-width: 560px) {
   .result-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
+  }
+
+  .big-number {
+    font-size: 48px;
   }
 }
 

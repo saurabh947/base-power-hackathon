@@ -189,11 +189,6 @@ describe('the live map', () => {
     expect(rgbOf('code-down')).toEqual([...PALETTE.down]);
   });
 
-  it('gives the Start page the same red and green: the outline token and a battery green', () => {
-    expect(appCss).toMatch(/\.tx-line\s*\{[^}]*stroke:\s*var\(--map-outline\)/);
-    expect(appCss).toMatch(new RegExp(`\\.tx-dot\\s*\\{[^}]*fill:\\s*rgb\\(${PALETTE.charging.join(',\\s*')}\\)`));
-  });
-
   it('shows the selling green as the big results number', () => {
     expect(tokens.money.toLowerCase()).toBe(hex(PALETTE.selling));
   });

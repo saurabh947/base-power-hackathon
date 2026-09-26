@@ -12,7 +12,6 @@ import { navigate } from '../../lib/router.ts';
 import { useRetryAfter } from '../../lib/useCountdown.ts';
 import { checkBackend, useBackend } from '../../state/backend.ts';
 import { RunSettingsCard } from './RunSettingsCard.tsx';
-import { TexasBackdrop } from './TexasBackdrop.tsx';
 
 function draftFrom(d: Settings): EditableSettings {
   return { preset: d.preset, speed_tps: d.speed_tps, strategy: d.strategy, start_charge_level: d.start_charge_level };
@@ -95,108 +94,105 @@ export function StartScreen() {
   else if (waitS > 0) startLabel = `Try again in ${waitS} s`;
 
   return (
-    <div className="start-stage">
-      <TexasBackdrop />
-      <div className="page start">
-        <div className="start-intro">
-          <h1>
-            What if <span className="start-highlight">{fleet} home batteries</span> traded on the Texas power grid?
-          </h1>
-          <p className="lede">
-            Replay real 2025 electricity prices and watch a fleet of home batteries buy cheap, sell high, and keep
-            working when parts of the system crash.
-          </p>
-        </div>
-
-        {backend.phase === 'waking' ? (
-          <Notice kind="waiting" title="Waking up the simulator… (usually a few seconds)">
-            The simulator sleeps when nobody is using it. This page will be ready as soon as it answers.
-          </Notice>
-        ) : null}
-        {backend.phase === 'unreachable' && backend.error ? (
-          <ErrorNotice
-            error={backend.error}
-            actions={
-              <button type="button" className="btn btn-sm" onClick={() => void checkBackend()}>
-                Try again
-              </button>
-            }
-          />
-        ) : null}
-
-        {showRunning ? (
-          <section className="panel running-card" aria-label="Simulation status">
-            <p className="running-title">
-              <span className={`dot ${status === 'paused' ? 'dot-warn' : 'dot-ok dot-pulse'}`} aria-hidden="true" />
-              {status === 'paused' ? 'A simulation is running (paused right now).' : 'A simulation is running.'}
-            </p>
-            <p className="muted">
-              Everyone who visits watches the same shared fleet. Join in, or start over with your own settings.
-            </p>
-            <div className="start-actions">
-              <Link to="/live" className="btn btn-primary btn-lg">
-                Watch live
-                <Icon name="chevron" />
-              </Link>
-              <button type="button" className="btn" onClick={() => setStartOver(true)}>
-                Start over
-              </button>
-            </div>
-          </section>
-        ) : (
-          <>
-            <RunSettingsCard model={model} origin={origin} draft={draft} onDraft={onDraft} editing={editing} onEditing={setEditing} />
-            {runExists ? (
-              <Notice kind="warn" title="Starting over replaces the simulation that is running now, for everyone watching." />
-            ) : null}
-            {/* A rate-limit notice is only useful until its countdown ends. */}
-            {error && !(error.retryAfterS !== null && waitS === 0) ? <ErrorNotice error={error} /> : null}
-            <div className="start-actions">
-              <button
-                type="button"
-                className="btn btn-primary btn-lg btn-start"
-                onClick={() => void start()}
-                disabled={!ready || busy || waitS > 0}
-              >
-                <Icon name={busy ? 'spinner' : 'play'} className={busy ? 'spinner' : undefined} />
-                {startLabel}
-              </button>
-              {runExists ? (
-                <button type="button" className="btn btn-quiet" onClick={() => setStartOver(false)}>
-                  Cancel
-                </button>
-              ) : null}
-              {!ready && backend.phase !== 'unreachable' && backend.phase !== 'not_configured' ? (
-                <span className="muted small">Waiting for the simulator…</span>
-              ) : null}
-            </div>
-          </>
-        )}
-
-        <ul className="start-facts" aria-label="About this simulation">
-          <li>
-            <strong>
-              <Icon name="chart" size={16} />
-              Real prices
-            </strong>
-            Every price comes from ERCOT, the Texas grid operator, for 2025.
-          </li>
-          <li>
-            <strong>
-              <Icon name="check" size={16} />
-              Keeps working when parts crash
-            </strong>
-            20 controllers share the batteries. If one crashes, the others take over.
-          </li>
-          <li>
-            <strong>
-              <Icon name="info" size={16} />
-              Honest money
-            </strong>
-            Earnings are gross wholesale value, before retail fees and battery wear.
-          </li>
-        </ul>
+    <div className="page start">
+      <div className="start-intro">
+        <h1>
+          What if <span className="start-highlight">{fleet} home batteries</span> traded on the Texas power grid?
+        </h1>
+        <p className="lede">
+          Replay real 2025 electricity prices and watch a fleet of home batteries buy cheap, sell high, and keep working
+          when parts of the system crash.
+        </p>
       </div>
+
+      {backend.phase === 'waking' ? (
+        <Notice kind="waiting" title="Waking up the simulator… (usually a few seconds)">
+          The simulator sleeps when nobody is using it. This page will be ready as soon as it answers.
+        </Notice>
+      ) : null}
+      {backend.phase === 'unreachable' && backend.error ? (
+        <ErrorNotice
+          error={backend.error}
+          actions={
+            <button type="button" className="btn btn-sm" onClick={() => void checkBackend()}>
+              Try again
+            </button>
+          }
+        />
+      ) : null}
+
+      {showRunning ? (
+        <section className="panel running-card" aria-label="Simulation status">
+          <p className="running-title">
+            <span className={`dot ${status === 'paused' ? 'dot-warn' : 'dot-ok dot-pulse'}`} aria-hidden="true" />
+            {status === 'paused' ? 'A simulation is running (paused right now).' : 'A simulation is running.'}
+          </p>
+          <p className="muted">
+            Everyone who visits watches the same shared fleet. Join in, or start over with your own settings.
+          </p>
+          <div className="start-actions">
+            <Link to="/live" className="btn btn-primary btn-lg">
+              Watch live
+              <Icon name="chevron" />
+            </Link>
+            <button type="button" className="btn" onClick={() => setStartOver(true)}>
+              Start over
+            </button>
+          </div>
+        </section>
+      ) : (
+        <>
+          <RunSettingsCard model={model} origin={origin} draft={draft} onDraft={onDraft} editing={editing} onEditing={setEditing} />
+          {runExists ? (
+            <Notice kind="warn" title="Starting over replaces the simulation that is running now, for everyone watching." />
+          ) : null}
+          {/* A rate-limit notice is only useful until its countdown ends. */}
+          {error && !(error.retryAfterS !== null && waitS === 0) ? <ErrorNotice error={error} /> : null}
+          <div className="start-actions">
+            <button
+              type="button"
+              className="btn btn-primary btn-lg btn-start"
+              onClick={() => void start()}
+              disabled={!ready || busy || waitS > 0}
+            >
+              <Icon name={busy ? 'spinner' : 'play'} className={busy ? 'spinner' : undefined} />
+              {startLabel}
+            </button>
+            {runExists ? (
+              <button type="button" className="btn btn-quiet" onClick={() => setStartOver(false)}>
+                Cancel
+              </button>
+            ) : null}
+            {!ready && backend.phase !== 'unreachable' && backend.phase !== 'not_configured' ? (
+              <span className="muted small">Waiting for the simulator…</span>
+            ) : null}
+          </div>
+        </>
+      )}
+
+      <ul className="start-facts" aria-label="About this simulation">
+        <li>
+          <strong>
+            <Icon name="chart" size={16} />
+            Real prices
+          </strong>
+          Every price comes from ERCOT, the Texas grid operator, for 2025.
+        </li>
+        <li>
+          <strong>
+            <Icon name="check" size={16} />
+            Keeps working when parts crash
+          </strong>
+          20 controllers share the batteries. If one crashes, the others take over.
+        </li>
+        <li>
+          <strong>
+            <Icon name="info" size={16} />
+            Honest money
+          </strong>
+          Earnings are gross wholesale value, before retail fees and battery wear.
+        </li>
+      </ul>
     </div>
   );
 }
