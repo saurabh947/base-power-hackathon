@@ -387,3 +387,30 @@ make m0      # M0 walking skeleton; exits 1 unless Ledger.summary() reports nonz
   - WebSocket permessage-deflate is negotiated end to end through Cloud Run, so a 19 KB frame travels as about 1 KB.
 - **Tests:** 332 website tests, covering the projection against PROJ reference values, the outline, status-code unpacking, cell aggregation, city selection and the flash.
 - **Live:** https://fleet-sim.vercel.app (backend revision fleet-sim-00003).
+
+## What the AI adds, measured (2026-09-26, `python -m src.backtest.insights`)
+
+The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and fuel mix. The revenue matches the pitch backtest exactly.
+
+| Metric | Simple rule 2025 | **AI 2025** | Evening peak 2025 | Simple rule 2024 | **AI 2024** | Evening peak 2024 |
+|---|---|---|---|---|---|---|
+| $ per battery per year | 123.67 | **190.95** | 136.70 | 113.71 | **271.45** | 150.51 |
+| Average price sold at ($/MWh) | 77.63 | 66.58 | 56.03 | 64.17 | 76.76 | 55.35 |
+| Average price bought at ($/MWh) | 17.32 | 17.02 | 20.87 | 12.69 | 12.13 | 17.36 |
+| Energy sold (MWh) | 42,332 | 80,168 | 83,203 | 45,406 | 85,786 | 83,430 |
+| Surplus soaked up: MWh bought at ≤ $0 | 1,239 | **7,011** | 5,365 | 905 | **6,361** | 3,552 |
+| Delivered during spikes ≥ $1,000/MWh (MWh) | 27.9 | 25.2 | 36.9 | 76.3 | **610.9** | 298.4 |
+| Charge level when spikes began | 24% | 23% | 35% | 24% | 52% | 64% |
+| Average MW during ERCOT's top 1% load hours | 11.9 | 11.3 | 19.7 | 18.7 | 16.0 | 29.1 |
+| Renewable share of charging (grid average) | 45% (37%) | 49% | 51% | 40% (35%) | 42% | 45% |
+
+**Reading it honestly:**
+- **Money.** The AI wins clearly: +54% (2025) and +139% (2024) over the simple rule.
+  - It trades about twice as much energy.
+  - It buys cheap, especially surplus power at ≤ $0: 5–7× the simple rule.
+  - In spiky 2024 it also held charge for spikes (52% charged vs 24%) and delivered 8× the simple rule's energy above $1,000/MWh.
+- **Not an AI advantage in our data:**
+  - Support during ERCOT's peak-load hours: the fixed evening schedule does best.
+  - 2025's few, unforeseen spikes.
+  - Margin per MWh in 2025.
+  - It also cycles about 2× as much, and battery wear is not priced.
