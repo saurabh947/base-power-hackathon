@@ -11,9 +11,11 @@ sim:
 fleet:
   size: 20000               # 20 workers x 1,000 batteries
   workers: 20
-  locations:                # fleet split by ERCOT load zone (weights sum to 1)
-    LZ_HOUSTON: 0.5
-    LZ_NORTH: 0.5
+  locations:                # the Texas Triangle, by metro population (weights sum to 1)
+    LZ_HOUSTON: 0.35        # Houston            7,000 batteries (b00000-b06999)
+    LZ_NORTH: 0.40          # Dallas-Fort Worth  8,000 batteries (b07000-b14999)
+    LZ_CPS: 0.13            # San Antonio        2,600 batteries (b15000-b17599)
+    LZ_AEN: 0.12            # Austin             2,400 batteries (b17600-b19999)
 
 battery:                    # per-battery specs drawn uniformly, seeded (ranges confirmed by the human)
   power_kw: [5.0, 11.5]     # max grid-side charge/discharge rate
@@ -127,7 +129,7 @@ forecast:   # owner: forecasting (src/forecast, docs/notes/forecast.md)
   batch_size: 32            # series per forward pass
   threads: 0                # 0 = every CPU the container may use
   timezone: America/Chicago
-  locations: [LZ_HOUSTON, LZ_NORTH]
+  locations: [LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN]
   demand_location: ERCOT
   da_publish_local: "13:30" # DA prices for day D are posted about 13:30 CT on D-1
   cache_dir: data/cache/forecasts   # parquet output of `--out parquet` (gitignored)

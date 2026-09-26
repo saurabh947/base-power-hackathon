@@ -96,3 +96,32 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - Reached from a small, unobtrusive "Presenter" link in the footer. It asks for the passcode and calls `POST /presenter/check`.
 - The passcode is kept in `sessionStorage` only, and is sent as the `X-Presenter-Passcode` header.
 - Unlocks "Crash a controller". Crashing a controller is presenter-only; everything else is public.
+
+## Live map (the default Live view, added 2026-09-26, per the human's direction)
+- **Page.** Full screen with a **dark gray background**, e.g. `#25282c`. Always dark, whatever the site theme.
+- **Texas.** A bright red outline only (stroke, no fill), drawn as large as fits while staying pretty (keep a small margin). New Mexico, Oklahoma, Mexico and the Gulf leave the 4 screen corners free; the corners hold the controls and numbers.
+- **Batteries.** 20,000 green dots, from `GET /fleet/layout` positions (EPSG:3083 projection) and `battery_status` codes.
+  - Batteries close together merge into one larger dot, with area proportional to count, so the map stays readable at any size.
+  - Colours by code:
+
+    | Code | Look |
+    |---|---|
+    | 1 waiting | green, medium brightness |
+    | 2 selling | bright green with a soft glow |
+    | 3 charging | green with a thin light ring |
+    | 0 offline | dim gray |
+    | 4 controller down | the dot flashes dark, then returns to green when it's handed over |
+
+    That flash is the visible crash-recovery moment.
+  - `prefers-reduced-motion` disables glows and pulses.
+- **Cities.** Dallas–Fort Worth, Houston, San Antonio and Austin get labels next to their clusters. Clicking a city, or tabbing to it and pressing Enter, **selects** it:
+  - The corners switch to that city's numbers.
+  - Its dots are highlighted and the others dimmed a little.
+  - An "All of Texas" chip, clicking empty map or pressing Esc goes back to the whole fleet.
+- **Corners.** Compact translucent dark panels, with the plain language and units rules as elsewhere:
+  - **Top-left:** replay clock; the selected city's price right now, with its ¢/kWh translation and a mini price line; its forecast band if present.
+  - **Top-right:** money earned so far (city or fleet); power asked for vs delivered, as numbers plus a sparkline and an On target badge.
+  - **Bottom-left:** Pause/Resume, Speed, Reset, Take batteries offline, and the presenter-only Crash a controller.
+  - **Bottom-right:** 20 mini controller tiles (serving the selected city = highlighted, using `workers[].by_location`); batteries online/offline for the selection; the last 3 "What just happened" events.
+- **"Show charts."** A button that opens the existing detailed Live layout; nothing is lost.
+- **Honesty.** A small caption: "Battery locations are simulated inside real metro areas."

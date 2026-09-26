@@ -9,7 +9,12 @@ Change it only through the integrator.
 - **Signs:** power is **+ when selling to the grid** and **− when buying/charging**. Revenue is + when earned.
 - **Naming:** the API says **worker**, which is the spec's term. The UI labels a worker a **"controller"**.
   - `worker_id` is **0–19**. Humans always see **"Controller N" with N = worker_id + 1**, in UI tiles and event messages alike.
-  - Battery ids are fleet-wide: **`b00000`–`b19999`**. With the default 50/50 split, b00000–b09999 are in the Houston area and b10000–b19999 in Dallas–Fort Worth. `src.sim.fleet.assign_locations` is the one place that split is made.
+  - Battery ids are fleet-wide: **`b00000`–`b19999`**, split into contiguous blocks in config order by `src.sim.fleet.assign_locations` (the one place that split is made). The fleet is the **Texas Triangle**, weighted by metro population:
+    - Houston (`LZ_HOUSTON`): 7,000, b00000–b06999
+    - Dallas–Fort Worth (`LZ_NORTH`): 8,000, b07000–b14999
+    - San Antonio (`LZ_CPS`): 2,600, b15000–b17599
+    - Austin (`LZ_AEN`): 2,400, b17600–b19999
+  - City names shown to people come from `GET /fleet/layout` `cities[].name`.
 - **Amounts:** `top_days[].usd`, `per_location_usd` and `revenue_usd` are **fleet totals** (all batteries), not per battery. `error_pct` is already a percentage: `0.02` means 0.02%.
 - **CORS:** origins come from env `CORS_ORIGINS` (comma-separated) plus a regex for `https://*.vercel.app` and `http://localhost:5173`. Allowed request headers: `Content-Type` and `X-Presenter-Passcode`. Exposed response header: `Retry-After`.
 - **Errors:** always `{"error": "<code>", "message": "<plain-language sentence>"}` with a 4xx/5xx status. A 429 also carries `retry_after_s` in the body and a `Retry-After` header.
@@ -26,7 +31,7 @@ Change it only through the integrator.
   "fleet_size": 20000,
   "power_kw_range": [5.0, 11.5],
   "capacity_kwh_range": [10.0, 20.0],
-  "locations": {"LZ_HOUSTON": 0.5, "LZ_NORTH": 0.5}
+  "locations": {"LZ_HOUSTON": 0.35, "LZ_NORTH": 0.40, "LZ_CPS": 0.13, "LZ_AEN": 0.12}
 }
 ```
 - `speed_tps` is 5-minute ticks per wall-clock second. Allowed values: 1, 2, 5, 10.
@@ -45,7 +50,8 @@ Change it only through the integrator.
 | `POST /run/speed` | anyone | `{"speed_tps": 5}` | `{"speed_tps": 5}`. The next snapshot/frame `speed_tps` **and** `settings.speed_tps` both show the new speed. |
 | `POST /run/reset` | anyone | – | `{"status": "idle"}`. Stops the run, restarts all 20 workers (**including killed ones**) and brings every battery back online. |
 | `POST /availability` | anyone | see below | `{"applied_from_tick_utc": "…", "affected": 6000, "available": 14000, "total": 20000}` |
-| `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
+| `GET /batteries/{battery_id}` | anyone | – | `{"battery_id", "location", "city", "lonlat", "worker_id", "capacity_kwh", "power_kw", "charge_level", "power_kw_now", "available"}` |
+| `GET /fleet/layout` | anyone | – | Layout (below): where every battery sits, for the map. It is static per fleet, so cache it by `version`. |
 | `POST /presenter/check` | anyone | header `X-Presenter-Passcode` | `200 {"ok": true}` or `403` |
 | `POST /chaos/kill` | **presenter only** | header `X-Presenter-Passcode`; optional `?worker_id=7` (default: a random healthy worker) | `200 {"worker_id": 7, "pid": 1234, "killed_at_utc": "…"}`. See the error codes below. |
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
@@ -98,11 +104,12 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 ```json
 {"type": "snapshot", "run_id": "…", "status": "running", "sim_time_utc": "…", "speed_tps": 2, "settings": Settings,
  "history": [Tick], "totals": Totals, "workers": [Worker], "failed_commands": FailedCommands,
- "availability": Availability, "events": [Event], "forecast": {"LZ_HOUSTON": Forecast, "LZ_NORTH": Forecast}}
+ "availability": Availability, "events": [Event], "forecast": {"<location>": Forecast},
+ "battery_status": "<base64>"}
 
 {"type": "frame", "run_id": "…", "status": "running", "sim_time_utc": "…", "speed_tps": 2,
  "ticks": [Tick], "totals": Totals, "workers": [Worker], "failed_commands": FailedCommands,
- "availability": Availability, "events": [Event], "forecast": {…}}
+ "availability": Availability, "events": [Event], "forecast": {…}, "battery_status": "<base64>"}
 ```
 - `snapshot.history` holds the last ≤ 2,000 ticks of the current run.
 - With no run, `snapshot.settings` is `null` and `run_id` is `null`, and `history` is empty.
@@ -130,12 +137,14 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 
 **Totals**
 ```json
-{"revenue_usd": 1234.5, "sold_kwh": 0, "bought_kwh": 0, "ticks": 123}
+{"revenue_usd": 1234.5, "sold_kwh": 0, "bought_kwh": 0, "ticks": 123,
+ "by_location": {"LZ_HOUSTON": {"revenue_usd": 0, "sold_kwh": 0, "bought_kwh": 0}}}
 ```
 
 **Worker**
 ```json
-{"worker_id": 7, "status": "healthy", "pid": 1234, "batteries": 1000, "last_tick_utc": "…", "adopted_from": [3]}
+{"worker_id": 7, "status": "healthy", "pid": 1234, "batteries": 1000, "last_tick_utc": "…", "adopted_from": [3],
+ "by_location": {"LZ_NORTH": 1000}}
 ```
 `status` is `starting`, `healthy`, `suspect` or `dead`.
 
@@ -152,6 +161,31 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
  "offline_workers": [7]}
 ```
 `offline_workers` lists workers whose batteries were set offline via `scope=worker`.
+
+**battery_status** (in `snapshot` and every `frame`): the state of every battery at the latest tick.
+- Format: base64 of packed 4-bit codes. Battery *i* (`b` + zero-padded *i*) is in byte *i*/2 (integer division): the low nibble for even *i*, the high nibble for odd *i*. 20,000 batteries take 10,000 bytes.
+- Codes:
+
+  | Code | State |
+  |---|---|
+  | 0 | offline (taken offline by a visitor) |
+  | 1 | waiting (online, 0 kW) |
+  | 2 | selling |
+  | 3 | charging |
+  | 4 | controller down: its controller is suspect or dead, and the battery hasn't been handed over yet |
+
+- With no run, every battery is 1 (online batteries) or 0 (offline).
+
+**Layout** (`GET /fleet/layout`)
+```json
+{"version": "…", "fleet_size": 20000,
+ "cities": [{"location": "LZ_NORTH", "name": "Dallas–Fort Worth", "short": "DFW", "batteries": 8000,
+             "first_battery": 7000, "center_lonlat": [-96.97, 32.82]}],
+ "positions": "<base64>"}
+```
+- `positions` is a little-endian Int16Array `[lon0, lat0, lon1, lat1, …]`, one pair per battery in id order. `lon = -100 + v/1000` and `lat = 31 + v/1000`, so the resolution is about 100 m.
+- Positions are simulated: they are seeded, and inside real metro areas. There are no real addresses.
+- The map projects lon/lat with Texas Centric Albers Equal Area (EPSG:3083: standard parallels 27.5°N and 35°N, origin 18°N, 100°W). The web bundles the Texas outline in the same projection.
 
 **Event**
 ```json
