@@ -134,6 +134,20 @@ describe('LiveConnection', () => {
     conn.stop();
   });
 
+  it('gives up on a handshake that never completes and counts it as a failure', () => {
+    const { conn, sockets, last } = setup({ connectTimeoutMs: 15_000, failuresBeforePolling: 1 });
+    conn.start();
+    const stuck = last();
+    vi.advanceTimersByTime(14_999);
+    expect(stuck.closed).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(stuck.closed).toBe(true);
+    expect(conn.isPolling).toBe(true);
+    expect(conn.state.lastError).toBe('timed out while connecting');
+    expect(sockets).toHaveLength(1);
+    conn.stop();
+  });
+
   it('closes a quiet socket and reconnects (watchdog)', () => {
     const { conn, sockets, last } = setup({ staleAfterMs: 10_000 });
     conn.start();

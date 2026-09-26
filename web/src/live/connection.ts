@@ -75,6 +75,8 @@ export interface LiveConnectionOptions {
   socketRetryWhilePollingMs?: number;
   /** Close a socket that has sent nothing for this long. */
   staleAfterMs?: number;
+  /** Give up on a socket that has not opened after this long (counts as a failed attempt). */
+  connectTimeoutMs?: number;
 }
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -110,6 +112,7 @@ export class LiveConnection {
   private readonly pollIntervalMs: number;
   private readonly socketRetryWhilePollingMs: number;
   private readonly staleAfterMs: number;
+  private readonly connectTimeoutMs: number;
 
   private running = false;
   private socket: SocketLike | null = null;
@@ -138,6 +141,7 @@ export class LiveConnection {
     this.pollIntervalMs = options.pollIntervalMs ?? 2_000;
     this.socketRetryWhilePollingMs = options.socketRetryWhilePollingMs ?? 30_000;
     this.staleAfterMs = options.staleAfterMs ?? 10_000;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000;
   }
 
   start(): void {
@@ -220,6 +224,14 @@ export class LiveConnection {
     };
     socket.onclose = (ev) => end(ev && ev.code ? `connection closed (code ${ev.code})` : 'connection closed');
     socket.onerror = () => end('connection error');
+
+    // A handshake that never completes (some proxies) must not leave us waiting forever.
+    // Shares the watchdog timer: onopen re-arms it as the "quiet socket" watchdog.
+    this.clearStale();
+    this.staleTimer = setTimeout(() => {
+      this.staleTimer = null;
+      if (this.socket === socket && !this.socketOpen) end('timed out while connecting');
+    }, this.connectTimeoutMs);
   }
 
   private handleEnd(socket: SocketLike | null, reason: string): void {

@@ -30,5 +30,3 @@ export const API_BASE: string | null = resolveApiBase(
   origin,
   import.meta.env.DEV ? origin + MOCK_PATH : null,
 );
-
-export const USING_DEV_MOCK: boolean = import.meta.env.DEV && !import.meta.env.VITE_API_BASE_URL?.trim();

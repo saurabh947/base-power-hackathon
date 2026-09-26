@@ -38,7 +38,8 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Memory caps**: 2,000 ticks (same as `snapshot.history`), 50 events, 4 toasts.
 - **Live connection**: opened while the Live screen is mounted, closed 30 s after leaving. Backoff 0.5 s → 15 s
   with ±25% jitter; a connection that lived ≥ 10 s and closes (Cloud Run's 60-minute limit) reconnects after
-  ~0.5 s; quiet sockets (10 s without a message) are closed by a watchdog; after 3 failed WebSocket attempts it
+  ~0.5 s; quiet sockets (10 s without a message) are closed by a watchdog and handshakes time out after 15 s
+  (a slow Cloud Run cold start can therefore reach polling first, which is fine); after 3 failed WebSocket attempts it
   polls `GET /state` every 2 s and retries the WebSocket every 30 s. A frame with an unknown `run_id` triggers a
   `GET /state` resync.
 - **Estimates used for translations** (always worded "about"): a typical Texas home averages about 1.5 kW

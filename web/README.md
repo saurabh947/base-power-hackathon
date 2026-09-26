@@ -114,8 +114,9 @@ mock/           simulated API for dev and tests only (never in dist/)
   `setData`. History is capped at 2,000 ticks and events at 50.
 - **Live connection**: reconnects with exponential backoff and jitter (Cloud Run closes WebSockets after 60
   minutes, so a long-lived connection that closes comes back within about half a second). A watchdog closes a
-  socket that is quiet for 10 s. After three failed WebSocket attempts it polls `GET /state` every 2 s and keeps
-  retrying the WebSocket every 30 s.
+  socket that is quiet for 10 s, and a handshake that has not finished after 15 s counts as a failed attempt.
+  After three failed WebSocket attempts it polls `GET /state` every 2 s and keeps retrying the WebSocket every
+  30 s.
 - **Accessibility**: keyboard-only use works throughout (skip link, native dialogs, radio groups, a real
   switch); visible focus rings; AA contrast in light and dark (tested); status never shown by color alone
   (icons and words next to every color); charts have text read-outs above them.
