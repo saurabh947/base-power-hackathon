@@ -414,3 +414,19 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   - 2025's few, unforeseen spikes.
   - Margin per MWh in 2025.
   - It also cycles about 2× as much, and battery wear is not priced.
+
+## Website: AI gains, live race, cleanup (2026-09-26)
+
+- **Theme.** One always-dark theme site-wide, matching the live map. Start has no map, per the human.
+- **Results, "What the AI adds."**
+  - A headline uplift, computed from `/results/ai-gains`.
+  - Four cards: Earns more / Gets closer to perfect / Soaks up surplus power / Ready for spikes. The spike card always shows 2024.
+  - A 2025 (headline) / 2024 (check) switch. No limitations line, per the human.
+- **Live race.** The money corner shows "AI forecast ahead by $X" against a simple-rule shadow fleet. It is per city when one is selected, and `race_update` events have a flag icon.
+- **Cleanup, per the human:**
+  - The "Prices are real data…simulated" sentence and the footer are gone from every page.
+  - The "Presenter mode" link is in the header, and its dialog says "Enter a passcode to enter presenter mode".
+  - Start's three boxes are gone.
+  - Live's bottom-left presenter link is gone.
+  - Results' "Re-run the full year" has a Stop button, enabled only while a re-run runs.
+- **Tests.** 344 website tests.
