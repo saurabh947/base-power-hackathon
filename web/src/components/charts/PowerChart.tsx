@@ -7,7 +7,7 @@ import uPlot from 'uplot';
 import { liveStore } from '../../live/liveStore.ts';
 import { fmtNumber, fmtPowerFlow, fmtTimeOfDay } from '../../lib/format.ts';
 import { buildPowerModel, crashMarkers, type WindowKey } from './model.ts';
-import { marketTzDate, observeWidth, pxRatio, readChartTheme, timeAxis, useColorScheme } from './theme.ts';
+import { marketTzDate, observeWidth, pxRatio, readChartTheme, timeAxis } from './theme.ts';
 import { emptyXWindow, liveXWindow } from './window.ts';
 
 const HEIGHT = 220;
@@ -16,14 +16,13 @@ export function PowerChart({ windowKey }: { windowKey: WindowKey }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
-  const scheme = useColorScheme();
 
   useEffect(() => {
     const host = hostRef.current;
     const tip = tipRef.current;
     const empty = emptyRef.current;
     if (!host || !tip || !empty) return;
-    const theme = readChartTheme(scheme);
+    const theme = readChartTheme();
     const r = pxRatio();
 
     let state = liveStore.get();
@@ -187,7 +186,7 @@ export function PowerChart({ windowKey }: { windowKey: WindowKey }) {
       host.removeEventListener('mouseleave', hideTip);
       u.destroy();
     };
-  }, [windowKey, scheme]);
+  }, [windowKey]);
 
   return (
     <div

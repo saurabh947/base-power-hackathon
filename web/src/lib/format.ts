@@ -136,12 +136,15 @@ export function fmtUsd(n: number, decimals?: number): string {
   return withMinus(usdFormat(d).format(n));
 }
 
-/** "$3.2 million", "$1.25 billion"; plain dollars below a million. */
-export function fmtUsdLarge(n: number): string {
+/**
+ * "$3.2 million", "$1.25 billion"; plain dollars below a million. `millionDecimals` tells close sums apart,
+ * e.g. "$1.18 million" and "$1.24 million" in a list where both would read "$1.2 million".
+ */
+export function fmtUsdLarge(n: number, millionDecimals = 1): string {
   if (!finite(n)) return '–';
   const abs = Math.abs(n);
   if (abs >= 1e9) return `${fmtUsd(n / 1e9, 2)} billion`;
-  if (abs >= 1e6) return `${fmtUsd(n / 1e6, 1)} million`;
+  if (abs >= 1e6) return `${fmtUsd(n / 1e6, millionDecimals)} million`;
   return fmtUsd(n, 0);
 }
 

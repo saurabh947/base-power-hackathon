@@ -1,81 +1,87 @@
+import { useId } from 'react';
 import type { Results, StrategyResult } from '../../api/types.ts';
 import { HowItWorks, Panel } from '../../components/Panel.tsx';
 import { TechBlock, TechOnly, Term } from '../../components/Tech.tsx';
-import {
-  areaName,
-  fmtCount,
-  fmtLocalDate,
-  fmtNumber,
-  fmtUsd,
-  fmtUsdLarge,
-  strategyName,
-  strategyTechName,
-} from '../../lib/format.ts';
+import { fmtCount, fmtLocalDate, fmtNumber, fmtUsd, fmtUsdLarge, strategyTechName } from '../../lib/format.ts';
+import { cityRows, comparisonRows, strategyLabel } from './model.ts';
 
-const ORDER = ['bands', 'forecast', 'peak'];
-
-function labelOf(s: StrategyResult): string {
-  return s.label || strategyName(s.strategy);
-}
-
-function rank(s: StrategyResult): number {
-  const i = ORDER.indexOf(s.strategy);
-  return i === -1 ? ORDER.length : i;
-}
-
-function sortStrategies(list: StrategyResult[]): StrategyResult[] {
-  return list.toSorted((a, b) => rank(a) - rank(b));
-}
+const pct = (share: number) => `${Math.round(share * 1000) / 10}%`;
 
 export function BigNumber({ results, headline }: { results: Results; headline: StrategyResult }) {
   const cyclesPerDay = headline.cycles_per_year / 365;
-  const areas = Object.entries(headline.per_location_usd ?? {});
+  const cities = cityRows(headline.per_location_usd);
+  const byCityId = useId();
   return (
     <Panel
       className="span-7"
       title="What one battery earns in a year"
-      what={`The average for one home battery over all of ${results.year}, using the ${labelOf(headline)} method on real prices.`}
+      what={`The average for one home battery over all of ${results.year}, using the ${strategyLabel(headline)} method on real prices.`}
     >
-      <div className="big-number">
+      <p className="big-number num">
         {fmtUsd(headline.per_battery_usd_year, 0)}
         <small>per battery per year</small>
-      </div>
+      </p>
       <p className="big-sub">
         {fmtUsdLarge(headline.fleet_usd_year)} a year for the {fmtCount(results.fleet_size)}-battery fleet
       </p>
-      <div className="fine-print">
-        <span>
-          {fmtUsd(headline.usd_per_kwh_year, 2)} per kWh of storage per year <TechOnly>($/kWh-year)</TechOnly>
-          {' · '}
-          {fmtUsd(headline.usd_per_kw_year, 2)} per kW of power per year <TechOnly>($/kW-year)</TechOnly>
-        </span>
-        <span>
-          {fmtNumber(headline.cycles_per_year, 0)} charge cycles per year
-          {cyclesPerDay > 0 ? ` (about ${fmtNumber(cyclesPerDay, 1)} full charge-and-sell a day)` : ''}
-        </span>
-        {areas.length ? (
-          <span>
-            By area:{' '}
-            {areas.map(([loc, usd], i) => (
-              <span key={loc}>
-                {i ? ' · ' : ''}
-                {areaName(loc)} {fmtUsdLarge(usd)}
-              </span>
-            ))}{' '}
-            a year for the fleet
+
+      <ul className="result-stats">
+        <li className="result-stat">
+          <strong className="stat-value">{fmtUsd(headline.usd_per_kwh_year, 2)}</strong>{' '}
+          <span className="stat-label">
+            per kWh of storage per year <TechOnly>($/kWh-year)</TechOnly>
           </span>
-        ) : null}
-        <span>
-          The fleet in total: {fmtNumber(results.fleet_power_mw, 0)} MW of power and {fmtNumber(results.fleet_energy_mwh, 0)}{' '}
-          MWh of storage.
-        </span>
-      </div>
+        </li>
+        <li className="result-stat">
+          <strong className="stat-value">{fmtUsd(headline.usd_per_kw_year, 2)}</strong>{' '}
+          <span className="stat-label">
+            per kW of power per year <TechOnly>($/kW-year)</TechOnly>
+          </span>
+        </li>
+        <li className="result-stat">
+          <strong className="stat-value">{fmtNumber(headline.cycles_per_year, 0)}</strong>{' '}
+          <span className="stat-label">
+            charge cycles per year
+            {cyclesPerDay > 0 ? <span className="stat-note"> (about {fmtNumber(cyclesPerDay, 1)} full charge-and-sell a day)</span> : null}
+          </span>
+        </li>
+      </ul>
+
+      {cities.length ? (
+        <section aria-labelledby={byCityId}>
+          <h3 className="result-section-label" id={byCityId}>
+            By city <span className="label-note">what each city's batteries earn in a year</span>
+          </h3>
+          <ul className="city-results">
+            {cities.map((c) => (
+              <li key={c.location} className="city-result">
+                <span className="city-result-name">
+                  {c.name}
+                  <TechOnly>
+                    <span className="tech"> {c.location}</span>
+                  </TechOnly>
+                </span>
+                <span className="city-result-bar" aria-hidden="true">
+                  <span style={{ width: pct(c.share) }} />
+                </span>
+                <span className="city-result-value">{fmtUsdLarge(c.usd, 2)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <p className="fleet-size-note">
+        The fleet in total: {fmtNumber(results.fleet_power_mw, 0)} MW of power and {fmtNumber(results.fleet_energy_mwh, 0)}{' '}
+        MWh of storage.
+      </p>
       <TechBlock
         rows={[
           ['strategy', `${headline.strategy} (${strategyTechName(headline.strategy)})`],
           ['run_id', headline.run_id],
           ['per_battery_usd_year', fmtNumber(headline.per_battery_usd_year, 2)],
           ['fleet_usd_year', fmtNumber(headline.fleet_usd_year, 0)],
+          ['per_location_usd', JSON.stringify(headline.per_location_usd ?? {})],
           ['generated_utc', results.generated_utc],
         ]}
       />
@@ -83,24 +89,8 @@ export function BigNumber({ results, headline }: { results: Results; headline: S
   );
 }
 
-export function ComparisonBars({ results }: { results: Results }) {
-  const rows = sortStrategies(results.strategies).map((s) => ({
-    key: s.strategy,
-    label: labelOf(s),
-    value: s.per_battery_usd_year,
-    headline: s.is_headline,
-    ceiling: false,
-  }));
-  if (results.ceiling) {
-    rows.push({
-      key: 'ceiling',
-      label: results.ceiling.label || 'Best possible (perfect hindsight)',
-      value: results.ceiling.per_battery_usd_year,
-      headline: false,
-      ceiling: true,
-    });
-  }
-  const max = Math.max(1, ...rows.map((r) => r.value));
+export function ComparisonBars({ results, headline }: { results: Results; headline: StrategyResult }) {
+  const rows = comparisonRows(results, headline);
   return (
     <Panel
       className="span-5"
@@ -119,22 +109,20 @@ export function ComparisonBars({ results }: { results: Results }) {
           <li key={r.key} className={`bar-row${r.headline ? ' headline' : ''}${r.ceiling ? ' ceiling' : ''}`}>
             <span className="bar-label">
               <strong>{r.label}</strong>
-              {r.headline ? <span className="muted small">The headline number</span> : null}
-              {r.ceiling ? <span className="muted small">Hindsight: a ceiling, not a goal</span> : null}
+              {r.headline ? <span className="bar-note">The headline number</span> : null}
+              {r.ceiling ? <span className="bar-note">Hindsight: a ceiling, not a goal</span> : null}
               <TechOnly>
                 <span className="tech">{r.key}</span>
               </TechOnly>
             </span>
+            <span className="bar-value num">{fmtUsd(r.value, 0)}</span>
             <span className="bar-track" aria-hidden="true">
-              <span className="bar-fill" style={{ width: `${Math.max(0, (r.value / max) * 100)}%`, display: 'block' }} />
+              <span className="bar-fill" style={{ width: pct(r.share) }} />
             </span>
-            <span className="bar-value">{fmtUsd(r.value, 0)}</span>
           </li>
         ))}
       </ul>
-      <p className="muted small" style={{ marginTop: 10 }}>
-        Dollars per battery per year, {results.year}.
-      </p>
+      <p className="bars-note">Dollars per battery per year, {results.year}.</p>
     </Panel>
   );
 }
@@ -146,21 +134,18 @@ export function TopDays({ results, headline }: { results: Results; headline: Str
     <Panel
       className="span-7"
       title="Top 10 days by earnings"
-      what={`The days in ${results.year} when the ${labelOf(headline)} method earned the most for the whole fleet. Price spikes make a few days count a lot.`}
+      what={`The days in ${results.year} when the ${strategyLabel(headline)} method earned the most for the whole fleet. Price spikes make a few days count a lot.`}
     >
       {days.length ? (
         <ol className="days">
           {days.map((d, i) => (
             <li key={d.date_local} className="day-row">
               <span className="day-rank">{i + 1}</span>
-              <span>{fmtLocalDate(d.date_local, { weekday: true })}</span>
-              <span className="day-bar" style={{ width: `${Math.max(2, (d.usd / max) * 100)}%` }} aria-hidden="true" />
-              <span className="bar-value">
+              <span className="day-date">{fmtLocalDate(d.date_local, { weekday: true })}</span>
+              <span className="day-bar" style={{ width: pct(Math.max(0.02, d.usd / max)) }} aria-hidden="true" />
+              <span className="day-value">
                 {fmtUsdLarge(d.usd)}
-                <span className="muted small">
-                  {' '}
-                  ({fmtUsd(d.usd / Math.max(1, results.fleet_size), 2)} per battery)
-                </span>
+                <span className="muted small"> ({fmtUsd(d.usd / Math.max(1, results.fleet_size), 2)} per battery)</span>
               </span>
             </li>
           ))}

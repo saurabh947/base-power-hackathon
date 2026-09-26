@@ -5,11 +5,17 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 
 ## What was built
 
-- **Start** (`/`): headline and subhead from docs/UX.md; the run-settings card above the Start button (Where:
-  "Dallas–Fort Worth, Houston, San Antonio, and Austin", the Texas Triangle); a "Change settings" editor for exactly
-  preset, speed, decision method and starting charge; "Waking up the simulator… (usually a few seconds)" while
-  `GET /health` is slow or failing; "A simulation is running. Watch live" plus "Start over" when `GET /health`
-  reports a run.
+- **One look for the whole site** (2026-09-26, the human: "change the results and the start page to match the theme
+  of the live page"): every page, the header and the footer use the live map's theme, always dark whatever the
+  browser's colour preference: the dark gray page (#25282c), compact translucent dark panels with light text and
+  small spaced-capital titles like the map's corners, green for the primary action (Start, Watch live, Resume) and
+  links, red only for failures and the map's Texas outline.
+- **Start** (`/`): headline and subhead from docs/UX.md, with "20,000 home batteries" in a selling battery's green;
+  the run-settings card above the big green "Start the simulation" button (Where: "Dallas–Fort Worth, Houston, San
+  Antonio, and Austin", the Texas Triangle); a "Change settings" editor for exactly preset, speed, decision method
+  and starting charge; "Waking up the simulator… (usually a few seconds)" while `GET /health` is slow or failing;
+  "A simulation is running. Watch live" plus "Start over" when `GET /health` reports a run. One calm column,
+  centred between the header and the footer; no map (the map is the Live page's).
 - **Live** (`/live`) opens on the **live map** (docs/UX.md, "Live map"):
   - a full-window, always-dark gray page (#25282c) with Texas as a bright red outline and the 20,000 batteries as
     green dots from `GET /fleet/layout` and `battery_status`;
@@ -24,11 +30,14 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
     events;
   - the caption "Battery locations are simulated inside real metro areas.";
   - "Show charts" switches to the detailed layout from before (top bar, price chart with a 4-city toggle that
-    follows the map's selection, power chart, controllers, money, events, the availability drawer); "Show map"
-    switches back. The choice is kept for the tab.
-- **Results** (`/results`): per-battery headline, fleet total, $/kWh-year, $/kW-year, cycles, per-area split;
-  comparison bars including "Best possible (perfect hindsight)"; top 10 days; "How we got this number"; "Re-run the
-  full year" with progress.
+    follows the map's selection, power chart, controllers, money, events, the availability drawer), in the same
+    dark theme; "Show map" switches back. The choice is kept for the tab.
+- **Results** (`/results`): the per-battery headline as a big green number, the fleet total, a row of three
+  figures ($/kWh-year, $/kW-year, cycles a year); "By city" rows from `per_location_usd` (biggest first, a bar
+  each); comparison bars (the headline method, the AI forecast, green; the other methods gray; "Best possible
+  (perfect hindsight)" hatched); top 10 days; "How we got this number"; "Re-run the full year" with progress. A
+  "What the AI adds" section can go in as its own row between the headline row and the details (see
+  `ResultsScreen.tsx`).
 - **Presenter mode**: "Presenter" link (footer, or the map's controls corner) → passcode dialog →
   `POST /presenter/check`; passcode kept in sessionStorage only and sent as `X-Presenter-Passcode`.
 - **Language**: every panel has a one-line "What is this?" and an optional "How it works"; "Show technical details"
@@ -80,9 +89,30 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
   per frame (with the layout's city blocks) into codes and per-city counts shared by the canvas and the corners.
   The layout is fetched once while a map is on screen and revalidated with its ETag; a fleet-size change refetches
   it. With no `battery_status` at all (an older backend) each city's dots show its current action.
-- **Always dark**: while the map is shown, `<html data-theme="map">` redefines every color token with neutral grays
-  (so the header, dialogs, toasts and drawer match) and the footer is hidden; its Presenter link moves into the
-  controls corner. The theme is AA-checked like the light and dark ones. Toasts sit bottom-centre on the map.
+- **One theme, always dark**: `tokens.css` has a single `:root` set of tokens, the live map's, with `color-scheme:
+  dark` (and `<meta name="color-scheme" content="dark">`, so form controls and the first paint are dark too); the
+  former light, dark and `data-theme="map"` variants are gone, and the charts no longer rebuild on a
+  prefers-color-scheme change. Panels everywhere use the map corners' `--panel` (translucent), `--panel-border`,
+  12 px radius and shadow; their titles are small spaced capitals like the corners' labels. The header and the
+  footer span the window on every page, as on the map, so nothing jumps when moving between pages. On the map the
+  footer is still hidden (its Presenter link is in the controls corner) and toasts sit bottom-centre.
+- **Colours with a job**: green (`--accent`, the map's battery green) is the primary action and links, with dark
+  text on it; red stays for failures and the Texas outline (never the main action); neutral news (info notices and
+  events) is blue, so it never reads as "good"; the keyboard focus ring is blue too, distinct from the green
+  "selected" states. The big results number and "20,000 home batteries" on Start use a selling dot's bright green
+  (`--money`, tested to equal `PALETTE.selling`). Every text pair, the primary button, the focus ring, the bars
+  against their track and the map's dots and outline are AA-checked in `src/styles/contrast.test.ts`, which also
+  checks that no colour-scheme or data-theme variant comes back and that every token the stylesheets use exists.
+- **Start without a map**: a faint Texas outline with glowing cities was tried behind the Start content and removed
+  at the human's request ("why is there a texas map on the start page? i think its repetitive"): the map belongs
+  on the Live page. Start is one calm column instead, centred between the header and the footer, with the Start
+  button above the fold at 1280 × 800 (even with the practice banner).
+- **Results rows**: `src/screens/results/model.ts` (tested) orders the methods (simple rule, AI forecast, evening
+  peak, then the hindsight ceiling), sizes the bars against the longest, and turns `per_location_usd` into "By city"
+  rows, biggest first. Those are fleet totals per city (docs/API.md); the site does not divide them by a city's
+  battery count, since the results do not say how the full-year run split the fleet. Close sums get two decimals
+  ("$1.18 million" and "$1.24 million" rather than "$1.2 million" twice). When the comparison panel is taller than
+  its bars (it matches the headline panel beside it), the bars spread out evenly.
 - **Labels**: each city's label goes on the side that suits the geography (north of Dallas–Fort Worth, east of
   Houston, west of Austin, south-west of San Antonio) unless that would cover a corner panel, the chip, a notice,
   another label or another city's dots; placement re-runs when a panel changes size.
@@ -106,7 +136,8 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Per frame**: decode `battery_status` + re-count per cell + restyle 0.4–0.5 ms; paint 0.1–0.2 ms (slowest of the
   last 120 paints 0.4–0.6 ms, during transitions); building the cells after a resize or a new layout 2.5–4.7 ms.
   448 dots at both sizes.
-- **Bundle**: 424.2 KB JS (141.0 KB gzip) and 37.2 KB CSS, up from 372.4 KB JS: the map code and the 7.7 KB outline.
+- **Bundle**: 425.7 KB JS (141.3 KB gzip) and 39.6 KB CSS (424.2 KB and 37.2 KB before the site-wide theme;
+  372.4 KB JS before the map).
 
 ## How the site follows the contract (docs/API.md)
 
@@ -141,25 +172,22 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 
 ## Requests for integrator
 
-1. **docs/API.md, `battery_status` and code 4**: say that code 4 lasts about two ticks and a frame can miss it
-   above 2 ticks a second. The site now flashes from the worker events (and replays ownership from
-   `adopted_by`); a simpler contract would be for the API to report 4 for any battery that was down at a tick since
-   the previous frame (the mock did this before the merge), or to add the down batteries' ids to `worker_adopted`.
-2. **docs/API.md, other additions from the merge**: the `503 simulator_restarting` code with `retry_after_s` and
-   `Retry-After`; `detail.by_location` on `worker_suspect` and `worker_adopted`; `GET /fleet/layout` served with an
-   `ETag` (304 on `If-None-Match`); `workers[].by_location` lists only the cities a controller has (`{}` when
-   dead); idle messages carry no `battery_status`.
-3. **docs/UX.md** still speaks of two areas and "Houston time": the Start card ("Houston & Dallas–Fort Worth"), the
-   glossary, principle 5 and the Live top bar. The site says "Central time" (as the backend's events do) and lists
-   all four cities; please update the doc to match.
-4. **WebSocket compression**: a frame is ~18.7 KB raw but ~1 KB deflated (`battery_status` is most of it and
+(The earlier requests about code 4, the merge's API additions and the four-city wording in docs/UX.md are done.)
+
+1. **docs/UX.md, one dark theme** (2026-09-26): the whole site now uses the live map's theme, always dark. Please
+   update: principle 7 ("AA contrast in light and dark themes" → in the site's one dark theme); principle 6 (green
+   is also the primary action and links; blue is neutral information and the keyboard focus ring; red stays for
+   failures and the map's outline); the Live map's "Always dark, whatever the site theme" (the whole site is);
+   Start (no map on the Start page, per the human: the map belongs on Live); Results (the "By city" rows from
+   `per_location_usd`, and the coming "What the AI adds" section as its own row after the headline row).
+2. **WebSocket compression**: a frame is ~18.7 KB raw but ~1 KB deflated (`battery_status` is most of it and
    compresses to almost nothing). Please make sure the Cloud Run WebSocket negotiates permessage-deflate
    (uvicorn's `ws_per_message_deflate`, on by default with the `websockets` implementation); the snapshot on
    connect (up to ~1.8 MB with four cities) benefits most.
-5. **Vercel**: Root Directory `web`; set `VITE_API_BASE_URL` to the Cloud Run URL for Production (and Preview if
+3. **Vercel**: Root Directory `web`; set `VITE_API_BASE_URL` to the Cloud Run URL for Production (and Preview if
    used); a Vercel build without it fails on purpose. `.vercelignore` in `web/` keeps `.env*` out of uploads.
-6. **After `POST /run/speed`**, `snapshot.speed_tps` and `settings.speed_tps` should both show the new speed (the
+4. **After `POST /run/speed`**, `snapshot.speed_tps` and `settings.speed_tps` should both show the new speed (the
    site reads `speed_tps` first).
-7. **Forecast label**: the site calls the band "AI forecast, likely range" and names TimesFM-3 only in the
+5. **Forecast label**: the site calls the band "AI forecast, likely range" and names TimesFM-3 only in the
    decision-method label from `GET /settings`/results; if the model switch moves to TimesFM 2.5, send the new label
    there and the site follows.

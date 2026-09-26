@@ -77,6 +77,13 @@ describe('money', () => {
     expect(fmtUsdLarge(1_250_000_000)).toBe('$1.25 billion');
     expect(fmtUsdLarge(412_600)).toBe('$412,600');
   });
+
+  it('can tell close millions apart', () => {
+    expect(fmtUsdLarge(1_177_904, 2)).toBe('$1.18 million');
+    expect(fmtUsdLarge(1_242_624, 2)).toBe('$1.24 million');
+    expect(fmtUsdLarge(429_094, 2)).toBe('$429,094');
+    expect(fmtUsdLarge(Number.NaN, 2)).toBe('–');
+  });
 });
 
 describe('power and energy', () => {

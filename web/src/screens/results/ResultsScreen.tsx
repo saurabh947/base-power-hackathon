@@ -5,6 +5,7 @@ import type { Results } from '../../api/types.ts';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { Term } from '../../components/Tech.tsx';
 import { useBackend } from '../../state/backend.ts';
+import { headlineOf } from './model.ts';
 import { BigNumber, ComparisonBars, HowWeGotThis, TopDays } from './ResultPanels.tsx';
 import { RerunPanel } from './RerunPanel.tsx';
 
@@ -57,7 +58,7 @@ export function ResultsScreen() {
   }, [fetchResults]);
 
   const { results, error, loading } = state;
-  const headline = results?.strategies.find((s) => s.is_headline) ?? results?.strategies[0] ?? null;
+  const headline = headlineOf(results);
   const year = results?.year ?? 2025;
 
   return (
@@ -98,7 +99,9 @@ export function ResultsScreen() {
       {results && headline ? (
         <div className="results-grid">
           <BigNumber results={results} headline={headline} />
-          <ComparisonBars results={results} />
+          <ComparisonBars results={results} headline={headline} />
+          {/* "What the AI adds" (coming later) goes here, as its own row: a full-width panel (className="span-12"),
+              or two panels of span-7 and span-5 like the rows around it. */}
           <TopDays results={results} headline={headline} />
           <div className="span-5 stack">
             <HowWeGotThis results={results} />

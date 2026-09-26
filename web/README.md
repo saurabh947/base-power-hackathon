@@ -52,7 +52,7 @@ rebuilds the Texas outline (below).
 | `npm run mock` | Standalone mock API on port 8787 (`MOCK_PORT` to change) |
 | `npm run typecheck` | `tsc -b` over the app, the mock and the configs |
 | `npm run lint` | oxlint (correctness, suspicious, React hooks, jsx-a11y), warnings fail |
-| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, map (projection, outline, layout and status decoding, cells, looks, selection, labels), mock, AA contrast |
+| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings, chart model, results rows, map (projection, outline, layout and status decoding, cells, looks, selection, labels), mock, AA contrast of the site's one theme |
 | `npm run build` | typecheck, `vite build` to `dist/` (no source maps), then `scripts/check-dist.mjs` fails if any mock code shipped |
 | `npm run check` | all of the above |
 
@@ -109,7 +109,7 @@ src/
   state/        backend health / wake-up, technical-details switch, presenter passcode, toasts
   components/   Panel ("What is this?" + "How it works"), Tech/Term, Dialog, charts/ (uPlot)
   screens/      start/, live/ (map/ is the default view, the charts layout is behind "Show charts"), results/
-  styles/       tokens.css (light, dark and the always-dark map theme, AA-checked), app.css, map.css
+  styles/       tokens.css (the one always-dark theme, AA-checked), app.css, map.css
 scripts/        check-dist.mjs (no mock in dist/), texas-outline.ts (builds src/map/texasOutline.ts)
 mock/           simulated API for dev and tests only (never in dist/)
 ```
@@ -144,8 +144,10 @@ layout (remembered for the tab); "Show map" switches back.
   dots also selects it; the "All of Texas" chip, Esc or clicking empty map go back. The corners then show that
   city: per-location tick values, `totals.by_location`, `availability.by_location`, and the controllers with
   batteries there (`workers[].by_location`) highlighted.
-- **Always dark.** While the map is shown, `<html data-theme="map">` switches every token to a neutral dark
-  palette (header, dialogs and toasts included); the rest of the site keeps the light and dark themes.
+- **Always dark, everywhere.** The map's look is the whole site's: one set of tokens (`src/styles/tokens.css`),
+  always dark whatever the browser's colour preference, with the same translucent panels on every page, green for
+  the primary action and links, and red only for failures and the Texas outline. Start and Results have no map;
+  the map is the Live page's.
 
 - **Charts**: [uPlot](https://github.com/leeoniya/uPlot) (about 50 KB): canvas, fast with 2,000-point series,
   live appends, bands for the forecast, draw hooks for the charge/sell shading and crash markers.
@@ -158,8 +160,8 @@ layout (remembered for the tab); "Show map" switches back.
   After three failed WebSocket attempts it polls `GET /state` every 2 s and keeps retrying the WebSocket every
   30 s.
 - **Accessibility**: keyboard-only use works throughout (skip link, native dialogs, radio groups, a real
-  switch, city buttons and Esc on the map); visible focus rings; AA contrast in light, dark and the map theme
-  (tested, including the dot colours and the outline against the page); status never shown by color alone
+  switch, city buttons and Esc on the map); visible focus rings; AA contrast in the site's one dark theme
+  (tested, including the primary button, the bars, the dot colours and the outline against the page); status never shown by color alone
   (icons and words next to every color); charts have text read-outs above them, and the map canvas has a text
   alternative with the current counts.
 - **Language**: plain words by default; "Show technical details" (header, remembered per browser) reveals raw

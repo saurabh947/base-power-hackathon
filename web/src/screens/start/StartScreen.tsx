@@ -95,8 +95,10 @@ export function StartScreen() {
 
   return (
     <div className="page start">
-      <div style={{ display: 'grid', gap: 12 }}>
-        <h1>What if {fleet} home batteries traded on the Texas power grid?</h1>
+      <div className="start-intro">
+        <h1>
+          What if <span className="start-highlight">{fleet} home batteries</span> traded on the Texas power grid?
+        </h1>
         <p className="lede">
           Replay real 2025 electricity prices and watch a fleet of home batteries buy cheap, sell high, and keep working
           when parts of the system crash.
@@ -149,10 +151,11 @@ export function StartScreen() {
           <div className="start-actions">
             <button
               type="button"
-              className="btn btn-primary btn-lg"
+              className="btn btn-primary btn-lg btn-start"
               onClick={() => void start()}
               disabled={!ready || busy || waitS > 0}
             >
+              <Icon name={busy ? 'spinner' : 'play'} className={busy ? 'spinner' : undefined} />
               {startLabel}
             </button>
             {runExists ? (
@@ -169,15 +172,24 @@ export function StartScreen() {
 
       <ul className="start-facts" aria-label="About this simulation">
         <li>
-          <strong>Real prices</strong>
+          <strong>
+            <Icon name="chart" size={16} />
+            Real prices
+          </strong>
           Every price comes from ERCOT, the Texas grid operator, for 2025.
         </li>
         <li>
-          <strong>Keeps working when parts crash</strong>
+          <strong>
+            <Icon name="check" size={16} />
+            Keeps working when parts crash
+          </strong>
           20 controllers share the batteries. If one crashes, the others take over.
         </li>
         <li>
-          <strong>Honest money</strong>
+          <strong>
+            <Icon name="info" size={16} />
+            Honest money
+          </strong>
           Earnings are gross wholesale value, before retail fees and battery wear.
         </li>
       </ul>

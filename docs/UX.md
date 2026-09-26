@@ -17,7 +17,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
    - **amber** = selling
    - **grey** = holding
    - **red** only for failures
-7. **Desktop-first**, with readable text at 1280px. Keyboard-accessible, visible focus, and AA contrast in light and dark themes.
+7. **Desktop-first**, with readable text at 1280px. Keyboard-accessible, visible focus and AA contrast. **One always-dark theme site-wide**, matching the live map: dark gray page, translucent dark panels, green primary actions. Red is only for failures and the Texas outline.
 8. **Honest labels.**
    - Replays say "Replaying real prices from May 16, 2025".
    - Money is "gross wholesale value".
@@ -98,7 +98,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - Unlocks "Crash a controller". Crashing a controller is presenter-only; everything else is public.
 
 ## Live map (the default Live view, added 2026-09-26, per the human's direction)
-- **Page.** Full screen with a **dark gray background**, e.g. `#25282c`. Always dark, whatever the site theme.
+- **Page.** Full screen with a **dark gray background** (`#25282c`), the same as every other page.
 - **Texas.** A bright red outline only (stroke, no fill), drawn as large as fits while staying pretty (keep a small margin). New Mexico, Oklahoma, Mexico and the Gulf leave the 4 screen corners free; the corners hold the controls and numbers.
 - **Batteries.** 20,000 green dots, from `GET /fleet/layout` positions (EPSG:3083 projection) and `battery_status` codes.
   - Batteries close together merge into one larger dot, with area proportional to count, so the map stays readable at any size.
