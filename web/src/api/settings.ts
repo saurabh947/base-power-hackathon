@@ -1,7 +1,7 @@
-// Reading GET /settings. docs/API.md fixes `defaults`, `editable` and `presets`
-// but not the shape of a Choice, so the readers below accept the likely shapes
-// (bare values, {value}, {id}) and fall back to the documented defaults when the
-// endpoint is missing, so the Start screen always works.
+// Reading GET /settings (docs/API.md): Preset {id, label, date_local, start_utc,
+// start_local, description}, Strategy {id, label, description}, Speed {tps, label}.
+// Items that do not match are skipped, and a missing or broken response falls
+// back to the documented defaults, so the Start screen always works.
 
 import { fmtSpeed, strategyName } from '../lib/format.ts';
 import { EDITABLE_KEYS, type EditableKey, type EditableSettings, type Preset, type Settings } from './types.ts';
@@ -53,45 +53,36 @@ const DOCUMENTED_PRESETS: Preset[] = [
     label: 'Price-spike evening',
     date_local: '2025-05-16',
     start_utc: '2025-05-16T21:00:00Z',
+    start_local: '2025-05-16T16:00:00-05:00',
     description: 'Prices jump above $2,000/MWh around 7:45 pm.',
   },
 ];
+
+const DEFAULT_SPEEDS = [1, 2, 5, 10];
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function pick(obj: Record<string, unknown>, keys: string[]): unknown {
-  for (const k of keys) if (obj[k] !== undefined && obj[k] !== null) return obj[k];
-  return undefined;
-}
-
+/** Speed {tps, label}. The label shown is always our own plain phrase for the same tps. */
 export function readSpeeds(raw: unknown): SpeedOption[] {
-  const values: number[] = [];
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      const v = isObject(item) ? pick(item, ['value', 'speed_tps', 'id', 'tps']) : item;
-      const n = typeof v === 'string' ? Number(v) : v;
-      if (typeof n === 'number' && Number.isFinite(n) && n > 0 && !values.includes(n)) values.push(n);
-    }
-  }
-  const list = values.length ? values : [1, 2, 5, 10];
+  const values = Array.isArray(raw)
+    ? raw.map((s) => (isObject(s) ? Number(s.tps) : Number.NaN)).filter((n) => Number.isFinite(n) && n > 0)
+    : [];
+  const list = values.length ? [...new Set(values)] : DEFAULT_SPEEDS;
   return list.toSorted((a, b) => a - b).map((value) => ({ value, label: fmtSpeed(value) }));
 }
 
+/** Strategy {id, label, description}; the glossary fills in a missing label or description. */
 export function readStrategies(raw: unknown): StrategyOption[] {
   const out: StrategyOption[] = [];
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      const value = isObject(item) ? pick(item, ['value', 'strategy', 'id']) : item;
-      if (typeof value !== 'string' || out.some((o) => o.value === value)) continue;
-      const label = isObject(item) && typeof item.label === 'string' ? item.label : strategyName(value);
-      const description =
-        isObject(item) && typeof item.description === 'string'
-          ? item.description
-          : (STRATEGY_DESCRIPTIONS[value] ?? '');
-      out.push({ value, label, description });
-    }
+  for (const s of Array.isArray(raw) ? raw : []) {
+    if (!isObject(s) || typeof s.id !== 'string' || out.some((o) => o.value === s.id)) continue;
+    out.push({
+      value: s.id,
+      label: typeof s.label === 'string' && s.label ? s.label : strategyName(s.id),
+      description: typeof s.description === 'string' ? s.description : (STRATEGY_DESCRIPTIONS[s.id] ?? ''),
+    });
   }
   if (out.length) return out;
   return ['bands', 'forecast', 'peak'].map((value) => ({
@@ -103,7 +94,10 @@ export function readStrategies(raw: unknown): StrategyOption[] {
 
 export function readPresets(raw: unknown): Preset[] {
   if (!Array.isArray(raw)) return DOCUMENTED_PRESETS;
-  const out = raw.filter((p): p is Preset => isObject(p) && typeof p.id === 'string' && typeof p.label === 'string');
+  const out = raw.filter(
+    (p): p is Preset =>
+      isObject(p) && typeof p.id === 'string' && typeof p.label === 'string' && typeof p.start_utc === 'string',
+  );
   return out.length ? out : DOCUMENTED_PRESETS;
 }
 

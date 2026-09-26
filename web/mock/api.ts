@@ -114,8 +114,11 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
   const availabilityLimit = new RateLimiter(10, 1000);
   const wrongPasscodes = new Map<string, RateLimiter>();
 
+  // A frame every second while a run exists; an idle message every 5 s when none does.
   const timer = setInterval(() => {
-    const message = JSON.stringify(sim.stepWall());
+    const next = sim.stepWall();
+    if (!next) return;
+    const message = JSON.stringify(next);
     for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(message);
   }, options.frameMs ?? 1000);
   timer.unref?.();
@@ -197,7 +200,7 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
         return send(res, 200, sim.results());
       case 'GET /forecast': {
         const f = sim.forecastAt(url.searchParams.get('location') ?? '', url.searchParams.get('at_utc'));
-        if (!f) throw new MockError(404, 'no_forecast', 'No forecast was issued for that area and time.');
+        if (!f) throw new MockError(404, 'no_forecast', 'No forecast has been issued for that area and time yet.');
         return send(res, 200, f);
       }
       default:

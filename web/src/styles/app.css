@@ -1016,7 +1016,7 @@ legend {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: 8px 12px;
   padding-top: 10px;
   padding-bottom: 10px;
 }
@@ -1026,13 +1026,19 @@ legend {
   gap: 2px;
   margin-right: auto;
   min-width: 0;
+  /* Shrinks before the controls do, so the buttons stay on one row at 1280 px, even in presenter mode. */
+  flex: 1 1 300px;
 }
 
 .clock {
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
+}
+
+.nowrap {
+  white-space: nowrap;
 }
 
 .clock-sub {
@@ -1046,9 +1052,38 @@ legend {
 
 .topbar-controls {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.topbar-controls .btn {
+  min-height: 36px;
+  padding: 0 11px;
+  font-size: 14px;
+  gap: 6px;
+}
+
+.topbar-controls .btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.topbar-controls select {
+  min-height: 36px;
+  padding: 4px 26px 4px 8px;
+  font-size: 14px;
+  /* Size to the chosen option, not the longest one (where supported). */
+  field-sizing: content;
+}
+
+.crash-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
 }
 
 .speed-control {
@@ -1386,6 +1421,20 @@ legend {
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
+}
+
+.handover {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.handover svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--ok);
 }
 
 .failed-commands {

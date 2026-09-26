@@ -4,6 +4,7 @@ import { Icon, type IconName } from '../../components/Icon.tsx';
 import { Panel } from '../../components/Panel.tsx';
 import { TechOnly, Term } from '../../components/Tech.tsx';
 import { useLive } from '../../live/liveStore.ts';
+import { controllerFromDetail, controllerName } from '../../lib/fleet.ts';
 import { fmtCount, fmtTimeOfDay, plural } from '../../lib/format.ts';
 import { useTechnical } from '../../state/prefs.ts';
 
@@ -40,7 +41,7 @@ const Tile = memo(function Tile({ worker, offline, technical }: TileProps) {
   const handedOff = worker.status === 'dead' && worker.batteries === 0;
   return (
     <li className={`tile tile-${worker.status}`}>
-      <span className="tile-name">Controller {worker.worker_id}</span>
+      <span className="tile-name">{controllerName(worker.worker_id)}</span>
       <span className="tile-status">
         <Icon name={s.icon} size={14} />
         {s.label}
@@ -51,9 +52,9 @@ const Tile = memo(function Tile({ worker, offline, technical }: TileProps) {
       {offline ? <span className="tile-tag">Its batteries are offline</span> : null}
       {technical ? (
         <span className="tech">
-          pid {worker.pid ?? '–'}
+          worker_id {worker.worker_id} · pid {worker.pid ?? '–'}
           {worker.last_tick_utc ? ` · ${fmtTimeOfDay(worker.last_tick_utc)}` : ''}
-          {worker.adopted_from?.length ? ` · adopted ${worker.adopted_from.join(', ')}` : ''}
+          {worker.adopted_from?.length ? ` · adopted_from [${worker.adopted_from.join(', ')}]` : ''}
         </span>
       ) : null}
     </li>
@@ -94,6 +95,27 @@ function Summary({ workers }: { workers: Worker[] }) {
   );
 }
 
+/** The latest handover, narrated from the worker_adopted event's details (docs/API.md). */
+function LatestHandover() {
+  const event = useLive((s) => s.events.find((e) => e.kind === 'worker_adopted') ?? null);
+  if (!event) return null;
+  const controller = controllerFromDetail(event.detail);
+  const adoptedBy = Array.isArray(event.detail?.adopted_by) ? event.detail.adopted_by.length : null;
+  const ms = typeof event.detail?.ms === 'number' ? event.detail.ms : null;
+  if (controller === null) return null;
+  return (
+    <p className="handover">
+      <Icon name="check" size={14} />
+      <span>
+        Latest handover: Controller {controller}'s batteries went to
+        {adoptedBy !== null ? ` the other ${adoptedBy} ${plural(adoptedBy, 'controller', 'controllers')}` : ' the others'}
+        {ms !== null ? ` in ${fmtCount(ms)} ms` : ''}
+        {event.sim_utc ? ` (at ${fmtTimeOfDay(event.sim_utc)} market time)` : ''}.
+      </span>
+    </p>
+  );
+}
+
 function FailedCommandsCount() {
   const failed = useLive((s) => s.failedCommands);
   const technical = useTechnical();
@@ -112,7 +134,7 @@ function FailedCommandsCount() {
               <div key={`${f.battery_id}-${f.tick_utc}-${i}`} style={{ display: 'contents' }}>
                 <dt>{f.battery_id}</dt>
                 <dd>
-                  worker {f.worker_id} · {f.reason} · {fmtTimeOfDay(f.tick_utc)}
+                  {controllerName(f.worker_id)} (worker_id {f.worker_id}) · {f.reason} · {fmtTimeOfDay(f.tick_utc)}
                 </dd>
               </div>
             ))}
@@ -149,6 +171,7 @@ export function ControllersCard() {
               <Tile key={w.worker_id} worker={w} offline={offline.has(w.worker_id)} technical={technical} />
             ))}
           </ul>
+          <LatestHandover />
         </>
       ) : (
         <p className="feed-empty">The 20 controllers appear here when a simulation is running.</p>
@@ -156,7 +179,7 @@ export function ControllersCard() {
       <FailedCommandsCount />
       <TechOnly>
         <p className="tech" style={{ marginTop: 6 }}>
-          Tiles are keyed by worker_id; status comes from heartbeats and tick deadlines.
+          Controller N is worker_id N − 1; status comes from heartbeats and tick deadlines.
         </p>
       </TechOnly>
     </Panel>

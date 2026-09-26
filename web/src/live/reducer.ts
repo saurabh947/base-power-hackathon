@@ -42,6 +42,13 @@ export interface LiveState {
   lastMessageAtMs: number | null;
   /** Bumped when a frame belongs to a run we have no snapshot for; the store then re-fetches GET /state. */
   runChanged: number;
+  /** From idle messages: the run that was replaced or reset, with its totals. */
+  lastRun: LastRun | null;
+}
+
+export interface LastRun {
+  runId: string | null;
+  totals: Totals;
 }
 
 export const EMPTY_TOTALS: Totals = Object.freeze({ revenue_usd: 0, sold_kwh: 0, bought_kwh: 0, ticks: 0 });
@@ -66,6 +73,7 @@ export const initialLiveState: LiveState = Object.freeze({
   messages: 0,
   lastMessageAtMs: null,
   runChanged: 0,
+  lastRun: null,
 });
 
 const STATUSES: ReadonlySet<string> = new Set(['idle', 'starting', 'running', 'paused', 'finished']);
@@ -174,6 +182,24 @@ function lastTs(history: Tick[]): string | null {
   return history.length ? history[history.length - 1].ts_utc : null;
 }
 
+const EMPTY_WORKERS: Worker[] = [];
+
+/** Every battery back online, keeping the known totals (what a reset does). */
+function allOnline(a: Availability | null): Availability | null {
+  if (!a) return null;
+  if (a.available === a.total && a.offline_workers.length === 0) return a;
+  const byLocation: Availability['by_location'] = {};
+  for (const [loc, v] of Object.entries(a.by_location ?? {})) byLocation[loc] = { available: v.total, total: v.total };
+  return { available: a.total, total: a.total, by_location: byLocation, offline_workers: [] };
+}
+
+function readLastRun(prev: LastRun | null, v: unknown): LastRun | null {
+  if (v === undefined) return prev;
+  if (!isObject(v) || !isObject(v.totals)) return null;
+  const next: LastRun = { runId: typeof v.run_id === 'string' ? v.run_id : null, totals: v.totals as unknown as Totals };
+  return prev && prev.runId === next.runId && JSON.stringify(prev.totals) === JSON.stringify(next.totals) ? prev : next;
+}
+
 function runIdOf(message: Json, fallback: string | null): string | null {
   if (!('run_id' in message)) return fallback;
   return typeof message.run_id === 'string' ? message.run_id : null;
@@ -247,6 +273,7 @@ export function liveReducer(state: LiveState, message: unknown, nowMs: number = 
     }
 
     case 'idle': {
+      // {"type": "idle", "status": "idle", "run_id": null, "last_run": {run_id, totals} | null}, every 5 s.
       const hadRun = state.runId !== null || state.history.length > 0;
       return {
         ...state,
@@ -258,10 +285,12 @@ export function liveReducer(state: LiveState, message: unknown, nowMs: number = 
         history: EMPTY_HISTORY,
         totals: EMPTY_TOTALS,
         failedCommands: hadRun ? EMPTY_FAILED : state.failedCommands,
-        workers: keep(state.workers, message.workers, Array.isArray),
-        availability: keep(state.availability, message.availability),
+        // Reset restarts every controller and brings every battery back, so the last run's view is stale.
+        workers: hadRun ? EMPTY_WORKERS : keep(state.workers, message.workers, Array.isArray),
+        availability: hadRun ? allOnline(state.availability) : keep(state.availability, message.availability),
         events: mergeEvents(state.events, message.events),
         forecast: EMPTY_FORECAST,
+        lastRun: readLastRun(state.lastRun, message.last_run),
       };
     }
 

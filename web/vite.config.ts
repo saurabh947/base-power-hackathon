@@ -31,6 +31,7 @@ export default defineConfig(async ({ command, mode, isPreview }) => {
     plugins,
     server: { port: 5173 },
     preview: { port: 4173 },
-    build: { target: 'es2022', sourcemap: true },
+    // No source maps in production builds (they would publish the full source next to the site).
+    build: { target: 'es2022', sourcemap: false },
   };
 });

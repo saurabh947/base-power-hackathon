@@ -34,24 +34,29 @@ export type EditableSettings = Pick<Settings, EditableKey>;
 export interface Preset {
   id: string;
   label: string;
-  date_local?: string;
-  start_utc?: string;
-  description?: string;
+  date_local: string;
+  start_utc: string;
+  start_local?: string;
+  description: string;
 }
 
-/** docs/API.md does not pin the Choice shape; see src/api/settings.ts for the tolerant reader. */
-export interface Choice<V extends string | number = string | number> {
-  value: V;
+export interface StrategyChoice {
+  id: string;
   label: string;
-  description?: string;
+  description: string;
+}
+
+export interface SpeedChoice {
+  tps: number;
+  label: string;
 }
 
 export interface SettingsResponse {
   defaults: Settings;
   editable: string[];
   presets: Preset[];
-  strategies: Choice<string>[];
-  speeds: Choice<number>[];
+  strategies: StrategyChoice[];
+  speeds: SpeedChoice[];
 }
 
 export interface Tick {
@@ -115,6 +120,10 @@ export interface LiveEvent {
   kind: string;
   severity: Severity;
   message: string;
+  /**
+   * Technical values. Worker events carry `worker_id` (0-based) and `controller` (1-based);
+   * `worker_adopted` adds `adopted_by` (worker ids) and `ms`.
+   */
   detail?: Record<string, unknown>;
 }
 
@@ -149,8 +158,9 @@ export interface SnapshotMessage extends LiveBody {
   type: 'snapshot';
   settings: Settings | null;
   history: Tick[];
-  sim_time_utc?: string;
-  speed_tps?: number;
+  /** Null while idle. */
+  sim_time_utc: string | null;
+  speed_tps: number;
 }
 
 export interface FrameMessage extends LiveBody {
@@ -160,13 +170,12 @@ export interface FrameMessage extends LiveBody {
   ticks: Tick[];
 }
 
-/** Sent every second while no run is active. docs/API.md does not pin its body. */
+/** Sent every 5 s while no run exists. `last_run` sums up the run that was replaced or reset, if any. */
 export interface IdleMessage {
   type: 'idle';
-  status?: RunStatus;
-  events?: LiveEvent[];
-  availability?: Availability;
-  workers?: Worker[];
+  status: 'idle';
+  run_id: null;
+  last_run: { run_id: string; totals: Totals } | null;
 }
 
 export type LiveMessage = SnapshotMessage | FrameMessage | IdleMessage;
@@ -215,6 +224,8 @@ export interface KillResponse {
 export interface BacktestStatus {
   status: 'running' | 'done' | 'failed';
   run_ids: string[];
+  /** Strategies left out of the run, with the reason, e.g. {"forecast": "forecasts do not cover 2025"}. */
+  skipped?: Record<string, string>;
   error: string | null;
 }
 

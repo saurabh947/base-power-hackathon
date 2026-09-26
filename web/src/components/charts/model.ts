@@ -2,6 +2,7 @@
 // column arrays out. Kept free of DOM code so it can be unit tested.
 
 import type { Forecast, LiveEvent, Tick, TickAction } from '../../api/types.ts';
+import { controllerFromDetail } from '../../lib/fleet.ts';
 
 export const TICK_SECONDS = 300;
 export const MIN_SPAN_SECONDS = 6 * 3600;
@@ -182,8 +183,8 @@ export function crashMarkers(events: LiveEvent[]): CrashMarker[] {
     if (e.kind !== 'worker_dead' || !e.sim_utc) continue;
     const x = toS(e.sim_utc);
     if (!Number.isFinite(x)) continue;
-    const id = e.detail && typeof e.detail.worker_id === 'number' ? e.detail.worker_id : null;
-    out.push({ x, label: id === null ? 'Crash' : `Controller ${id}` });
+    const controller = controllerFromDetail(e.detail);
+    out.push({ x, label: controller === null ? 'Crash' : `Controller ${controller}` });
   }
   return out;
 }

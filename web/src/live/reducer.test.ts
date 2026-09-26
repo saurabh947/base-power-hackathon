@@ -48,6 +48,8 @@ function snapshot(overrides: Partial<SnapshotMessage> = {}): SnapshotMessage {
     type: 'snapshot',
     run_id: 'run-1',
     status: 'running',
+    sim_time_utc: '2025-05-16T21:10:00Z',
+    speed_tps: 2,
     settings: {
       preset: 'spike_evening',
       start_utc: '2025-05-16T21:00:00Z',
@@ -185,16 +187,47 @@ describe('frame', () => {
   });
 });
 
+const idle = (lastRun: unknown = null) => ({ type: 'idle', status: 'idle', run_id: null, last_run: lastRun });
+
 describe('idle and junk', () => {
-  it('clears the run on an idle message but keeps the notes', () => {
-    const s1 = apply(initialLiveState, snapshot());
-    const s2 = apply(s1, { type: 'idle', events: [event(7)] });
+  it('clears the run on an idle message, keeps the notes and remembers the last run', () => {
+    const s1 = apply(
+      initialLiveState,
+      snapshot({
+        workers: workers('dead'),
+        availability: {
+          available: 17_000,
+          total: 20_000,
+          by_location: { LZ_HOUSTON: { available: 7_000, total: 10_000 } },
+          offline_workers: [3],
+        },
+      }),
+    );
+    const totals = { revenue_usd: 163_467.41, sold_kwh: 1, bought_kwh: 2, ticks: 384 };
+    const s2 = apply(s1, idle({ run_id: 'run-1', totals }));
     expect(s2.status).toBe('idle');
     expect(s2.runId).toBeNull();
     expect(s2.history).toHaveLength(0);
     expect(s2.totals.revenue_usd).toBe(0);
-    expect(s2.events[0].id).toBe('e7');
-    expect(s2.events).toHaveLength(3);
+    expect(s2.events).toHaveLength(2);
+    expect(s2.lastRun).toEqual({ runId: 'run-1', totals });
+    // Reset restarted the controllers and brought every battery back.
+    expect(s2.workers).toHaveLength(0);
+    expect(s2.availability).toEqual({
+      available: 20_000,
+      total: 20_000,
+      by_location: { LZ_HOUSTON: { available: 10_000, total: 10_000 } },
+      offline_workers: [],
+    });
+  });
+
+  it('keeps the same objects across repeated idle messages', () => {
+    const s1 = apply(initialLiveState, snapshot(), idle({ run_id: 'run-1', totals: { revenue_usd: 1, sold_kwh: 0, bought_kwh: 0, ticks: 1 } }));
+    const s2 = apply(s1, idle({ run_id: 'run-1', totals: { revenue_usd: 1, sold_kwh: 0, bought_kwh: 0, ticks: 1 } }));
+    expect(s2.lastRun).toBe(s1.lastRun);
+    expect(s2.workers).toBe(s1.workers);
+    expect(s2.history).toBe(s1.history);
+    expect(apply(s2, idle(null)).lastRun).toBeNull();
   });
 
   it('treats a frame with status idle like an idle message', () => {
