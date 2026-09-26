@@ -96,7 +96,7 @@ export function StartScreen() {
           What if <span className="start-highlight">{fleet} home batteries</span> traded on the Texas power grid?
         </h1>
         <p className="lede">
-          Replay real 2025 electricity prices and watch a fleet of home batteries buy cheap, sell high, and keep working
+          Replay real Texas electricity prices and watch a fleet of home batteries buy cheap, sell high, and keep working
           when parts of the system crash.
         </p>
       </div>
