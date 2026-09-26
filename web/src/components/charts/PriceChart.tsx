@@ -7,7 +7,7 @@ import uPlot from 'uplot';
 import { liveStore } from '../../live/liveStore.ts';
 import { actionLabel, areaName, fmtCount, fmtPrice, fmtPriceMwh, fmtTimeOfDay } from '../../lib/format.ts';
 import { actionSpans, buildPriceModel, type WindowKey } from './model.ts';
-import { marketTzDate, observeWidth, pxRatio, readChartTheme, timeAxis, useColorScheme } from './theme.ts';
+import { marketTzDate, observeWidth, pxRatio, readChartTheme, timeAxis } from './theme.ts';
 import { emptyXWindow, liveXWindow } from './window.ts';
 
 const HEIGHT = 250;
@@ -38,14 +38,13 @@ export function PriceChart({ area, windowKey, technical }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
-  const scheme = useColorScheme();
 
   useEffect(() => {
     const host = hostRef.current;
     const tip = tipRef.current;
     const empty = emptyRef.current;
     if (!host || !tip || !empty) return;
-    const theme = readChartTheme(scheme);
+    const theme = readChartTheme();
     const r = pxRatio();
 
     let state = liveStore.get();
@@ -219,7 +218,7 @@ export function PriceChart({ area, windowKey, technical }: Props) {
       host.removeEventListener('mouseleave', hideTip);
       u.destroy();
     };
-  }, [area, windowKey, technical, scheme]);
+  }, [area, windowKey, technical]);
 
   return (
     <div

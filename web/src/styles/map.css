@@ -1,7 +1,8 @@
 /*
  * The live map (docs/UX.md, Live map): a full-window dark gray stage, the red Texas outline and
  * the battery dots on canvas, city labels, and four compact translucent corner panels.
- * Colours come from the data-theme="map" tokens in tokens.css.
+ * Colours come from the site's one dark theme in tokens.css (the Start and Results pages use the
+ * same panels and greens).
  */
 
 /* ---- the page ------------------------------------------------------------------ */
@@ -18,28 +19,6 @@ html.map-mode main.main-map {
   padding: 0;
   display: flex;
   flex-direction: column;
-}
-
-html.map-mode .site-header {
-  background: var(--bg);
-  border-bottom-color: var(--map-panel-border);
-}
-
-html.map-mode .site-header-inner {
-  max-width: none;
-  min-height: 52px;
-  padding-left: 16px;
-  padding-right: 16px;
-}
-
-html.map-mode .practice-banner {
-  font-size: 13px;
-  border-bottom-color: var(--map-panel-border);
-}
-
-html.map-mode .practice-banner .page {
-  max-width: none;
-  padding: 5px 16px;
 }
 
 .livemap {
@@ -85,9 +64,9 @@ html.map-mode .practice-banner .page {
   align-items: center;
   gap: 10px;
   padding: 4px 12px 4px 4px;
-  border: 1px solid var(--map-panel-border);
+  border: 1px solid var(--panel-border);
   border-radius: 999px;
-  background: var(--map-panel);
+  background: var(--panel);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   font-size: 13px;
@@ -163,9 +142,9 @@ html.map-mode .toasts {
 
 .map-notice-quiet {
   padding: 10px 12px;
-  border: 1px solid var(--map-panel-border);
+  border: 1px solid var(--panel-border);
   border-radius: 10px;
-  background: var(--map-panel);
+  background: var(--panel);
   color: var(--text-muted);
   font-size: 13px;
 }
@@ -258,12 +237,12 @@ html.map-mode .toasts {
   display: grid;
   gap: 5px;
   padding: 11px 13px 12px;
-  border: 1px solid var(--map-panel-border);
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
-  background: var(--map-panel);
-  backdrop-filter: blur(10px) saturate(1.1);
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  background: var(--panel);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: var(--panel-shadow);
   font-size: 13.5px;
   line-height: 1.4;
 }
@@ -366,7 +345,7 @@ html.map-mode .toasts {
 .corner-rule {
   margin: 3px 0;
   border: 0;
-  border-top: 1px solid var(--map-panel-border);
+  border-top: 1px solid var(--panel-border);
 }
 
 .corner .chip {
@@ -410,7 +389,7 @@ html.map-mode .toasts {
 }
 
 .price-row:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--panel-hover);
 }
 
 .price-row-name {
