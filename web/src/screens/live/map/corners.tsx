@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import type { Tick, Worker, WorkerStatus } from '../../../api/types.ts';
 import { AnimatedNumber } from '../../../components/AnimatedNumber.tsx';
-import { Icon, type IconName } from '../../../components/Icon.tsx';
+import { Icon } from '../../../components/Icon.tsx';
 import { PresenterDialog } from '../../../components/PresenterDialog.tsx';
 import { TechBlock, TechOnly, Term } from '../../../components/Tech.tsx';
 import { useLive } from '../../../live/liveStore.ts';
@@ -31,8 +31,10 @@ import { CHARGING, DOWN, OFFLINE, SELLING, WAITING } from '../../../map/status.t
 import { leavePresenter, useIsPresenter } from '../../../state/presenter.ts';
 import { useTechnical } from '../../../state/prefs.ts';
 import { showToast } from '../../../state/toasts.ts';
-import { ActionChip } from '../ActionChip.tsx';
+import { ActionChip, ActionIcon } from '../ActionChip.tsx';
 import { CrashControl, PauseResume, ResetButton, SpeedSelect } from '../controls.tsx';
+import { eventClass, eventIcon, eventSpoken } from '../eventLook.ts';
+import { RaceBars } from '../RaceBars.tsx';
 import { ConnectionStatus, ReplayLabel, RunStatus, TechCounters } from '../TopBar.tsx';
 import { MiniPowerChart, MiniPriceChart } from './MiniCharts.tsx';
 import { ON_TARGET_PCT, scopeAvailability, scopeTotals, scopeTracking, workerShare, type Scope } from './scope.ts';
@@ -144,20 +146,6 @@ function AllPrices({ onSelect }: { onSelect: (location: string) => void }) {
   );
 }
 
-const ACTION_ICON = { charge: 'down', sell: 'up', hold: 'minus' } as const;
-const ACTION_WORD = { charge: 'Charging', sell: 'Selling', hold: 'Waiting' } as const;
-
-/** An arrow (▲ selling, ▼ charging, — waiting) coloured like the action chips; the word is in the tooltip and for screen readers. */
-function ActionIcon({ action }: { action: Tick['action'][string] }) {
-  if (!action || !(action in ACTION_ICON)) return <span className="action-mini muted" aria-hidden="true">–</span>;
-  return (
-    <span className={`action-mini action-${action}`} title={ACTION_WORD[action]}>
-      <Icon name={ACTION_ICON[action]} size={15} />
-      <span className="sr-only">{ACTION_WORD[action]}</span>
-    </span>
-  );
-}
-
 export function ClockCorner({ scope, onSelect }: { scope: Scope; onSelect: (location: string) => void }) {
   return (
     <section className="corner corner-tl" aria-label="Replay clock and electricity price">
@@ -227,6 +215,7 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
           'This simulator does not report money per city.'
         )}
       </p>
+      <RaceBars scope={scope} />
       <hr className="corner-rule" />
       <h3 className="corner-label">Power: asked for vs delivered</h3>
       {tick ? (
@@ -415,8 +404,6 @@ function BatteryCounts({ scope }: { scope: Scope }) {
   );
 }
 
-const SEVERITY_ICON: Record<string, IconName> = { good: 'check', warn: 'alert', info: 'info' };
-
 function LastEvents() {
   const events = useLive((s) => s.events);
   const visible = events.slice(0, 3);
@@ -428,9 +415,12 @@ function LastEvents() {
           {visible.map((e) => {
             const when = e.sim_utc ?? e.wall_utc;
             return (
-              <li key={e.id} className={`mini-feed-item feed-${e.severity in SEVERITY_ICON ? e.severity : 'info'}`} title={e.message}>
-                <Icon name={SEVERITY_ICON[e.severity] ?? 'info'} size={14} />
-                <span className="mini-feed-text">{e.message}</span>
+              <li key={e.id} className={`mini-feed-item ${eventClass(e)}`} title={e.message}>
+                <Icon name={eventIcon(e)} size={14} />
+                <span className="mini-feed-text">
+                  <span className="sr-only">{eventSpoken(e)}</span>
+                  {e.message}
+                </span>
                 {when ? (
                   <time className="feed-time" dateTime={when}>
                     {fmtTimeOfDay(when)}

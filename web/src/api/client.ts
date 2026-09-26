@@ -129,6 +129,8 @@ export const api = {
     request<{ job_id: string }>('POST', '/backtest', { body: { strategies, year } }),
   backtestStatus: (jobId: string) => request<BacktestStatus>('GET', `/backtest/${encodeURIComponent(jobId)}`),
   results: (signal?: AbortSignal) => request<Results>('GET', '/results/pitch', { signal, timeoutMs: 30_000 }),
+  /** GET /results/ai-gains, read defensively by src/screens/results/aiGains.ts. */
+  aiGains: (signal?: AbortSignal) => request<unknown>('GET', '/results/ai-gains', { signal, timeoutMs: 30_000 }),
   forecast: (location: string, atUtc: string) =>
     request<Forecast>('GET', `/forecast?location=${encodeURIComponent(location)}&at_utc=${encodeURIComponent(atUtc)}`),
 };

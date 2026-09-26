@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { FrameMessage, IdleMessage } from '../src/api/types.ts';
+import type { FrameMessage, IdleMessage, LiveEvent } from '../src/api/types.ts';
 import { initialLiveState, liveReducer, type LiveState } from '../src/live/reducer.ts';
+import { gainsView, readAiGains } from '../src/screens/results/aiGains.ts';
 import { ControllerFlash } from '../src/map/flash.ts';
 import { projectLonLat } from '../src/map/albers.ts';
 import { pointInRing } from '../src/map/geometry.ts';
@@ -348,5 +349,136 @@ describe('battery_status', () => {
     const next = codesOf(f2);
     expect(flash.apply(state.events, next, wall + 1000)).toBe(0);
     expect(countCodes(next, null, null)[DOWN]).toBe(0);
+  });
+});
+
+/** The summer evening with the simple rule live (so the race runs the AI forecast), past its starting phase. */
+function simpleRuleRun() {
+  let now = 0;
+  const sim = new MockSim({ now: () => now, random: () => 0.5 });
+  sim.start({ strategy: 'bands', speed_tps: 10 });
+  now += 2000;
+  sim.stepWall();
+  return { sim, step: () => ((now += 1000), sim.stepWall()) };
+}
+
+describe('the race (docs/API.md Race)', () => {
+  it('runs the simple rule beside the AI forecast, in every frame and snapshot while a run exists', () => {
+    const { sim, step } = running(10);
+    let f = frame(step());
+    for (let i = 0; i < 5; i++) f = frame(step());
+    expect(f.race).toMatchObject({ strategy: 'bands', label: 'Simple rule' });
+    expect(Object.keys(f.race?.by_location ?? {})).toEqual([...LOCS]);
+    for (const loc of LOCS) {
+      expect(f.race?.by_location[loc]).toEqual({ revenue_usd: expect.any(Number), charge_level: expect.any(Number), action: expect.stringMatching(/^(charge|sell|hold)$/) });
+    }
+    const byCity = LOCS.reduce((s, l) => s + (f.race?.by_location[l]?.revenue_usd ?? 0), 0);
+    expect(byCity).toBeCloseTo(f.race?.revenue_usd ?? Number.NaN, 2);
+    expect(f.race?.live_minus_race_usd).toBeCloseTo(f.totals.revenue_usd - (f.race?.revenue_usd ?? 0), 3);
+    expect(sim.snapshot().race?.strategy).toBe('bands');
+    sim.reset();
+    expect(sim.snapshot().race).toBeNull();
+  });
+
+  it('races the AI forecast when the live run itself uses the simple rule', () => {
+    expect(frame(simpleRuleRun().step()).race).toMatchObject({ strategy: 'forecast', label: 'AI forecast (TimesFM-3)' });
+  });
+
+  it('notes the summer night spike: the charge each side had, then who is ahead', () => {
+    const { sim, step } = running(10);
+    const updates: LiveEvent[] = [];
+    for (let i = 0; i < 60 && sim.status !== 'finished'; i++) updates.push(...frame(step()).events.filter((e) => e.kind === 'race_update'));
+    expect(updates[0].message).toMatch(/^Prices jumped to \$1,7\d\d in all four cities\. The AI fleet had \d+% charge left; the simple rule had \d+%\.$/);
+    expect(updates[0].detail).toMatchObject({ race_strategy: 'bands', locations: [...LOCS] });
+    expect(updates[1]).toMatchObject({ severity: 'good', message: expect.stringMatching(/^The AI is now \$[\d,]+ ahead of the simple rule\.$/) });
+    expect(sim.snapshot().race?.live_minus_race_usd).toBeGreaterThan(0);
+  });
+
+  it('mirrors availability, but not controller crashes', () => {
+    const offline = running(10, 'spike_evening');
+    offline.sim.setAvailability({ scope: 'location', location: 'LZ_HOUSTON', offline_fraction: 1 });
+    const before = offline.sim.snapshot().race?.by_location.LZ_HOUSTON;
+    for (let i = 0; i < 20; i++) offline.step();
+    // With every Houston battery offline, the race's Houston batteries sit still too.
+    expect(offline.sim.snapshot().race?.by_location.LZ_HOUSTON).toEqual({ ...before, action: 'hold' });
+    expect(offline.sim.snapshot().race?.by_location.LZ_NORTH?.revenue_usd).not.toBe(0);
+
+    // A live simple-rule fleet sells in Houston from 6:45 pm on the summer evening; crashing a Houston
+    // controller then costs the live fleet orders, while the race (the AI forecast here) carries on untouched.
+    const calm = simpleRuleRun();
+    const crash = simpleRuleRun();
+    crash.sim.kill(0);
+    for (let i = 0; i < 6; i++) {
+      calm.step();
+      crash.step();
+    }
+    const [a, b] = [calm.sim.snapshot(), crash.sim.snapshot()];
+    expect(b.failed_commands.count).toBeGreaterThan(0);
+    expect(b.totals.revenue_usd).not.toBe(a.totals.revenue_usd);
+    expect(b.race).toEqual({ ...a.race, live_minus_race_usd: expect.any(Number) });
+  });
+});
+
+describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
+  const gains = new MockSim().aiGains();
+
+  it('has the pitch year first, then 2024, with the uplift over the simple rule', () => {
+    expect(gains).toMatchObject({ ai: 'forecast', baseline: 'bands' });
+    expect(gains.years.map((y) => [y.year, y.is_pitch])).toEqual([
+      [2025, true],
+      [2024, false],
+    ]);
+    expect(gains.years[0].uplift).toEqual({ per_battery_usd_year: 67.28, pct: 0.544, fleet_usd_year: 1_345_600 });
+    expect(gains.years[1].uplift).toEqual({ per_battery_usd_year: 157.74, pct: 1.387, fleet_usd_year: 3_154_800 });
+    expect(gains.years[0].best_possible_per_battery_usd_year).toBe(421.29);
+  });
+
+  it('matches the docs/API.md example and the RUNLOG table', () => {
+    expect(gains.years[0].strategies.forecast).toMatchObject({
+      label: 'AI forecast (TimesFM-3)',
+      per_battery_usd_year: 190.95,
+      fleet_usd_year: 3_819_000,
+      share_of_best: 0.453,
+      surplus_mwh: 7011.3,
+      spike_mwh: 25.2,
+      spike_events: 21,
+      spike_charge_level: 0.231,
+      sold_mwh: 80_168.1,
+      avg_sell_usd_mwh: 66.58,
+      avg_buy_usd_mwh: 17.02,
+    });
+    expect(gains.years[1].strategies.forecast).toMatchObject({ spike_events: 53, spike_charge_level: 0.52, spike_mwh: 610.9, surplus_mwh: 6361 });
+    expect(gains.years[1].strategies.bands).toMatchObject({ spike_charge_level: 0.24, spike_mwh: 76.3, surplus_mwh: 905 });
+    // bought_mwh is derived so the money adds up: sold × average sell price − bought × average buy price.
+    for (const y of gains.years) {
+      for (const s of Object.values(y.strategies)) {
+        expect(s.sold_mwh * s.avg_sell_usd_mwh - s.bought_mwh * s.avg_buy_usd_mwh).toBeCloseTo(s.fleet_usd_year, -1);
+      }
+    }
+  });
+
+  it('reads on the site as the approved headline and cards', () => {
+    const read = readAiGains(JSON.parse(JSON.stringify(gains)));
+    if (!read) throw new Error('unreadable');
+    const view = gainsView(read, null, 20_000);
+    expect(view.headline?.sentence).toBe(
+      '+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet',
+    );
+    expect(view.perfect?.bars.map((b) => b.text)).toEqual(['29%', '32%', '45%']);
+    expect(view.surplus).toMatchObject({ aiText: '7,011 MWh', baseText: '1,239 MWh', times: '5.7×' });
+    expect(view.spike).toMatchObject({ aiChargeText: '52%', baseChargeText: '24%', aiMwhText: '611 MWh', baseMwhText: '76 MWh', times: '8×' });
+  });
+
+  it('agrees with GET /results/pitch', () => {
+    const results = new MockSim().results();
+    const per = Object.fromEntries(results.strategies.map((s) => [s.strategy, s.per_battery_usd_year]));
+    for (const [id, s] of Object.entries(gains.years[0].strategies)) expect(per[id]).toBe(s.per_battery_usd_year);
+    expect(results.ceiling?.per_battery_usd_year).toBe(421.29);
+    expect(results.year).toBe(2025);
+  });
+
+  it('answers 404 no_results before any full-year run, or when told to', () => {
+    expect(caught(() => new MockSim({ resultsBeforeBacktest: false }).aiGains())).toMatchObject({ status: 404, code: 'no_results' });
+    expect(caught(() => new MockSim({ noAiGains: true }).aiGains())).toMatchObject({ status: 404, code: 'no_results' });
   });
 });

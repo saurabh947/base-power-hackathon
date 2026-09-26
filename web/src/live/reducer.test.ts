@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FrameMessage, LiveEvent, SnapshotMessage, Tick, Worker } from '../api/types.ts';
+import type { FrameMessage, LiveEvent, Race, SnapshotMessage, Tick, Worker } from '../api/types.ts';
 import { initialLiveState, liveReducer, MAX_EVENTS, MAX_HISTORY, type LiveState } from './reducer.ts';
 
 const T0 = Date.parse('2025-05-16T21:00:00Z');
@@ -189,6 +189,16 @@ describe('frame', () => {
 
 const idle = (lastRun: unknown = null) => ({ type: 'idle', status: 'idle', run_id: null, last_run: lastRun });
 
+/** docs/API.md Race: the simple rule's copy of the fleet, having earned `revenue`. */
+const race = (revenue: number): Race => ({
+  strategy: 'bands',
+  label: 'Simple rule',
+  revenue_usd: revenue,
+  by_location: { LZ_HOUSTON: { revenue_usd: revenue, charge_level: 0.4, action: 'sell' } },
+  charge_level: 0.4,
+  live_minus_race_usd: 10 - revenue,
+});
+
 describe('idle and junk', () => {
   it('clears the run on an idle message, keeps the notes and remembers the last run', () => {
     const s1 = apply(
@@ -240,6 +250,21 @@ describe('idle and junk', () => {
     // Idle from the start: the idle snapshot's status stays until something replaces it.
     const i1 = apply(initialLiveState, snapshot({ run_id: null, status: 'idle', settings: null, history: [], battery_status: 'EREA' }));
     expect(apply(i1, idle(null)).batteryStatus).toBe('EREA');
+  });
+
+  it('keeps the race from snapshots and frames, and drops it while idle or when none comes', () => {
+    const s1 = apply(initialLiveState, snapshot({ race: race(4) }));
+    expect(s1.race).toEqual(race(4));
+    const s2 = apply(s1, frame([tick(3)], { race: race(6) }));
+    expect(s2.race?.revenue_usd).toBe(6);
+    // The same numbers again: the same object, so the race corner does not re-render.
+    expect(apply(s2, frame([tick(4)], { race: race(6) })).race).toBe(s2.race);
+    expect(apply(s2, frame([tick(4)])).race).toBeNull(); // an older backend sends none
+    expect(apply(s2, frame([tick(4)], { race: null })).race).toBeNull();
+    expect(apply(s2, frame([tick(4)], { race: { label: 'Simple rule' } as unknown as Race })).race).toBeNull();
+    expect(apply(s2, idle(null)).race).toBeNull();
+    // A new run's frame never shows the old run's race.
+    expect(apply(s2, frame([tick(0)], { run_id: 'run-2' })).race).toBeNull();
   });
 
   it('treats a frame with status idle like an idle message', () => {

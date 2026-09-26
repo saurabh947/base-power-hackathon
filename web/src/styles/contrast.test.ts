@@ -78,6 +78,11 @@ const TEXT_PAIRS: [string, string][] = [
   // Results: the big per-battery number, the headline bar's value; Start: "20,000 home batteries".
   ['money', PANEL],
   ['money', 'bg'],
+  // Results, "What the AI adds": text and the AI's green inside the cards, the percentage chip.
+  ['text', 'card'],
+  ['text-muted', 'card'],
+  ['money', 'card'],
+  ['ok', 'ok-soft'],
 ];
 
 const UI_PAIRS: [string, string][] = [
@@ -110,6 +115,9 @@ const UI_PAIRS: [string, string][] = [
   ['bar-day', 'bar-track'],
   ['bar-day', PANEL],
   ['bar-headline', PANEL],
+  // "What the AI adds": the AI's bar and the battery gauges' outline inside a card.
+  ['bar-headline', 'card'],
+  ['border-strong', 'card'],
   // The red Texas outline on the page.
   ['map-outline', 'bg'],
 ];

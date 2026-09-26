@@ -21,8 +21,8 @@ export function PracticeBanner() {
       <div className="page">
         <Icon name="info" />
         <span>
-          <strong>Practice data.</strong> You are connected to the mock simulator: prices are real ERCOT data for the
-          replay days; batteries, controllers, money, forecasts and full-year results are simulated.
+          <strong>Practice data.</strong> You are connected to the mock simulator. Real: ERCOT prices for the replay
+          days, and the main full-year figures (copied from the real backtest). Everything else is simulated.
         </span>
       </div>
     </div>

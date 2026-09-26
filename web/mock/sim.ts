@@ -1,20 +1,27 @@
 // SIMULATED fleet for the mock API (dev and tests only; never shipped).
 //
 // Real: the prices in ./data (ERCOT real-time prices of the four Texas Triangle
-// load zones, each replay preset's day and the day after). Simulated:
-// everything else — batteries and where they sit, controllers, decisions,
-// money, forecasts, failures and full-year results. The physics follow
-// RUNLOG.md loosely (grid-side metering, sqrt(eta) each way, 20% reserve) so the
-// site sees realistic shapes, but no number here is a real result.
+// load zones, each replay preset's day and the day after), and the full-year
+// figures copied from RUNLOG.md (below). Simulated: everything else — batteries
+// and where they sit, controllers, decisions, money, the race, forecasts and
+// failures. The physics follow RUNLOG.md loosely (grid-side metering, sqrt(eta)
+// each way, 20% reserve) so the site sees realistic shapes, but no live number
+// here is a real result.
 //
 // Contract details (docs/API.md): worker_id 0-19 shown as "Controller N+1";
 // battery ids b00000-b19999 in city blocks (Houston b00000-b06999, Dallas–Fort
 // Worth b07000-b14999, San Antonio b15000-b17599, Austin b17600-b19999); the
 // fleet split into 20 contiguous controller blocks of 1,000, as the backend's
 // FleetLayout.default_owners does (controller 18, worker 17, spans San Antonio
-// and Austin); idle message every 5 s.
+// and Austin); idle message every 5 s; the race (a shadow fleet on the
+// comparison strategy) in every snapshot and frame while a run exists.
+//
+// The full-year numbers (GET /results/pitch per-battery figures and GET
+// /results/ai-gains) are copied from the real backtest in RUNLOG.md (./gains.ts);
+// the rest of the Results payload (cycles, top days, most city splits) is simulated.
 
 import type {
+  AiGains,
   Availability,
   AvailabilityRequest,
   AvailabilityResponse,
@@ -29,6 +36,7 @@ import type {
   LiveEvent,
   LocationTotals,
   Preset,
+  Race,
   Results,
   RunStatus,
   Settings,
@@ -42,6 +50,7 @@ import type {
 import { batteryRanges, DEFAULT_SHARES } from '../src/lib/fleet.ts';
 import { CHARGING, DOWN, OFFLINE, packStatus, SELLING, WAITING } from '../src/map/status.ts';
 import priceFixture from './data/ercot_rt_lz_preset_days_2025.json' with { type: 'json' };
+import { MEASURED, mockAiGains } from './gains.ts';
 import { buildMockLayout } from './layout.ts';
 
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
@@ -66,6 +75,8 @@ const FORECAST_EVERY_TICKS = 12;
 const FORECAST_HORIZON_S = 4 * 3600;
 const IDLE_EVERY_S = 5;
 const TZ = 'America/Chicago';
+/** docs/API.md: a spike is a 5-minute price at or above $1,000/MWh. */
+const SPIKE_USD_MWH = 1000;
 
 /** Same split as config.yaml / src/sim/fleet.location_counts: 7,000 / 8,000 / 2,600 / 2,400. */
 const RANGES = batteryRanges(FLEET, DEFAULT_SHARES);
@@ -367,10 +378,145 @@ export interface MockSimOptions {
   backtestMs?: number;
   backtestFails?: boolean;
   resultsBeforeBacktest?: boolean;
+  /** GET /results/ai-gains always answers 404 no_results (a backend without them yet). */
+  noAiGains?: boolean;
 }
 
 const zeroLocTotals = (): Record<Loc, LocationTotals> => perLoc(() => ({ revenue_usd: 0, sold_kwh: 0, bought_kwh: 0 }));
 const zeroTotals = (): Totals => ({ revenue_usd: 0, sold_kwh: 0, bought_kwh: 0, ticks: 0 });
+
+// ---- decisions (simulated strategies) ------------------------------------------------
+
+function decide(strategy: string, seg: Segment | null, loc: Loc, tsS: number, decisionPrice: number): TickAction {
+  if (strategy === 'peak') {
+    const h = localHour(tsS);
+    if (h >= 10 && h < 15) return 'charge';
+    if (h >= 18 && h < 21) return 'sell';
+    return 'hold';
+  }
+  if (!seg) return 'hold';
+  if (strategy === 'bands') {
+    const past: number[] = [];
+    for (let s = seg.startS; s < tsS - INTERVAL_S; s += INTERVAL_S) {
+      const p = priceAt(loc, s);
+      if (p !== null) past.push(p);
+    }
+    if (past.length < 12) return 'hold';
+    if (decisionPrice <= percentile(past, 0.25)) return 'charge';
+    if (decisionPrice >= percentile(past, 0.9) && decisionPrice > 0) return 'sell';
+    return 'hold';
+  }
+  // "forecast": peeks at the loaded prices from now to 4 hours ahead, standing in for a good forecast, so it
+  // sells into a spike as it happens rather than 15 minutes late.
+  const expected = priceAt(loc, tsS) ?? decisionPrice;
+  let ahead = expected;
+  for (let s = tsS; s < tsS + FORECAST_HORIZON_S; s += INTERVAL_S) {
+    const p = priceAt(loc, s);
+    if (p !== null && p > ahead) ahead = p;
+  }
+  if (expected >= seg.sellFloor[loc] && expected >= 0.45 * ahead) return 'sell';
+  if (expected <= seg.cheap[loc] && ahead < 3 * seg.cheap[loc] + 60) return 'charge';
+  return 'hold';
+}
+
+const strategyLabel = (id: string) => STRATEGIES.find((s) => s.id === id)?.label ?? id;
+
+/** How the race_update messages name a method: "the AI", "the simple rule". */
+const SPOKEN: Record<string, string> = { forecast: 'AI', bands: 'simple rule', peak: 'evening peak' };
+const spoken = (id: string) => SPOKEN[id] ?? id;
+
+// ---- the race (docs/API.md Race) ---------------------------------------------------------
+
+/**
+ * A shadow copy of the fleet running the comparison strategy side by side with the live one: the same
+ * batteries and starting charge, the same prices at the same decision lag, the same availability. It has
+ * no controllers, so no crashes and no failed commands, and no delivery noise.
+ */
+class RaceFleet {
+  readonly strategy: string;
+  readonly label: string;
+  revenue = 0;
+  fleetLevel: number;
+  private readonly soc = new Float64Array(FLEET);
+  private readonly revenueBy = perLoc(() => 0);
+  private readonly action = perLoc<TickAction>(() => 'hold');
+  private readonly level: Record<Loc, number>;
+
+  constructor(strategy: string, startCharge: number) {
+    this.strategy = strategy;
+    this.label = strategyLabel(strategy);
+    this.soc.fill(startCharge);
+    this.level = perLoc(() => startCharge);
+    this.fleetLevel = startCharge;
+  }
+
+  /** One 5-minute step on the live fleet's prices and availability. */
+  step(
+    seg: Segment | null,
+    tsS: number,
+    price: Record<Loc, number>,
+    decision: Record<Loc, number>,
+    available: (g: number) => boolean,
+  ): void {
+    let stored = 0;
+    let capacity = 0;
+    for (const loc of LOCS) {
+      let want = decide(this.strategy, seg, loc, tsS, decision[loc]);
+      const base = BASE[loc];
+      const count = COUNT[loc];
+      const h = new Float64Array(count);
+      let headroom = 0;
+      if (want !== 'hold') {
+        for (let n = 0; n < count; n++) {
+          const g = base + n;
+          if (!available(g)) continue;
+          const energy =
+            want === 'sell'
+              ? ((this.soc[g] - SOC_MIN) * CAPACITY[g] * SQRT_ETA) / DT_H
+              : ((SOC_MAX - this.soc[g]) * CAPACITY[g]) / SQRT_ETA / DT_H;
+          h[n] = Math.max(0, Math.min(POWER[g], energy));
+          headroom += h[n];
+        }
+      }
+      if (headroom < 1) want = 'hold';
+      const sign = want === 'sell' ? 1 : want === 'charge' ? -1 : 0;
+      let delivered = 0;
+      let locStored = 0;
+      for (let n = 0; n < count; n++) {
+        const g = base + n;
+        const kw = sign * h[n];
+        if (kw > 0) this.soc[g] -= (kw * DT_H) / SQRT_ETA / CAPACITY[g];
+        else if (kw < 0) this.soc[g] += (-kw * DT_H * SQRT_ETA) / CAPACITY[g];
+        this.soc[g] = Math.min(SOC_MAX, Math.max(SOC_MIN, this.soc[g]));
+        delivered += kw;
+        locStored += this.soc[g] * CAPACITY[g];
+      }
+      const earned = ((delivered * DT_H) / 1000) * price[loc];
+      this.revenueBy[loc] += earned;
+      this.revenue += earned;
+      this.action[loc] = want;
+      this.level[loc] = locStored / CAPACITY_BY_LOC[loc];
+      stored += locStored;
+      capacity += CAPACITY_BY_LOC[loc];
+    }
+    this.fleetLevel = stored / capacity;
+  }
+
+  toJson(liveRevenue: number): Race {
+    return {
+      strategy: this.strategy,
+      label: this.label,
+      revenue_usd: round(this.revenue, 4),
+      by_location: perLoc((l) => ({
+        revenue_usd: round(this.revenueBy[l], 4),
+        charge_level: round(this.level[l], 4),
+        action: this.action[l],
+      })),
+      charge_level: round(this.fleetLevel, 4),
+      live_minus_race_usd: round(liveRevenue - this.revenue, 4),
+    };
+  }
+}
 
 export class MockSim {
   status: RunStatus = 'idle';
@@ -381,6 +527,7 @@ export class MockSim {
   private readonly random: () => number;
   private readonly backtestMs: number;
   private readonly backtestFails: boolean;
+  private readonly noAiGains: boolean;
   private resultsReady: boolean;
 
   private segment: Segment | null = null;
@@ -410,6 +557,9 @@ export class MockSim {
   private pendingForecast: Partial<Record<Loc, Forecast>> | null = null;
   private lastAction: Record<Loc, TickAction> = perLoc(() => 'hold');
   private spiked: Record<Loc, boolean> = perLoc(() => false);
+  private race = new RaceFleet('bands', DEFAULT_SETTINGS.start_charge_level);
+  /** A spike is on in at least one city (for the race_update events). */
+  private inSpike = false;
   private eventSeq = 0;
   private pidSeq = 4100;
   private jobs = new Map<string, Job>();
@@ -421,6 +571,7 @@ export class MockSim {
     this.random = options.random ?? mulberry32(1234);
     this.backtestMs = options.backtestMs ?? 6000;
     this.backtestFails = options.backtestFails ?? false;
+    this.noAiGains = options.noAiGains ?? false;
     this.resultsReady = options.resultsBeforeBacktest ?? true;
     this.resetFleet();
   }
@@ -503,7 +654,10 @@ export class MockSim {
     this.pendingForecast = null;
     this.lastAction = perLoc(() => 'hold');
     this.spiked = perLoc(() => false);
+    this.inSpike = false;
     this.resetFleet(next.start_charge_level);
+    // The comparison is the simple rule, or the AI forecast when the live run uses the simple rule.
+    this.race = new RaceFleet(next.strategy === 'bands' ? 'forecast' : 'bands', next.start_charge_level);
     for (const w of this.workers) w.status = 'starting';
     return { run_id: this.runId, settings: this.settings };
   }
@@ -772,6 +926,7 @@ export class MockSim {
       availability: this.availability(),
       events: this.pendingEvents.splice(0),
       battery_status: this.batteryStatus(),
+      race: this.publicRace(),
     };
     if (forecast) frame.forecast = forecast;
     return frame;
@@ -794,7 +949,13 @@ export class MockSim {
       events: this.events.slice(-20),
       forecast: { ...this.forecast },
       battery_status: this.batteryStatus(),
+      race: this.publicRace(),
     };
+  }
+
+  /** docs/API.md Race: in every snapshot and frame while a run exists, null while idle. */
+  publicRace(): Race | null {
+    return this.status === 'idle' || !this.runId ? null : this.race.toJson(this.totals.revenue_usd);
   }
 
   private publicTotals(): Totals {
@@ -853,40 +1014,6 @@ export class MockSim {
     this.pendingEvents.push(event);
   }
 
-  // ---- decisions (simulated strategies) ------------------------------------------------
-
-  private decide(loc: Loc, tsS: number, decisionPrice: number): TickAction {
-    const strategy = this.settings.strategy;
-    const seg = this.segment;
-    if (strategy === 'peak') {
-      const h = localHour(tsS);
-      if (h >= 10 && h < 15) return 'charge';
-      if (h >= 18 && h < 21) return 'sell';
-      return 'hold';
-    }
-    if (!seg) return 'hold';
-    if (strategy === 'bands') {
-      const past: number[] = [];
-      for (let s = seg.startS; s < tsS - INTERVAL_S; s += INTERVAL_S) {
-        const p = priceAt(loc, s);
-        if (p !== null) past.push(p);
-      }
-      if (past.length < 12) return 'hold';
-      if (decisionPrice <= percentile(past, 0.25)) return 'charge';
-      if (decisionPrice >= percentile(past, 0.9) && decisionPrice > 0) return 'sell';
-      return 'hold';
-    }
-    // "forecast": peeks at the loaded prices for the next 4 hours, standing in for a good forecast.
-    let ahead = decisionPrice;
-    for (let s = tsS; s < tsS + FORECAST_HORIZON_S; s += INTERVAL_S) {
-      const p = priceAt(loc, s);
-      if (p !== null && p > ahead) ahead = p;
-    }
-    if (decisionPrice >= seg.sellFloor[loc] && decisionPrice >= 0.45 * ahead) return 'sell';
-    if (decisionPrice <= seg.cheap[loc] && ahead < 3 * seg.cheap[loc] + 60) return 'charge';
-    return 'hold';
-  }
-
   // ---- one 5-minute step ------------------------------------------------------------------
 
   private tick(): void {
@@ -915,7 +1042,7 @@ export class MockSim {
     for (const loc of LOCS) {
       price[loc] = priceAt(loc, tsS) ?? 0;
       decision[loc] = priceAt(loc, tsS - INTERVAL_S) ?? price[loc];
-      let want = this.decide(loc, tsS, decision[loc]);
+      let want = decide(this.settings.strategy, this.segment, loc, tsS, decision[loc]);
 
       // Directional headroom of each available battery, grid-side kW.
       const base = BASE[loc];
@@ -1008,6 +1135,21 @@ export class MockSim {
     const capTotal = sum(CAPACITY_BY_LOC);
     this.totals.revenue_usd += fleetRevenue;
     this.totals.ticks += 1;
+
+    // The race: the same step for the shadow fleet, then a race_update as a spike starts and after it ends.
+    // The charge levels "as the spike began" are the last step's, before this one sells into it.
+    const liveLevelBefore = this.history[this.history.length - 1]?.charge_level.fleet ?? this.settings.start_charge_level;
+    const raceLevelBefore = this.race.fleetLevel;
+    this.race.step(this.segment, tsS, price, decision, (g) => this.isAvailable(g));
+    const spikeLocs = LOCS.filter((l) => price[l] >= SPIKE_USD_MWH);
+    if (spikeLocs.length && !this.inSpike) {
+      this.inSpike = true;
+      this.noteRaceSpike(spikeLocs, price, liveLevelBefore, raceLevelBefore);
+    } else if (!spikeLocs.length && this.inSpike) {
+      this.inSpike = false;
+      this.noteRaceLead();
+    }
+
     const t: Tick = {
       ts_utc: isoUtc(tsS),
       ts_local: isoLocal(tsS),
@@ -1091,6 +1233,38 @@ export class MockSim {
       `${where} spiked to ${spikes.length > 1 ? 'up to ' : ''}${money(top)}/MWh (${perKwh(top)}), about ${times} times the overnight price.`,
       { locations: spikes.map((s) => s.loc), price: Object.fromEntries(spikes.map((s) => [s.loc, s.price])) },
     );
+  }
+
+  /** "Prices jumped to $1,757 in all four cities. The AI fleet had 54% charge left; the simple rule had 21%." */
+  private noteRaceSpike(locs: Loc[], price: Record<Loc, number>, liveLevel: number, raceLevel: number): void {
+    const top = Math.max(...locs.map((l) => price[l]));
+    const where = locs.length === 1 ? CITY_NAMES[locs[0]] : cityList(locs);
+    this.emit(
+      'race_update',
+      'info',
+      `Prices jumped to ${money(top)} in ${where}. The ${spoken(this.settings.strategy)} fleet had ${Math.round(liveLevel * 100)}% charge left; the ${spoken(this.race.strategy)} had ${Math.round(raceLevel * 100)}%.`,
+      {
+        race_strategy: this.race.strategy,
+        live_charge_level: round(liveLevel, 4),
+        race_charge_level: round(raceLevel, 4),
+        locations: locs,
+        price: Object.fromEntries(locs.map((l) => [l, price[l]])),
+      },
+    );
+  }
+
+  /** "The AI is now $12,400 ahead of the simple rule." The leader comes first. */
+  private noteRaceLead(): void {
+    const diff = this.totals.revenue_usd - this.race.revenue;
+    const abs = Math.abs(diff);
+    const amount = money(abs >= 1000 ? Math.round(abs / 100) * 100 : Math.round(abs));
+    const live = spoken(this.settings.strategy);
+    const other = spoken(this.race.strategy);
+    const [leader, behind] = diff >= 0 ? [live, other] : [other, live];
+    this.emit('race_update', diff >= 0 ? 'good' : 'info', `The ${leader} is now ${amount} ahead of the ${behind}.`, {
+      race_strategy: this.race.strategy,
+      live_minus_race_usd: round(diff, 2),
+    });
   }
 
   private issueForecast(tsS: number): void {
@@ -1271,37 +1445,63 @@ export class MockSim {
     const energyMwh = CAPACITY.reduce((a, b) => a + b, 0) / 1000;
     const avgKw = NAMEPLATE_KW / FLEET;
     const avgKwh = (energyMwh * 1000) / FLEET;
-    const factor: Record<Loc, number> = { LZ_HOUSTON: 1.04, LZ_NORTH: 0.96, LZ_CPS: 1.02, LZ_AEN: 0.99 };
-    const strategy = (key: string, label: string, perBattery: number, cycles: number, headline: boolean, days: number[]) => ({
+    const factor: Record<Loc, number> = { LZ_HOUSTON: 0.94, LZ_NORTH: 0.98, LZ_CPS: 1.11, LZ_AEN: 1.12 };
+    // The per-battery figures are the measured 2025 ones (RUNLOG.md, 4-city full-year results; ./gains.ts).
+    const measured = MEASURED.find((y) => y.isPitch) ?? MEASURED[0];
+    const perBattery = (key: 'bands' | 'forecast' | 'peak') => measured.strategies[key].perBattery;
+    const strategy = (
+      key: 'bands' | 'forecast' | 'peak',
+      label: string,
+      cycles: number,
+      headline: boolean,
+      days: number[],
+      perCity?: Record<Loc, number>,
+    ) => ({
       strategy: key,
       label,
       run_id: `mock-${key}`,
       is_headline: headline,
-      per_battery_usd_year: perBattery,
-      fleet_usd_year: Math.round(perBattery * FLEET),
-      usd_per_kwh_year: round(perBattery / avgKwh),
-      usd_per_kw_year: round(perBattery / avgKw),
+      per_battery_usd_year: perBattery(key),
+      fleet_usd_year: Math.round(perBattery(key) * FLEET),
+      usd_per_kwh_year: round(perBattery(key) / avgKwh),
+      usd_per_kw_year: round(perBattery(key) / avgKw),
       cycles_per_year: cycles,
-      per_location_usd: perLoc((l) => Math.round(perBattery * COUNT[l] * factor[l])),
+      per_location_usd: perLoc((l) => Math.round((perCity ? perCity[l] : perBattery(key) * factor[l]) * COUNT[l])),
       top_days: TOP_DAY_DATES.map((date_local, i) => ({ date_local, usd: days[i] })),
     });
     return {
-      year: 2025,
+      year: measured.year,
       generated_utc: new Date(this.now()).toISOString(),
       fleet_size: FLEET,
       fleet_power_mw: round(powerMw, 1),
       fleet_energy_mwh: round(energyMwh, 1),
       assumptions: [
-        'SIMULATED: these are placeholder numbers from the practice (mock) server, not a real backtest.',
+        'SIMULATED practice data from the mock server: the per-battery figures and the AI forecast’s city figures are copied from the real 2025 backtest (RUNLOG.md); the cycles, top days and other city splits are made up.',
         'Gross wholesale energy value at ERCOT real-time prices (15-minute settlement).',
       ],
       strategies: [
-        strategy('bands', 'Simple rule', 104.2, 286, false, [182_000, 121_500, 96_200, 88_900, 71_300, 64_800, 60_100, 55_700, 49_900, 47_200]),
-        strategy('forecast', 'AI forecast (TimesFM-3)', 161.8, 301, true, [412_600, 318_400, 205_700, 164_900, 121_800, 98_300, 90_600, 84_100, 77_500, 70_900]),
-        strategy('peak', 'Evening peak', 128.5, 365, false, [301_200, 226_000, 150_400, 118_800, 96_500, 80_200, 72_100, 66_400, 61_000, 58_300]),
+        strategy('bands', 'Simple rule', 286, false, [182_000, 121_500, 96_200, 88_900, 71_300, 64_800, 60_100, 55_700, 49_900, 47_200]),
+        // RUNLOG.md: the AI forecast per battery in 2025, by city.
+        strategy('forecast', 'AI forecast (TimesFM-3)', 301, true, [412_600, 318_400, 205_700, 164_900, 121_800, 98_300, 90_600, 84_100, 77_500, 70_900], {
+          LZ_HOUSTON: 179.49,
+          LZ_NORTH: 187.17,
+          LZ_CPS: 212.77,
+          LZ_AEN: 213.32,
+        }),
+        strategy('peak', 'Evening peak', 365, false, [301_200, 226_000, 150_400, 118_800, 96_500, 80_200, 72_100, 66_400, 61_000, 58_300]),
       ],
-      ceiling: { label: 'Best possible (perfect hindsight)', per_battery_usd_year: 251.0, fleet_usd_year: 251 * FLEET },
+      ceiling: {
+        label: 'Best possible (perfect hindsight)',
+        per_battery_usd_year: measured.bestPerBattery,
+        fleet_usd_year: Math.round(measured.bestPerBattery * FLEET),
+      },
     };
+  }
+
+  /** GET /results/ai-gains: the measured numbers (./gains.ts); 404 no_results like GET /results/pitch. */
+  aiGains(): AiGains {
+    if (!this.resultsReady || this.noAiGains) throw new MockError(404, 'no_results', 'No full-year results yet.');
+    return mockAiGains(FLEET);
   }
 }
 

@@ -233,6 +233,20 @@ html.map-mode .toasts {
   right: 12px;
 }
 
+/*
+ * The money corner never runs into the fleet corner below it: LiveMap sets --corner-tr-max to the room the
+ * fleet corner leaves. Only a short window with a city selected needs it; then the money corner scrolls.
+ */
+@media (min-width: 861px) {
+  .corner-slot-tr > .corner {
+    max-height: var(--corner-tr-max, none);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}
+
 .corner {
   display: grid;
   gap: 5px;
@@ -449,12 +463,55 @@ html.map-mode .toasts {
   text-align: right;
 }
 
+/* The race in the money corner: compact, just under the money it compares. "RACE" and who leads share a line. */
+.corner .race {
+  gap: 3px;
+  margin-top: 3px;
+}
+
+.race-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+}
+
+.race-head .race-lead {
+  font-size: 12.5px;
+}
+
+.corner .race-rows {
+  gap: 2px;
+}
+
+.corner .race-row {
+  line-height: 1.3;
+}
+
 /* Mini charts */
 .mini-chart {
   display: block;
   width: 100%;
   height: 56px;
   margin-top: 2px;
+}
+
+/*
+ * Short windows (1280 × 800 and the like): the money corner also holds the race, so the corners are a
+ * little tighter and its power line lower, and both right-hand corners fit with a city selected.
+ */
+@media (max-height: 860px) and (min-width: 861px) {
+  .corner {
+    gap: 4px;
+  }
+
+  .corner-rule {
+    margin: 2px 0;
+  }
+
+  .corner-tr .mini-chart {
+    height: 34px;
+  }
 }
 
 .mini-empty {

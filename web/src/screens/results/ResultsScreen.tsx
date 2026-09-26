@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../../api/client.ts';
+import { api, ApiError } from '../../api/client.ts';
 import { friendlyError, type FriendlyError } from '../../api/errors.ts';
-import type { Results } from '../../api/types.ts';
+import type { AiGains, Results } from '../../api/types.ts';
 import { ErrorNotice, Notice } from '../../components/Notice.tsx';
 import { Term } from '../../components/Tech.tsx';
 import { useBackend } from '../../state/backend.ts';
+import { AiGainsSection } from './AiGainsSection.tsx';
+import { readAiGains } from './aiGains.ts';
 import { headlineOf } from './model.ts';
 import { BigNumber, ComparisonBars, HowWeGotThis, TopDays } from './ResultPanels.tsx';
 import { RerunPanel } from './RerunPanel.tsx';
@@ -30,6 +32,8 @@ interface Loaded {
 export function ResultsScreen() {
   const backend = useBackend();
   const [state, setState] = useState<Loaded>({ results: null, error: null, loading: true });
+  // "What the AI adds": shown only when GET /results/ai-gains has something to show.
+  const [gains, setGains] = useState<AiGains | null>(null);
 
   /** GET /results/pitch; state changes only once the answer arrives. */
   const fetchResults = useCallback((signal?: AbortSignal) => {
@@ -46,16 +50,32 @@ export function ResultsScreen() {
     );
   }, []);
 
+  /**
+   * GET /results/ai-gains, alongside the results. A 404 (no_results) or an answer with nothing usable hides
+   * the section; a network blip keeps what is already on screen.
+   */
+  const fetchGains = useCallback((signal?: AbortSignal) => {
+    api.aiGains(signal).then(
+      (raw) => setGains(readAiGains(raw)),
+      (err) => {
+        if (signal?.aborted) return;
+        if (err instanceof ApiError && err.status >= 400 && err.status < 500) setGains(null);
+      },
+    );
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     fetchResults(controller.signal);
+    fetchGains(controller.signal);
     return () => controller.abort();
-  }, [fetchResults]);
+  }, [fetchResults, fetchGains]);
 
   const reload = useCallback(() => {
     setState((s) => ({ ...s, loading: true }));
     fetchResults();
-  }, [fetchResults]);
+    fetchGains();
+  }, [fetchResults, fetchGains]);
 
   const { results, error, loading } = state;
   const headline = headlineOf(results);
@@ -100,8 +120,7 @@ export function ResultsScreen() {
         <div className="results-grid">
           <BigNumber results={results} headline={headline} />
           <ComparisonBars results={results} headline={headline} />
-          {/* "What the AI adds" (coming later) goes here, as its own row: a full-width panel (className="span-12"),
-              or two panels of span-7 and span-5 like the rows around it. */}
+          {gains ? <AiGainsSection gains={gains} fleetSize={results.fleet_size} /> : null}
           <TopDays results={results} headline={headline} />
           <div className="span-5 stack">
             <HowWeGotThis results={results} />
