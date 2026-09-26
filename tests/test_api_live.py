@@ -23,10 +23,11 @@ PASS = "presenter-test-passcode"
 LOCS = list(load_config().fleet.locations)
 
 SNAPSHOT_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "settings", "history", "totals", "workers",
-                 "failed_commands", "availability", "events", "forecast", "battery_status"}
+                 "failed_commands", "availability", "events", "forecast", "battery_status", "race"}
 IDLE_KEYS = {"type", "status", "run_id", "last_run"}
 FRAME_KEYS = {"type", "run_id", "status", "sim_time_utc", "speed_tps", "ticks", "totals", "workers", "failed_commands",
-              "availability", "events", "battery_status"}
+              "availability", "events", "battery_status", "race"}
+RACE_KEYS = {"strategy", "label", "revenue_usd", "by_location", "charge_level", "live_minus_race_usd"}
 TOTALS_KEYS = {"revenue_usd", "sold_kwh", "bought_kwh", "ticks", "by_location"}
 TICK_KEYS = {"ts_utc", "ts_local", "price", "decision_price", "action", "target_kw", "actual_kw", "error_pct",
              "revenue_usd", "charge_level", "healthy_workers"}
@@ -101,6 +102,14 @@ def _assert_common(msg):
     assert all(set(e) == {"battery_id", "worker_id", "reason", "tick_utc"} for e in msg["failed_commands"]["recent"])
     assert set(msg["availability"]) == {"available", "total", "by_location", "offline_workers"}
     assert all(set(e) == EVENT_KEYS for e in msg["events"])
+    race = msg["race"]  # docs/API.md Race: null while idle
+    if msg["run_id"] is None:
+        assert race is None
+    elif race is not None:
+        assert set(race) == RACE_KEYS and list(race["by_location"]) == LOCS
+        assert all(set(v) == {"revenue_usd", "charge_level", "action"} for v in race["by_location"].values())
+        assert race["live_minus_race_usd"] == pytest.approx(msg["totals"]["revenue_usd"] - race["revenue_usd"],
+                                                            abs=1e-5)
 
 
 def _assert_tick(t):
@@ -141,6 +150,11 @@ def test_websocket_messages_match_the_contract(live):
             seen += f["ticks"]
         for t in seen:
             _assert_tick(t)
+        # the live evening peak races the simple rule, side by side (from the run's first tick: null while starting)
+        running = [f for f in frames if f["status"] != "starting"]
+        assert running and all(f["race"]["strategy"] == "bands" and f["race"]["label"] == "Simple rule"
+                               for f in running)
+        assert all(f["race"] is None for f in frames if f["status"] == "starting")
         stamps = [datetime.fromisoformat(t["ts_utc"].replace("Z", "+00:00")) for t in seen]
         assert stamps[0] == datetime.fromisoformat("2025-05-16T21:00:00+00:00")
         assert all(b - a == timedelta(minutes=5) for a, b in zip(stamps, stamps[1:]))  # every tick, none sampled

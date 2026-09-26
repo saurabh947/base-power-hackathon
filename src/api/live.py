@@ -1,7 +1,8 @@
 """WebSocket /live messages (docs/API.md): one `snapshot` on connect, then a `frame` every
 second with EVERY tick since the previous frame (never sampled) while a run exists, and an
 `idle` message every 5 s when none does. A new run (run_id changed) gets a fresh `snapshot`.
-The snapshot and every frame carry `battery_status` (the latest tick's packed codes, base64).
+The snapshot and every frame carry `battery_status` (the latest tick's packed codes, base64) and `race`
+(the shadow fleet on the comparison strategy, src/sim/race.py; null while idle).
 """
 from __future__ import annotations
 
@@ -52,6 +53,7 @@ def snapshot_message(backend: Backend, cursor: LiveCursor | None = None, *, hist
         "events": events,
         "forecast": forecast,
         "battery_status": backend.battery_status(_fleet_size(snap)),
+        "race": snap.get("race") if run_id else None,  # the shadow fleet on the comparison strategy; null while idle
     }
 
 
@@ -92,6 +94,7 @@ def frame_message(backend: Backend, cursor: LiveCursor) -> dict:
         "availability": snap.get("availability"),
         "events": events,
         "battery_status": backend.battery_status(_fleet_size(snap)),
+        "race": snap.get("race"),
     }
     forecast = forecasts.at(snap.get("sim_time_utc"), backend)
     issued = {loc: f.get("issued_utc") for loc, f in forecast.items()}

@@ -570,4 +570,4 @@ def _fallback_snapshot() -> dict:
     return {"type": "snapshot", "run_id": None, "status": "idle", "sim_time_utc": None,
             "speed_tps": idle["speed_tps"], "settings": None, "history": [], "totals": idle["totals"],
             "workers": [], "failed_commands": {"count": 0, "recent": []}, "availability": idle["availability"],
-            "events": [], "forecast": {}, "battery_status": idle_battery_status(CFG.fleet.size)}
+            "events": [], "forecast": {}, "battery_status": idle_battery_status(CFG.fleet.size), "race": None}
