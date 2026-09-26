@@ -3,20 +3,21 @@
 A stand-in for the fleet-sim backend so the website can be built and tested before, and without, the real
 one. It implements the REST endpoints and the WebSocket `/live` messages from [`docs/API.md`](../../docs/API.md),
 including the pinned details: `worker_id` 0–19 shown as "Controller N+1", battery ids `b00000`–`b19999`, the
-`GET /settings` item shapes, the idle message every 5 s, `run_finished`, the worker event details, and the live
-map fields: `GET /fleet/layout`, `battery_status`, `totals.by_location`, `workers[].by_location` and battery
-`city`/`lonlat`.
+`GET /settings` item shapes, the idle message every 5 s, `run_finished`, the worker event details, the live
+map fields (`GET /fleet/layout`, `battery_status`, `totals.by_location`, `workers[].by_location` and battery
+`city`/`lonlat`), the race (`race` in snapshots and frames, `race_update` events) and `GET /results/ai-gains`.
 
 ## What is real and what is simulated
 
 | | |
 |---|---|
 | **Real** | Electricity prices: ERCOT real-time settlement point prices for the four Texas Triangle load zones (LZ_HOUSTON, LZ_NORTH, LZ_CPS, LZ_AEN), 15-minute intervals, for every replay preset's local date and the day after (`data/ercot_rt_lz_preset_days_2025.json`, 192 rows per preset). |
-| **Simulated** | Everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, failed commands, availability, forecasts (not TimesFM), events, and every number on the Results screen. None of it is a real result. |
+| **Copied from the real backtest** | The measured full-year numbers in RUNLOG.md ("What the AI adds, measured" and the Texas Triangle results), served as the backend would, not computed here (`gains.ts`): all of `GET /results/ai-gains`, and in `GET /results/pitch` the per-battery figures of the three methods, the hindsight ceiling and the AI forecast's per-city figures. |
+| **Simulated** | Everything else: the 20,000 batteries, where they sit and their physics, the 20 controllers and their crashes, decisions of the three "strategies", power, money, charge levels, the race, failed commands, availability, forecasts (not TimesFM), events, and the rest of the Results payload (cycles, top days, the other methods' city splits). None of the live numbers is a real result. |
 
 The site shows a "Practice data" banner whenever it is connected to this mock (its `GET /health` version starts
 with `mock`), the mock's forecasts are labelled `mock (simulated, not TimesFM)`, and its full-year results list
-"SIMULATED" as their first assumption.
+"SIMULATED practice data …" as their first assumption, saying which figures are copied and which are made up.
 
 The presets mirror `config.yaml` (`presets.items`; `summer_spike` is the default, as there):
 
@@ -54,6 +55,19 @@ A preset without loaded prices answers **501** `not_in_mock` on `POST /run/start
   hand-over. So at 5-10 ticks a second a frame can miss code 4, as with the backend; the site then flashes from
   the worker events. While paused, a controller that stops responding shows as 4 until it is handed over.
 - **Money per city**: `totals.by_location` holds revenue and energy per load zone; they add up to the totals.
+- **The race** (`race` in every snapshot and frame while a run exists, `null` while idle): a shadow copy of the
+  fleet on the comparison strategy, the simple rule (`bands`), or the AI forecast when the live run uses the simple
+  rule. The same batteries and starting charge, the same prices at the same 15-minute decision lag, the same
+  availability overrides; no controllers, so no crashes, no failed commands and no delivery noise.
+  `live_minus_race_usd` is `totals.revenue_usd` minus the race's; `by_location` has each city's revenue, charge
+  level and action.
+- **`race_update` events**: when a spike (a price of $1,000/MWh or more) starts in any city, "Prices jumped to
+  $1,760 in all four cities. The AI fleet had 90% charge left; the simple rule had 21%." (the charge levels as it
+  began); when it ends, "The AI is now $55,800 ahead of the simple rule." (the leader first; `good` when the live
+  strategy leads). On the default replay the simple rule leads until 9 pm, then the AI overtakes it in the spike.
+- **The simulated "forecast" strategy** peeks at the loaded prices from now to 4 hours ahead, standing in for a
+  good forecast, so it sells into a spike as it happens; the simple rule and the evening peak decide on the price
+  published 15 minutes earlier.
 
 ## Never shipped
 
@@ -74,7 +88,8 @@ Knobs (environment variables, for either mode):
 | `MOCK_PRESENTER_PASSCODE` | Presenter passcode. Default `presenter` (a test value for this mock only). Set it to an empty string to test "passcode not set" (503). |
 | `MOCK_COLD_START_MS` | Hold every request (and refuse WebSockets) for this long after start, like a Cloud Run cold start. Try `8000` to see "Waking up the simulator…". |
 | `MOCK_WS=off` | Refuse WebSocket upgrades, so the site falls back to polling `GET /state`. |
-| `MOCK_NO_RESULTS=1` | `GET /results/pitch` answers 404 `no_results` until a full-year re-run finishes. |
+| `MOCK_NO_RESULTS=1` | `GET /results/pitch` and `GET /results/ai-gains` answer 404 `no_results` until a full-year re-run finishes. |
+| `MOCK_NO_AI_GAINS=1` | `GET /results/ai-gains` always answers 404 `no_results` (a backend without them yet): the Results page shows no "What the AI adds". |
 | `MOCK_BACKTEST_FAIL=1` | Full-year re-runs end with status `failed`. |
 
 ## Behaviour worth knowing
@@ -100,7 +115,8 @@ Knobs (environment variables, for either mode):
 
 | File | Purpose |
 |---|---|
-| `sim.ts` | The simulated run (pure; unit-tested in `sim.test.ts`) |
+| `sim.ts` | The simulated run and the race (pure; unit-tested in `sim.test.ts`) |
+| `gains.ts` | `GET /results/ai-gains`: the measured numbers copied from RUNLOG.md |
 | `layout.ts` | Simulated battery positions for `GET /fleet/layout` |
 | `api.ts` | HTTP routes, errors, rate limits, WebSocket broadcast, CORS |
 | `server.ts` | Standalone Node server (`npm run mock`) |

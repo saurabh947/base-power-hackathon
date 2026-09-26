@@ -23,21 +23,50 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
     Esc or empty map go back; the selected city's dots stay bright and the others dim a little;
   - four compact translucent corners: top-left the replay clock and the price (all four cities, or the selected
     city's price with its ¢/kWh, a 6-hour mini line with charge/sell shading and the forecast band); top-right
-    money earned (fleet or `totals.by_location`) and power asked for vs delivered (numbers, sparkline, On target);
-    bottom-left Pause/Resume, Speed, Reset, Take batteries offline, the presenter-only Crash a controller, "Show
-    charts" and the Presenter link; bottom-right the 20 controllers (those serving the selected city highlighted,
-    from `workers[].by_location`), batteries online and by state (doubling as the dot legend), and the last 3
-    events;
+    money earned (fleet or `totals.by_location`), the race, and power asked for vs delivered (numbers, sparkline,
+    On target); bottom-left Pause/Resume, Speed, Reset, Take batteries offline, the presenter-only Crash a
+    controller, "Show charts" and the Presenter link; bottom-right the 20 controllers (those serving the selected
+    city highlighted, from `workers[].by_location`), batteries online and by state (doubling as the dot legend),
+    and the last 3 events;
+  - **the race** (2026-09-26, approved by the human): under the money, "RACE ↑ AI forecast ahead by $15,290"
+    over two labelled bars, "AI forecast $46,310" in green and "Simple rule $31,020" in gray, from `race` in every
+    frame (docs/API.md): a copy of the same batteries running the simple rule on the same prices. Selecting a city
+    shows that city's race from `race.by_location`, with an arrow for what each side is doing there. The lead is
+    green when the live strategy is ahead, plain text when the other one is, "Level so far" at a tie. Hidden while
+    `race` is null (idle, or a backend that sends none). `race_update` events show in "What just happened" with a
+    flag icon (and "Race update:" for screen readers), on the map and in "Show charts";
   - the caption "Battery locations are simulated inside real metro areas.";
   - "Show charts" switches to the detailed layout from before (top bar, price chart with a 4-city toggle that
     follows the map's selection, power chart, controllers, money, events, the availability drawer), in the same
-    dark theme; "Show map" switches back. The choice is kept for the tab.
+    dark theme; "Show map" switches back. The choice is kept for the tab. Its money card has the race too: "Race
+    against the simple rule", a one-line explainer, the two bars, the lead and the charge left on each side.
 - **Results** (`/results`): the per-battery headline as a big green number, the fleet total, a row of three
   figures ($/kWh-year, $/kW-year, cycles a year); "By city" rows from `per_location_usd` (biggest first, a bar
   each); comparison bars (the headline method, the AI forecast, green; the other methods gray; "Best possible
-  (perfect hindsight)" hatched); top 10 days; "How we got this number"; "Re-run the full year" with progress. A
-  "What the AI adds" section can go in as its own row between the headline row and the details (see
-  `ResultsScreen.tsx`).
+  (perfect hindsight)" hatched); **What the AI adds** (below); top 10 days; "How we got this number"; "Re-run the
+  full year" with progress.
+- **What the AI adds** (Results, 2026-09-26, approved by the human): a full-width row right under the headline
+  row, from `GET /results/ai-gains`:
+  - the headline "+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the
+    20,000-battery fleet", a big green "+$67" with a "+54%" chip, under the kicker "AI forecast (TimesFM-3),
+    2025";
+  - four cards, each with its figures as labelled bars (the AI's green) and a "What this means:" line:
+    (a) **Earns more**: $191 vs $124 per battery a year, and the whole fleet "+$1.35 million a year ($3.82 million
+    vs $2.47 million a year)"; (b) **Gets closer to perfect**: `share_of_best` for the simple rule, the evening
+    peak and the AI (29% / 32% / 45%), "100% is $421 per battery per year", and that "perfect" means knowing every
+    price in advance; (c) **Soaks up surplus power**: 7,011 vs 1,239 MWh bought at $0/MWh or less, "5.7× as much",
+    "about what 190,000 homes use in a day", explained as power that was free or cheaper than free, often excess
+    wind or solar; (d) **Ready for spikes**, always 2024 and tagged "2024": charge left when the spikes began as
+    two battery gauges (52% vs 24%), "Delivered 611 MWh vs 76 MWh during the spikes (8×)" and "2024 had 53 price
+    spikes of $1,000/MWh or more ($1.00 per kWh)";
+  - a "Year" switch, "2025 (headline year)" first, then "2024 (check year)", with the line "The headline number
+    above is for 2025. 2024 is a second full year, to check that the gain holds."; it drives the headline and
+    cards a–c;
+  - no "where it doesn't help" line, as the human asked; the fine print is unchanged;
+  - a 404 `no_results` (or an answer with nothing usable) hides the section.
+- **Mock** additions: the race (a shadow fleet on the comparison strategy) in snapshots and frames, `race_update`
+  events at a spike's start and end, and `GET /results/ai-gains` with the measured numbers from RUNLOG.md; the
+  pitch results' per-battery figures now come from the same measured run (the practice banner says so).
 - **Presenter mode**: "Presenter" link (footer, or the map's controls corner) → passcode dialog →
   `POST /presenter/check`; passcode kept in sessionStorage only and sent as `X-Presenter-Passcode`.
 - **Language**: every panel has a one-line "What is this?" and an optional "How it works"; "Show technical details"
@@ -121,12 +150,54 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
   event messages. City names come from `GET /fleet/layout` `cities[].name`, falling back to the documented four.
 - **Re-renders**: the map stage does not re-render per frame; the canvas is fed outside React, and each corner
   reads its own slices.
+- **What the AI adds, the numbers**: `src/screens/results/aiGains.ts` (tested) reads `GET /results/ai-gains`
+  defensively (years without the AI or the baseline are skipped, the pitch year first) and writes every sentence.
+  Nothing is hardcoded: the headline is `uplift` (per battery, `pct` as a fraction, `fleet_usd_year`), with any
+  missing piece worked out from the two methods and the fleet size; the fleet size is `GET /results/pitch`'s
+  `fleet_size`, else what the AI's own sums imply (fleet ÷ per battery). The spike card reads the 2024 entry of
+  `years` (the count from the AI's `spike_events`, else the baseline's) and is hidden without it or when its
+  numbers are missing. Money follows the site's style ("$1.35 million" rather than "$1.35M"); ratios drop a
+  trailing ".0" ("8×", "5.7×"); a spike is "$1,000/MWh or more", since the API counts prices ≥ $1,000/MWh.
+- **What the AI adds, the look**: one full-width panel (span 12) so the headline reads across the page; four cards
+  of the same four parts (head, figure, details, meaning) aligned across the row with CSS subgrid, a step lighter
+  than the panel (`--card`, AA-checked); bars for every comparison (the AI's green, like the comparison bars
+  above), battery gauges for the charge levels; 4 cards a row from 1,101 px, 2 below, 1 on phones, where the
+  year switch takes the full width and breaks after the year.
+- **Year labels**: "2025 (headline year)" and "2024 (check year)" rather than the brief's example "pitch year",
+  which is our word, not a visitor's; the note under the headline says what each year is. The switch starts on the
+  pitch year.
+- **No jump on Results**: the page waits for `GET /results/ai-gains` (at most 1.5 s) before showing the results
+  grid, so the section does not push everything down just after the page appears. A 4xx hides the section; a
+  network blip on a reload keeps what is on screen.
+- **The race, the numbers**: `src/screens/live/race.ts` (tested). Labels are `race.label` and the live strategy's
+  label (`settings.strategy`, or the other of bands/forecast when settings have not arrived), without their
+  bracketed detail ("AI forecast"). For all of Texas the lead is `live_minus_race_usd`; for a city it is the
+  difference of `totals.by_location` and `race.by_location` revenue. Cents while both sums are under $100 (the
+  first minutes of a replay), whole dollars after; a lead under half a cent or dollar is "Level so far". The
+  reducer keeps `race` from each snapshot and frame (the same object when unchanged) and drops it when idle, on a
+  new run, or when a frame has none.
+- **The race, the corner**: the 1280 × 800 map has little room on the right, so the corner race is three lines:
+  "RACE" and the lead on one line, then the two bars; its one-line explainer and the charge levels are in its
+  tooltip and read to screen readers. In windows up to 860 px tall the corners' gaps are 1 px tighter and the
+  money corner's power line 34 px tall (was 56). As a guard, LiveMap caps the money corner at the room the fleet
+  corner leaves (`--corner-tr-max`, after every render and on resize), so the two right-hand corners never overlap;
+  the money corner scrolls only then (with "Show technical details" on at 1280 × 800).
 - **Mock** (`web/mock`): real prices for all four load zones and all four presets (Houston/DFW values identical to
   the previous export); simulated metro positions (seeded Gaussian blobs around real suburbs, kept on land);
   contiguous controller blocks and round-robin hand-over like the backend; `battery_status` as of the latest tick,
   4 for the two missed ticks (so it misses code 4 above 2 ticks a second, like the backend); `totals.by_location`,
   `workers[].by_location`, `by_location` in worker events; `GET /fleet/layout` with an ETag. Never in `dist/`
   (`scripts/check-dist.mjs`).
+- **Mock race and gains**: the race is a shadow fleet with its own charge levels, deciding with the same code on
+  the same lagged prices and availability, without crashes or delivery noise. Its simulated "forecast" strategy now
+  peeks at the current interval as well as the next 4 hours (a stand-in for a good forecast), so it sells into a
+  spike as it happens; before, it sold 15 minutes late, after the summer spike had passed. On the default replay
+  the simple rule leads until 9 pm and the AI overtakes it in the spike ($101,152 vs $16,449 at the end).
+  `GET /results/ai-gains` serves the measured RUNLOG numbers as the backend would (`bought_mwh`, not in the
+  table, is derived so that sold × average sell price − bought × average buy price = the fleet's earnings); the
+  2025 spike count (21) is docs/API.md's example. The pitch results' per-battery figures, the ceiling and the AI's
+  per-city figures now come from the same run, so the practice Results page is consistent; the banner says which
+  figures are real.
 
 ## Measurements (mock, Chrome, 1280×800 and 1920×1080)
 
@@ -136,8 +207,11 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **Per frame**: decode `battery_status` + re-count per cell + restyle 0.4–0.5 ms; paint 0.1–0.2 ms (slowest of the
   last 120 paints 0.4–0.6 ms, during transitions); building the cells after a resize or a new layout 2.5–4.7 ms.
   448 dots at both sizes.
-- **Bundle**: 425.7 KB JS (141.3 KB gzip) and 39.6 KB CSS (424.2 KB and 37.2 KB before the site-wide theme;
-  372.4 KB JS before the map).
+- **Bundle**: 442.7 KB JS (146.6 KB gzip) and 45.5 KB CSS with "What the AI adds" and the race (425.7 KB, 141.3 KB
+  and 39.6 KB before; 424.2 KB and 37.2 KB before the site-wide theme; 372.4 KB JS before the map).
+- **Right-hand corners at 1280 × 800** (with the practice banner, a city selected): money corner with the race
+  315 px, fleet corner 357 px, 21 px apart; all of Texas: 73 px apart. The race block is 59 px tall.
+- **Results at 1280 × 800**: the "What the AI adds" panel is 642 px tall, so it fits one screen when scrolled to.
 
 ## How the site follows the contract (docs/API.md)
 
@@ -158,6 +232,14 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - **`POST /run/start` 503 `simulator_restarting`**: "The simulator is still restarting after a reset. Its 20
   controllers are coming back up. Try again in N seconds.", with the Start button counting down `retry_after_s`.
   The Start request waits up to 35 s, since the server holds it up to 15 s after a Reset.
+- **`race`** (snapshot and frames): read if it has a numeric `revenue_usd`; `null` or missing hides it. The
+  comparison is named from `race.label` (fallback: the strategy's name); `live_minus_race_usd` is the fleet lead;
+  `by_location[city]` gives a city's revenue, `charge_level` and `action`; the live side's charge and action come
+  from the latest tick.
+- **`race_update` events**: shown verbatim like every event, with a flag icon, coloured by `severity`.
+- **`GET /results/ai-gains`**: `ai` and `baseline` pick the two strategies (default forecast and bands); the
+  `is_pitch` year is "(headline year)", any other "(check year)"; `share_of_best`, `surplus_mwh`, `spike_*` as
+  documented; 404 `no_results` hides the section.
 - **Everything else** as before: settings item shapes, the idle message and `last_run`, `run_finished`, 404
   `no_results`, `skipped` reasons, amounts as fleet totals, `error_pct` as a percentage.
 
@@ -169,25 +251,43 @@ in `web/README.md`; the mock API is described in `web/mock/README.md`.
 - The map was checked against the mock only; it was not run against the merged backend here.
 - `prefers-reduced-motion` could not be emulated in the browser pane; that path is covered by unit tests (no
   glows) and by reading the renderer (no loop, no pulses).
+- The race and "What the AI adds" were built against docs/API.md and the mock while the backend for them was being
+  built; they have not been run against it. The mock's 2025 spike count (21) is docs/API.md's example value.
+- With "Show technical details" on at 1280 × 800, the money corner is taller than the room the fleet corner
+  leaves, so it scrolls (capped, never overlapping).
+- The browser pane sometimes reports the page as hidden, and then no ResizeObserver fires; LiveMap therefore also
+  re-measures the right-hand corners after every render.
 
 ## Requests for integrator
 
-(The earlier requests about code 4, the merge's API additions and the four-city wording in docs/UX.md are done.)
+(The earlier requests about code 4, the merge's API additions, the four-city wording in docs/UX.md, WebSocket
+compression and the Vercel set-up are done.)
 
-1. **docs/UX.md, one dark theme** (2026-09-26): the whole site now uses the live map's theme, always dark. Please
-   update: principle 7 ("AA contrast in light and dark themes" → in the site's one dark theme); principle 6 (green
-   is also the primary action and links; blue is neutral information and the keyboard focus ring; red stays for
-   failures and the map's outline); the Live map's "Always dark, whatever the site theme" (the whole site is);
-   Start (no map on the Start page, per the human: the map belongs on Live); Results (the "By city" rows from
-   `per_location_usd`, and the coming "What the AI adds" section as its own row after the headline row).
-2. **WebSocket compression**: a frame is ~18.7 KB raw but ~1 KB deflated (`battery_status` is most of it and
-   compresses to almost nothing). Please make sure the Cloud Run WebSocket negotiates permessage-deflate
-   (uvicorn's `ws_per_message_deflate`, on by default with the `websockets` implementation); the snapshot on
-   connect (up to ~1.8 MB with four cities) benefits most.
-3. **Vercel**: Root Directory `web`; set `VITE_API_BASE_URL` to the Cloud Run URL for Production (and Preview if
-   used); a Vercel build without it fails on purpose. `.vercelignore` in `web/` keeps `.env*` out of uploads.
-4. **After `POST /run/speed`**, `snapshot.speed_tps` and `settings.speed_tps` should both show the new speed (the
+1. **docs/UX.md** (2026-09-26): please add the two approved features and the rest of the one-theme update:
+   - Results: after the comparison bars, **What the AI adds**: the headline "+$67 per battery per year (+54%) vs
+     the simple rule, $1.35 million more a year for the 20,000-battery fleet" (from `uplift` and the fleet size);
+     four cards with a "What this means" line each (earns more; gets closer to perfect, where "perfect" means
+     knowing every price in advance; soaks up surplus power, bought when it was free or cheaper than free, often
+     excess wind or solar; ready for spikes, always 2024 and labelled so); a "2025 (headline year) / 2024 (check
+     year)" switch for the headline and the first three cards; no "where it doesn't help" line (the human's
+     request). Also the "By city" rows from `per_location_usd`.
+   - Live map, top-right corner: money earned, then **the race** ("RACE ↑ AI forecast ahead by $15,290" over two
+     bars; per city from `race.by_location`; hidden while idle), then power. "What just happened": `race_update`
+     events with a flag icon. "Show charts": the race in the money card.
+   - Principle 6: green is also the primary action and links; blue is neutral information and the keyboard focus
+     ring. Start: no map (the map belongs on Live).
+2. **Backend, race**: please send `race` in `GET /state` too (it is the snapshot; polling clients read it), label
+   the forecast strategy "AI forecast (TimesFM-3)" or similar (the map drops the bracket: "AI forecast"), and give
+   the after-a-spike `race_update` severity `good` when the live strategy leads (the flag takes the severity's
+   colour).
+3. **Backend, ai-gains**: `spike_events` is the year's count, the same for every strategy (the site reads the AI's,
+   else the baseline's); `uplift.pct` stays a fraction (0.544). If the gains may ever cover a fleet other than
+   `GET /results/pitch`'s, add `fleet_size` to AiGains; today the site takes the pitch results' `fleet_size`,
+   else fleet ÷ per battery.
+4. **RUNLOG.md**: a short website entry for the two features (outside the website's files): what the Results
+   section and the race show, and that the mock serves the measured numbers.
+5. **After `POST /run/speed`**, `snapshot.speed_tps` and `settings.speed_tps` should both show the new speed (the
    site reads `speed_tps` first).
-5. **Forecast label**: the site calls the band "AI forecast, likely range" and names TimesFM-3 only in the
+6. **Forecast label**: the site calls the band "AI forecast, likely range" and names TimesFM-3 only in the
    decision-method label from `GET /settings`/results; if the model switch moves to TimesFM 2.5, send the new label
    there and the site follows.
