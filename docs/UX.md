@@ -13,10 +13,10 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
    - "ERCOT" is first introduced as "ERCOT, the Texas grid operator".
    - Load zones are shown as cities: LZ_HOUSTON "Houston", LZ_NORTH "Dallas–Fort Worth", LZ_CPS "San Antonio", LZ_AEN "Austin". Names come from `GET /fleet/layout`.
 6. **Color has meaning, and color is never the only signal** (also use icon or label):
-   - **teal/green** = charging (buying cheap power)
-   - **amber** = selling
-   - **grey** = holding
-   - **red** only for failures
+   - **green** = batteries, money and primary actions (the map's dots: brighter green while selling, a ring while charging)
+   - **grey** = waiting or offline
+   - **blue** = neutral information and keyboard focus
+   - **red** only for failures and the Texas outline
 7. **Desktop-first**, with readable text at 1280px. Keyboard-accessible, visible focus and AA contrast. **One always-dark theme site-wide**, matching the live map: dark gray page, translucent dark panels, green primary actions. Red is only for failures and the Texas outline.
 8. **Honest labels.**
    - Replays say "Replaying real prices from May 16, 2025".
@@ -60,6 +60,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 
 ### 2. Live
 - **Top bar:** replay clock ("Jul 11, 2025, 8:45 pm, Central time"), Pause/Resume, Speed, Reset. Presenter mode shows the extra button "Crash a controller".
+- **The race** sits in the map's money corner, under the money: "AI forecast ahead by $15,290" over two bars (the live strategy vs the simple-rule shadow fleet, from `race`). It switches to the selected city's numbers, and `race_update` events show in the feed with a flag icon.
 - **Price card** ("Electricity price right now"):
   - Real price line per area, shaded teal while charging and amber while selling.
   - The AI forecast as a soft band (10–90% range) when available.
@@ -90,10 +91,21 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
   - excludes retail/delivery charges, grid-support services and battery wear
   - the fleet is too small to move prices
   - TimesFM-3 licence note: non-commercial research weights; a production version would use TimesFM 2.5
-- **Button:** "Re-run the full year" (POST /backtest), showing progress.
+- **Button:** "Re-run the full year" (POST /backtest), showing progress. Next to it is a **Stop** button (POST /backtest/{id}/cancel). Stop is enabled only while a re-run is running; a stopped run keeps the previous results ("Stopped. The previous results are still shown.").
+- **"What the AI adds"** is a full-width section right under the big number (`GET /results/ai-gains`):
+  - **Headline:** "+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet", computed from `uplift`.
+  - **Four cards**, each with bars and a "What this means" line:
+    - *Earns more*
+    - *Gets closer to perfect*: `share_of_best`
+    - *Soaks up surplus power*: `surplus_mwh`
+    - *Ready for spikes*: always the 2024 figures, tagged "2024"
+  - **Year switch:** "2025 (headline year)" / "2024 (check year)" drives the headline and the first three cards.
+  - No limitations line in this section (the human's call). The fine print stays in "How we got this number".
+  - A 404 hides the section.
 
 ## Presenter mode
-- Reached from a small, unobtrusive "Presenter" link in the footer. It asks for the passcode and calls `POST /presenter/check`.
+- Reached from the **"Presenter mode" link in the header** (top right, left of "Show technical details"). The dialog says "Enter a passcode to enter presenter mode" and calls `POST /presenter/check`. While presenter mode is on, the link reads "Leave presenter mode".
+- **There is no footer** on any page.
 - The passcode is kept in `sessionStorage` only, and is sent as the `X-Presenter-Passcode` header.
 - Unlocks "Crash a controller". Crashing a controller is presenter-only; everything else is public.
 

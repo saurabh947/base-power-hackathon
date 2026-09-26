@@ -169,30 +169,6 @@ export function StartScreen() {
           </div>
         </>
       )}
-
-      <ul className="start-facts" aria-label="About this simulation">
-        <li>
-          <strong>
-            <Icon name="chart" size={16} />
-            Real prices
-          </strong>
-          Every price comes from ERCOT, the Texas grid operator, for 2025.
-        </li>
-        <li>
-          <strong>
-            <Icon name="check" size={16} />
-            Keeps working when parts crash
-          </strong>
-          20 controllers share the batteries. If one crashes, the others take over.
-        </li>
-        <li>
-          <strong>
-            <Icon name="info" size={16} />
-            Honest money
-          </strong>
-          Earnings are gross wholesale value, before retail fees and battery wear.
-        </li>
-      </ul>
     </div>
   );
 }

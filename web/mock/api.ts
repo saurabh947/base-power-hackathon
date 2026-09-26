@@ -20,8 +20,10 @@ export interface MockApiOptions {
   coldStartMs?: number;
   /** false refuses WebSocket upgrades so the site falls back to polling GET /state. */
   websocket?: boolean;
-  /** 404 from GET /results/pitch until a full-year run finishes. */
+  /** 404 from GET /results/pitch (and /results/ai-gains) until a full-year run finishes. */
   noResultsUntilBacktest?: boolean;
+  /** 404 from GET /results/ai-gains, always. */
+  noAiGains?: boolean;
   backtestFails?: boolean;
   frameMs?: number;
 }
@@ -32,6 +34,7 @@ export function mockOptionsFromEnv(env: NodeJS.ProcessEnv): MockApiOptions {
     coldStartMs: Number(env.MOCK_COLD_START_MS ?? 0) || 0,
     websocket: env.MOCK_WS !== 'off',
     noResultsUntilBacktest: env.MOCK_NO_RESULTS === '1',
+    noAiGains: env.MOCK_NO_AI_GAINS === '1',
     backtestFails: env.MOCK_BACKTEST_FAIL === '1',
   };
 }
@@ -107,6 +110,7 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
   const sim = new MockSim({
     backtestFails: options.backtestFails,
     resultsBeforeBacktest: !options.noResultsUntilBacktest,
+    noAiGains: options.noAiGains,
   });
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set<WebSocket>();
@@ -211,6 +215,8 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
         return send(res, 202, sim.startBacktest());
       case 'GET /results/pitch':
         return send(res, 200, sim.results());
+      case 'GET /results/ai-gains':
+        return send(res, 200, sim.aiGains());
       case 'GET /forecast': {
         const f = sim.forecastAt(url.searchParams.get('location') ?? '', url.searchParams.get('at_utc'));
         if (!f) throw new MockError(404, 'no_forecast', 'No forecast has been issued for that area and time yet.');
@@ -221,6 +227,10 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
     }
     if (method === 'GET' && path.startsWith('/batteries/')) {
       return send(res, 200, sim.battery(decodeURIComponent(path.slice('/batteries/'.length))));
+    }
+    const cancel = /^\/backtest\/([^/]+)\/cancel$/.exec(path);
+    if (method === 'POST' && cancel) {
+      return send(res, 200, sim.cancelBacktest(decodeURIComponent(cancel[1])));
     }
     if (method === 'GET' && path.startsWith('/backtest/')) {
       return send(res, 200, sim.backtestStatus(decodeURIComponent(path.slice('/backtest/'.length))));

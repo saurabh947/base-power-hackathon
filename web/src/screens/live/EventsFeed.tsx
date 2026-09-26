@@ -1,26 +1,20 @@
-import type { LiveEvent, Severity } from '../../api/types.ts';
-import { Icon, type IconName } from '../../components/Icon.tsx';
+import type { LiveEvent } from '../../api/types.ts';
+import { Icon } from '../../components/Icon.tsx';
 import { Panel } from '../../components/Panel.tsx';
 import { useLive } from '../../live/liveStore.ts';
 import { fmtTimeOfDay } from '../../lib/format.ts';
 import { useTechnical } from '../../state/prefs.ts';
+import { eventClass, eventIcon, eventSpoken } from './eventLook.ts';
 
 const MAX_VISIBLE = 6;
 
-const SEVERITY: Record<Severity, { icon: IconName; spoken: string }> = {
-  good: { icon: 'check', spoken: 'Good news: ' },
-  warn: { icon: 'alert', spoken: 'Warning: ' },
-  info: { icon: 'info', spoken: '' },
-};
-
 function Item({ event, technical }: { event: LiveEvent; technical: boolean }) {
-  const sev = SEVERITY[event.severity] ?? SEVERITY.info;
   const when = event.sim_utc ?? event.wall_utc;
   return (
-    <li className={`feed-item feed-${event.severity in SEVERITY ? event.severity : 'info'}`}>
-      <Icon name={sev.icon} size={16} />
+    <li className={`feed-item ${eventClass(event)}`}>
+      <Icon name={eventIcon(event)} size={16} />
       <span>
-        <span className="sr-only">{sev.spoken}</span>
+        <span className="sr-only">{eventSpoken(event)}</span>
         {event.message}
         {technical ? (
           <span className="tech">

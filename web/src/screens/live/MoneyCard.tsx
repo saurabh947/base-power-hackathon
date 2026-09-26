@@ -3,6 +3,7 @@ import { Panel } from '../../components/Panel.tsx';
 import { TechBlock } from '../../components/Tech.tsx';
 import { useLive } from '../../live/liveStore.ts';
 import { fmtEnergy, fmtHomesDay, fmtNumber, fmtUsd } from '../../lib/format.ts';
+import { RaceBars } from './RaceBars.tsx';
 
 const formatMoney = (n: number) => fmtUsd(n, 2);
 
@@ -51,6 +52,7 @@ export function MoneyCard() {
           <span>Below zero means the fleet has spent more buying power than it has earned so far.</span>
         ) : null}
       </div>
+      <RaceBars scope={null} variant="card" />
       <TechBlock
         rows={[
           ['revenue_usd', fmtNumber(totals.revenue_usd, 4)],
