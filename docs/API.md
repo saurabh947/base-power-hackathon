@@ -57,6 +57,7 @@ Change it only through the integrator.
 | `POST /backtest` | anyone | `{"strategies": ["bands","forecast","peak"], "year": 2025}` | `202 {"job_id": "…"}`. While a job runs, this returns that job's id. Bad input gives 400. |
 | `GET /backtest/{job_id}` | anyone | – | `{"status": "running\|done\|failed", "run_ids": [...], "skipped": {"forecast": "why"}, "error": null}`. Unknown id gives 404. |
 | `GET /results/pitch` | anyone | – | Results (below). Before any full-year run: `404 {"error": "no_results", "message": "No full-year results yet."}` |
+| `GET /results/ai-gains` | anyone | – | AiGains (below): what the AI forecast adds over the simple rule, per year (the pitch year first, then other complete years). `404 no_results` if none. |
 | `GET /forecast` | anyone | `?location=LZ_HOUSTON&at_utc=…` (`location=ERCOT&series=demand` for demand) | Forecast (below): the latest forecast issued at or before `at_utc`, or 404 `no_forecast` |
 
 `POST /chaos/kill` errors:
@@ -106,11 +107,11 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 {"type": "snapshot", "run_id": "…", "status": "running", "sim_time_utc": "…", "speed_tps": 2, "settings": Settings,
  "history": [Tick], "totals": Totals, "workers": [Worker], "failed_commands": FailedCommands,
  "availability": Availability, "events": [Event], "forecast": {"<location>": Forecast},
- "battery_status": "<base64>"}
+ "battery_status": "<base64>", "race": Race}
 
 {"type": "frame", "run_id": "…", "status": "running", "sim_time_utc": "…", "speed_tps": 2,
  "ticks": [Tick], "totals": Totals, "workers": [Worker], "failed_commands": FailedCommands,
- "availability": Availability, "events": [Event], "forecast": {…}, "battery_status": "<base64>"}
+ "availability": Availability, "events": [Event], "forecast": {…}, "battery_status": "<base64>", "race": Race}
 ```
 - `snapshot.history` holds the last ≤ 2,000 ticks of the current run.
 - With no run, `snapshot.settings` is `null` and `run_id` is `null`, and `history` is empty.
@@ -180,6 +181,39 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 - With no run, every battery is 1 (online batteries) or 0 (offline). `idle` messages carry no `battery_status`, so after an availability change while idle, clients refetch `GET /state`.
 - Code 4 lasts about 2 ticks: the missed tick and the hand-over tick. At 5–10 ticks/s a 1 s frame can miss it, so clients should also flash a crashed controller's batteries on `worker_suspect`, `worker_dead` and `worker_adopted` events.
 
+**Race** (in `snapshot` and every `frame` while a run exists): a shadow copy of the fleet running the comparison strategy side by side with the live one.
+- The comparison strategy is `bands` ("Simple rule"), or `forecast` when the live run itself uses `bands`.
+- It starts from the same batteries and starting charge, sees the same prices at the same decision lag, and mirrors the same availability overrides.
+- It does not mirror controller crashes, because it has no controllers.
+- It uses the same physics and allocation as the backtest.
+```json
+{"strategy": "bands", "label": "Simple rule",
+ "revenue_usd": 31020.5, "by_location": {"LZ_HOUSTON": {"revenue_usd": 0, "charge_level": 0.41, "action": "sell"}},
+ "charge_level": 0.43, "live_minus_race_usd": 15290.1}
+```
+- `live_minus_race_usd` is the live fleet's `totals.revenue_usd` minus the race's. Positive means the live strategy is ahead.
+- `race` is `null` while idle.
+
+**AiGains** (`GET /results/ai-gains`)
+```json
+{"ai": "forecast", "baseline": "bands",
+ "years": [{"year": 2025, "is_pitch": true, "best_possible_per_battery_usd_year": 421.29,
+   "strategies": {"forecast": StrategyGains, "bands": StrategyGains, "peak": StrategyGains},
+   "uplift": {"per_battery_usd_year": 67.28, "pct": 0.544, "fleet_usd_year": 1345600}}]}
+```
+StrategyGains is:
+```json
+{"label": "AI forecast (TimesFM-3)", "per_battery_usd_year": 190.95, "fleet_usd_year": 3819000, "share_of_best": 0.453,
+ "surplus_mwh": 7011.3, "spike_mwh": 25.2, "spike_events": 21, "spike_charge_level": 0.231,
+ "sold_mwh": 80168.1, "bought_mwh": 89231.5, "avg_sell_usd_mwh": 66.58, "avg_buy_usd_mwh": 17.02}
+```
+- `surplus_mwh`: energy bought at prices ≤ $0/MWh.
+- Spikes are 5-minute prices ≥ $1,000/MWh:
+  - `spike_mwh` is the energy sold during them.
+  - `spike_events` is the number of separate spikes.
+  - `spike_charge_level` is the fleet's charge level when each spike began, averaged.
+- `share_of_best` is per-battery earnings ÷ the same year's hindsight best.
+
 **Layout** (`GET /fleet/layout`)
 ```json
 {"version": "…", "fleet_size": 20000,
@@ -196,7 +230,8 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 ```json
 {"id": "…", "wall_utc": "…", "sim_utc": "…", "kind": "…", "severity": "info", "message": "…", "detail": {}}
 ```
-- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`.
+- `kind` is one of: `run_started`, `run_paused`, `run_resumed`, `run_finished`, `speed_changed`, `run_reset`, `worker_suspect`, `worker_dead`, `worker_adopted`, `availability_changed`, `price_spike`, `action_changed`, `forecast_issued`, `backtest_done`, `race_update`.
+  - `race_update` is a plain-language comparison with the race fleet. It comes at the start of each price spike (e.g. "Prices jumped to $1,757 in all four cities. The AI fleet had 54% charge left; the simple rule had 21%.") and after it ends ("The AI is now $12,400 ahead of the simple rule.").
   - A run finishes when the replay reaches the end of the loaded data.
 - Worker events carry `detail.worker_id` (0-based) and `detail.controller` (1-based, as shown to people). `worker_adopted` also carries `detail.adopted_by` (worker ids) and `detail.ms`.
 - `severity` is `info`, `good` or `warn`.
