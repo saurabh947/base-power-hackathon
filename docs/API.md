@@ -147,6 +147,8 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 {"worker_id": 7, "status": "healthy", "pid": 1234, "batteries": 1000, "last_tick_utc": "…", "adopted_from": [3],
  "by_location": {"LZ_NORTH": 1000}}
 ```
+`by_location` lists only the cities this controller currently holds. It is `{}` for a dead controller, and changes after hand-overs. `totals.by_location` always has every city.
+
 `status` is `starting`, `healthy`, `suspect` or `dead`.
 
 **FailedCommands**
@@ -175,7 +177,8 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
   | 3 | charging |
   | 4 | controller down: its controller is suspect or dead, and the battery hasn't been handed over yet |
 
-- With no run, every battery is 1 (online batteries) or 0 (offline).
+- With no run, every battery is 1 (online batteries) or 0 (offline). `idle` messages carry no `battery_status`, so after an availability change while idle, clients refetch `GET /state`.
+- Code 4 lasts about 2 ticks: the missed tick and the hand-over tick. At 5–10 ticks/s a 1 s frame can miss it, so clients should also flash a crashed controller's batteries on `worker_suspect`, `worker_dead` and `worker_adopted` events.
 
 **Layout** (`GET /fleet/layout`)
 ```json
@@ -186,6 +189,7 @@ On connect, the server sends one `snapshot`. After that it sends a `frame` every
 ```
 - `positions` is a little-endian Int16Array `[lon0, lat0, lon1, lat1, …]`, one pair per battery in id order. `lon = -100 + v/1000` and `lat = 31 + v/1000`, so the resolution is about 100 m.
 - Positions are simulated: they are seeded, and inside real metro areas. There are no real addresses.
+- The response carries an `ETag`. Send `If-None-Match` to get a `304` when nothing changed.
 - The map projects lon/lat with Texas Centric Albers Equal Area (EPSG:3083: standard parallels 27.5°N and 35°N, origin 18°N, 100°W). The web bundles the Texas outline in the same projection.
 
 **Event**
