@@ -73,7 +73,7 @@ import { buildMockLayout } from './layout.ts';
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
 export const MOCK_MARKER = 'FLEET_SIM_MOCK_DO_NOT_SHIP';
 export const MOCK_VERSION =
-  'mock-0.5 (simulated data; real ERCOT prices for the 2025 replay days; 2026 is 2025 a year on, then a simulated prediction; measured full-year figures from RUNLOG.md)';
+  'mock-0.6 (simulated data; real ERCOT prices for the 2025 replay days; 2026 is 2025 a year on, then a simulated prediction; measured 2025 full-year figures from RUNLOG.md, 2026 full-year figures made up)';
 
 /** The Texas Triangle load zones in config order. */
 export const LOCS = ['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN'] as const;
