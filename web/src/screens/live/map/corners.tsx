@@ -440,7 +440,6 @@ function BatteryCounts({ scope }: { scope: Scope }) {
           </li>
         </ul>
       ) : null}
-      {cityLevel ? <p className="corner-sub">Before you opened this page, each city’s dots show what it did as a whole.</p> : null}
       <TechOnly>
         <p className="tech">
           battery_status:{' '}
@@ -561,7 +560,7 @@ export function FleetCorner({ scope }: { scope: Scope }) {
           </div>
           {scope !== null ? (
             <p className="corner-sub">
-              Highlighted: the {serving} {plural(serving, 'controller', 'controllers')} running {cityName(scope)} batteries.
+              Highlighted: the {serving} serving {cityName(scope)}.
             </p>
           ) : null}
         </>

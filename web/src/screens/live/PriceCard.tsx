@@ -57,12 +57,19 @@ function Readouts() {
 function Legend() {
   const technical = useTechnical();
   const hasForecast = useLive((s) => Object.keys(s.forecast).length > 0);
+  const anyPredicted = useLive((s) => s.history.some((t) => t.predicted));
   return (
     <ul className="legend" aria-label="Chart key">
       <li>
         <span className="swatch swatch-line" aria-hidden="true" />
         Real price
       </li>
+      {anyPredicted ? (
+        <li>
+          <span className="swatch swatch-predicted" aria-hidden="true" />
+          The AI’s predicted prices, not real data
+        </li>
+      ) : null}
       <li>
         <span className="swatch swatch-charge" aria-hidden="true" />▼ Charging (buying cheap power)
       </li>

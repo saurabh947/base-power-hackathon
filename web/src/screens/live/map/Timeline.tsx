@@ -148,7 +148,7 @@ export function Timeline({ scope }: { scope: Scope }) {
           {predictedX !== null ? <span className="timeline-key-predicted"> · shaded: AI prediction</span> : null}
         </span>
         <span className="timeline-now">
-          {live ? (
+          {!n ? null : live ? (
             <>
               <span className="timeline-live-dot" aria-hidden="true" />
               Live

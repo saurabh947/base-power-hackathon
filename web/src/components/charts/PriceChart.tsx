@@ -5,6 +5,7 @@
 import { useEffect, useRef } from 'react';
 import uPlot from 'uplot';
 import { liveStore } from '../../live/liveStore.ts';
+import { firstPredicted } from '../../live/past.ts';
 import { actionLabel, areaName, fmtCount, fmtPrice, fmtPriceMwh, fmtTimeOfDay } from '../../lib/format.ts';
 import { actionSpans, buildPriceModel, type WindowKey } from './model.ts';
 import { marketTzDate, observeWidth, pxRatio, readChartTheme, timeAxis } from './theme.ts';
@@ -52,6 +53,12 @@ export function PriceChart({ area, windowKey, technical }: Props) {
     let spans = actionSpans(model.data[0], model.actions);
     let win = liveXWindow(state, windowKey) ?? emptyXWindow();
     let lastTickX = state.history.length ? Date.parse(state.history[state.history.length - 1].ts_utc) / 1000 : null;
+    // Where the AI's prediction takes over from real prices (2026), if it has.
+    const predictedFrom = () => {
+      const t = firstPredicted(state.history);
+      return t ? Date.parse(t.ts_utc) / 1000 : null;
+    };
+    let predictedX = predictedFrom();
     tip.hidden = true;
     empty.hidden = state.history.length > 0;
 
@@ -77,6 +84,20 @@ export function PriceChart({ area, windowKey, technical }: Props) {
         const visible0 = Math.max(x0, left);
         if (Math.min(x1, left + width) - visible0 > 70 * r) {
           ctx.fillText(charge ? '▼ Charging' : '▲ Selling', visible0 + 5 * r, top + 7 * r);
+        }
+      }
+      // The AI's predicted prices (2026 after the real data ends): a violet wash from there on, labelled.
+      if (predictedX !== null) {
+        const px = Math.max(left, u.valToPos(predictedX, 'x', true));
+        if (px < left + width) {
+          ctx.fillStyle = theme.forecastFill;
+          ctx.globalAlpha = 0.45;
+          ctx.fillRect(px, top, left + width - px, height);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = theme.forecast;
+          ctx.fillRect(px, top, 2 * r, height);
+          ctx.textBaseline = 'bottom';
+          ctx.fillText('AI prediction →', px + 6 * r, top + height - 6 * r);
         }
       }
       ctx.restore();
@@ -203,6 +224,7 @@ export function PriceChart({ area, windowKey, technical }: Props) {
       spans = actionSpans(model.data[0], model.actions);
       win = liveXWindow(state, windowKey) ?? emptyXWindow();
       lastTickX = state.history.length ? Date.parse(state.history[state.history.length - 1].ts_utc) / 1000 : null;
+      predictedX = predictedFrom();
       empty.hidden = state.history.length > 0;
       u.setData(model.data as unknown as uPlot.AlignedData);
     });

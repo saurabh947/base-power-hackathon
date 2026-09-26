@@ -106,7 +106,15 @@ function ViewingChip({ chipRef }: { chipRef: { current: HTMLDivElement | null } 
         <span className="viewing-sep" aria-hidden="true">
           ·
         </span>
-        <button type="button" className="linklike viewing-back" onClick={backToLive}>
+        <button
+          type="button"
+          className="linklike viewing-back"
+          onClick={() => {
+            backToLive();
+            // The chip goes away with its button: keep the keyboard on the timeline.
+            document.querySelector<HTMLElement>('.timeline-track')?.focus();
+          }}
+        >
           Back to live
         </button>
       </div>
@@ -253,13 +261,14 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
       const r = rendererRef.current;
       if (!r) return;
       boxesRef.current = r.cityBoxes();
-      // The chip, the notice and the zoom control are placed against all of Texas, zoomed in or not.
+      // The notice is placed against all of Texas, zoomed in or not (set on the root: it sits outside the map area).
       const vp = r.getHomeViewport();
-      if (vp) {
-        area.style.setProperty('--map-left', `${vp.left}px`);
-        area.style.setProperty('--map-top', `${vp.top}px`);
-        area.style.setProperty('--map-width', `${vp.width}px`);
-        area.style.setProperty('--map-height', `${vp.height}px`);
+      const root = rootRef.current;
+      if (vp && root) {
+        root.style.setProperty('--map-left', `${vp.left}px`);
+        root.style.setProperty('--map-top', `${vp.top}px`);
+        root.style.setProperty('--map-width', `${vp.width}px`);
+        root.style.setProperty('--map-height', `${vp.height}px`);
       }
       setBoxesVersion((v) => v + 1);
     };
@@ -359,10 +368,10 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
         return;
       }
       if (!mapKeyTarget(e)) return;
-      if (e.key === '+' || e.key === '=') {
+      if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
         setZoomed(true);
         e.preventDefault();
-      } else if (e.key === '-' || e.key === '_') {
+      } else if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
         setZoomed(false);
         e.preventDefault();
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -496,21 +505,22 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
           );
         })}
 
-        {notice ? (
-          <div className="map-notice" ref={noticeRef}>
-            {notice}
-          </div>
-        ) : layoutPhase === 'error' ? (
-          <div className="map-notice map-notice-quiet" ref={noticeRef} role="status">
-            The battery map could not load. It tries again every few seconds.
-          </div>
-        ) : null}
-
         <p className="map-caption" ref={captionRef}>
           Battery locations are simulated inside real metro areas.
           {technical && stats ? <span className="tech">{stats}</span> : null}
         </p>
       </div>
+
+      {/* Over West Texas on a wide screen; in narrow windows, in the column under the map. */}
+      {notice ? (
+        <div className="map-notice" ref={noticeRef}>
+          {notice}
+        </div>
+      ) : layoutPhase === 'error' ? (
+        <div className="map-notice map-notice-quiet" ref={noticeRef} role="status">
+          The battery map could not load. It tries again every few seconds.
+        </div>
+      ) : null}
 
       <div className="corner-slot corner-slot-bl" ref={blRef}>
         <ControlsCorner onOpenAvailability={onOpenAvailability} onShowCharts={onShowCharts} />

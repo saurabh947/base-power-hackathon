@@ -54,11 +54,14 @@ html.map-mode main.main-map {
 
 /* ---- the scope chip, the caption and notices --------------------------------------------- */
 
-/* Over Oklahoma: just right of the panhandle, level with its top. */
+/*
+ * Over Oklahoma, level with the panhandle's top: it ends just left of the money corner, whatever its hint
+ * says, so it never runs under that corner (it holds the zoom buttons too).
+ */
 .map-scope {
   position: absolute;
   top: 10px;
-  left: calc(var(--map-left, 35%) + var(--map-width, 600px) * 0.535);
+  right: calc(var(--corner-width, 296px) + 26px);
   z-index: 3;
   display: flex;
   align-items: center;
@@ -100,6 +103,13 @@ html.map-mode main.main-map {
 
 .scope-hint strong {
   color: var(--text);
+}
+
+/* On a phone the chip keeps "All of Texas" and the zoom buttons; the hint gives way. */
+@media (max-width: 480px) {
+  .scope-hint {
+    display: none;
+  }
 }
 
 /* Zoom: one level, all of Texas or the Texas Triangle. */
@@ -179,16 +189,38 @@ html.map-mode main.main-map {
   box-shadow: var(--shadow-raised);
 }
 
-/* Zoomed in, the Texas Triangle fills the middle: a notice waits in the free space between the left corners. */
+/*
+ * Zoomed in, the Texas Triangle fills the middle: a notice shrinks to its title and buttons, low in the
+ * middle, between San Antonio and Houston (the city labels keep clear of it). Its full text is one "−" away.
+ */
 @media (min-width: 861px) {
   .livemap.is-zoomed .map-notice {
-    left: 12px;
-    top: var(--left-free-top, 45%);
-    width: var(--corner-width, 296px);
-    max-height: var(--left-free-height, 320px);
-    overflow-y: auto;
-    border-radius: 12px;
-    scrollbar-width: thin;
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 34px;
+    width: max-content;
+    max-width: min(390px, calc(100% - 2 * var(--corner-width, 296px) - 60px));
+    margin: 0 auto;
+  }
+
+  .livemap.is-zoomed .map-notice .notice {
+    padding: 8px 12px;
+  }
+
+  .livemap.is-zoomed .map-notice .notice-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+  }
+
+  .livemap.is-zoomed .map-notice .notice-body > div:not(.notice-title, .notice-actions) {
+    display: none;
+  }
+
+  .livemap.is-zoomed .map-notice .notice-actions {
+    margin-top: 0;
   }
 }
 
@@ -410,6 +442,11 @@ html.map-mode .toasts {
   font-size: 12.5px;
 }
 
+/* "On target" and "about what 5,700 homes use" share one line. */
+.corner-tr .corner-line .small {
+  font-size: 11.5px;
+}
+
 .corner-sub strong {
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -562,6 +599,7 @@ html.map-mode .toasts {
 @media (max-height: 860px) and (min-width: 861px) {
   .corner {
     gap: 4px;
+    padding: 9px 12px 10px;
   }
 
   .corner-rule {
@@ -569,7 +607,23 @@ html.map-mode .toasts {
   }
 
   .corner-tr .mini-chart {
-    height: 34px;
+    height: 28px;
+  }
+
+  .corner-tr {
+    gap: 3px;
+  }
+
+  .corner .race {
+    margin-top: 1px;
+  }
+
+  .corner .race-row {
+    line-height: 1.2;
+  }
+
+  .corner .race-rows {
+    gap: 1px;
   }
 }
 
@@ -1235,8 +1289,19 @@ html.map-mode .toasts {
   }
 
   .map-scope {
+    right: auto;
     left: 50%;
+    max-width: calc(100% - 16px);
     transform: translateX(-50%);
+  }
+
+  /* The notice follows the map in the column, instead of covering it. */
+  .map-notice,
+  .livemap.is-zoomed .map-notice {
+    position: static;
+    order: -1;
+    width: auto;
+    max-height: none;
   }
 
   .map-caption {

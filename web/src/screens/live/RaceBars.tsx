@@ -25,13 +25,13 @@ interface Props {
 }
 
 function Row({ side, kind, scope, compact }: { side: RaceSide; kind: 'live' | 'race' | 'potential'; scope: Scope; compact: boolean }) {
-  // The corner is narrow: "All online" there, with the full "All batteries online (projected)" in its tooltip.
+  // The corner is narrow: "All online" there (its note line says "projected"), the full label in the card.
   const name = kind === 'potential' && compact ? 'All online' : side.label;
   return (
     <li className={`race-row is-${kind}`} title={kind === 'potential' ? `${POTENTIAL_LABEL} (projected)` : undefined}>
       <span className="race-name">
         {name}
-        {kind === 'potential' ? <span className="race-name-note">projected</span> : null}
+        {kind === 'potential' && !compact ? <span className="race-name-note">projected</span> : null}
       </span>
       <span className="race-track" aria-hidden="true">
         <span className="race-fill" style={{ width: width(side.share) }} />
@@ -91,8 +91,20 @@ export function RaceBars({ scope, variant = 'corner' }: Props) {
         <Row side={view.live} kind="live" scope={scope} compact={corner} />
         <Row side={view.race} kind="race" scope={scope} compact={corner} />
         {view.potential ? <Row side={view.potential} kind="potential" scope={scope} compact={corner} /> : null}
+        {/* The corner: one line under the third bar, "projected · Outages cost $790 so far". */}
+        {corner && view.potential ? (
+          <li className="race-note">
+            <span className="race-note-projected">projected</span>
+            {view.shortfall ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span className={`race-shortfall-text${view.shortfall.usd >= 0.005 ? ' is-cost' : ''}`}>{view.shortfall.text}</span>
+              </>
+            ) : null}
+          </li>
+        ) : null}
       </ul>
-      {view.shortfall ? (
+      {!corner && view.shortfall ? (
         <p className={`race-shortfall${view.shortfall.usd >= 0.005 ? ' is-cost' : ''}`}>
           <Icon name="plug" size={13} />
           {view.shortfall.text}

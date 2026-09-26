@@ -1389,6 +1389,14 @@ main.main-start {
   border-color: var(--forecast);
 }
 
+/* The AI's predicted prices: a lighter violet wash with a solid left edge, as on the chart. */
+.swatch-predicted {
+  background: var(--forecast-soft);
+  border-color: transparent;
+  border-left: 2px solid var(--forecast);
+  border-radius: 0;
+}
+
 .swatch-line {
   width: 22px;
   height: 0;
@@ -1770,6 +1778,20 @@ main.main-start {
 .race-row.is-potential .race-fill {
   background: repeating-linear-gradient(135deg, rgba(74, 222, 128, 0.7) 0 2px, rgba(74, 222, 128, 0.18) 2px 5px);
   box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.7);
+}
+
+/* The map corner's note under the third bar: "projected · Outages cost $790 so far". */
+.race-note {
+  margin: -1px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.race-shortfall-text.is-cost {
+  color: var(--fail);
 }
 
 /* "Outages cost $790 so far": red, the colour of failures, with the plug of "Take batteries offline". */
