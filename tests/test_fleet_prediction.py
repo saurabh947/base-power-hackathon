@@ -45,6 +45,7 @@ def co(tmp_path, monkeypatch):
 
     real_settings = fsettings.load_settings
     monkeypatch.delenv("PRICE_SOURCE", raising=False)  # real prices: the snapshot
+    monkeypatch.setenv("SERIES_BACKEND", "snapshot")  # also for years/series, whatever DATABASE_URL says
     monkeypatch.setenv("FORECAST_SOURCE", "parquet")
     monkeypatch.setattr(predictions, "default_cache_dir", lambda: tmp_path / "predictions")
     monkeypatch.setattr(fsettings, "load_settings",  # no real forecasts: only the virtual ones after the cutoff
