@@ -452,6 +452,20 @@ async def results_pitch():
     return _plain(result)
 
 
+@app.get("/results/ai-gains")
+async def results_ai_gains():
+    """docs/API.md AiGains: what the AI forecast adds over the simple rule, per year (the pitch year first)."""
+    svc = _bridge("src.backtest.service")
+    not_found = getattr(svc, "ResultsNotFound", LookupError)
+    try:
+        result = await run_in_threadpool(svc.ai_gains)
+    except not_found:
+        result = None
+    if not result or not result.get("years"):
+        raise ctl.ControlError(404, "no_results", "No full-year results yet.")
+    return _plain(result)
+
+
 @app.get("/forecast")
 async def forecast(location: str, at_utc: str | None = None, series: str = "rt_price"):
     demand_location = str((RAW.get("forecast") or {}).get("demand_location", "ERCOT"))

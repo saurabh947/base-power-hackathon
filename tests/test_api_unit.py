@@ -151,6 +151,7 @@ def test_bridges_answer_501_until_their_modules_land(client, monkeypatch):
     monkeypatch.setattr(main.importlib, "import_module", missing)
     for method, path, body in (("post", "/backtest", {"strategies": ["bands"], "year": 2025}),
                                ("get", "/backtest/abc", None), ("get", "/results/pitch", None),
+                               ("get", "/results/ai-gains", None),
                                ("get", "/forecast?location=LZ_HOUSTON&at_utc=2025-05-16T21:00:00Z", None)):
         r = getattr(client, method)(path, **({"json": body} if body else {}))
         assert r.status_code == 501 and r.json()["error"] == "not_ready", path
@@ -182,7 +183,13 @@ def _fake_service(results: dict | None):
             raise ResultsNotFound("There are no full-year results for 2025 yet.")
         return results
 
+    def ai_gains():
+        if results is None:
+            raise ResultsNotFound("There are no full-year results yet.")
+        return {"ai": "forecast", "baseline": "bands", "years": [{"year": 2025, "is_pitch": True, "strategies": {}}]}
+
     svc.ResultsNotFound, svc.start_backtest, svc.get_job, svc.pitch_results = ResultsNotFound, start_backtest, get_job, pitch_results
+    svc.ai_gains = ai_gains
     svc.add_listener = lambda fn: None
     svc.jobs = jobs
     return svc
@@ -211,6 +218,7 @@ def test_bridges_call_the_parallel_modules(client, monkeypatch):
     r = client.post("/backtest", json={"strategies": ["solver"]})
     assert r.status_code == 400 and r.json()["message"].startswith("Unknown decision method")
     assert client.get("/results/pitch").json()["year"] == 2025
+    assert client.get("/results/ai-gains").json()["years"][0]["year"] == 2025
     r = client.get("/forecast", params={"location": "LZ_NORTH", "at_utc": "2025-05-16T21:00:00Z"})
     assert r.status_code == 200 and r.json()["location"] == "LZ_NORTH"
     assert r.json()["issued_utc"] == "2025-05-16T21:00:00Z"  # datetimes serialised as *_utc strings
@@ -225,8 +233,9 @@ def test_bridges_call_the_parallel_modules(client, monkeypatch):
 
 def test_results_before_any_full_year_run_is_404(client, monkeypatch):
     monkeypatch.setitem(sys.modules, "src.backtest.service", _fake_service(None))
-    r = client.get("/results/pitch")
-    assert r.status_code == 404 and r.json() == {"error": "no_results", "message": "No full-year results yet."}
+    for path in ("/results/pitch", "/results/ai-gains"):
+        r = client.get(path)
+        assert r.status_code == 404 and r.json() == {"error": "no_results", "message": "No full-year results yet."}
 
 
 def test_the_real_backtest_service_is_bridged(client):

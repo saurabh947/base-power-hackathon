@@ -137,3 +137,108 @@ def _split(by_location: dict, order: list | None = None) -> str:
 
 def _money(x) -> float | None:
     return None if x is None else round(float(x), 2)
+
+
+# --- GET /results/ai-gains -------------------------------------------------------------------------
+
+AI, BASELINE = "forecast", "bands"
+GAIN_ORDER = ("forecast", "bands", "peak")  # the StrategyGains keys, in the contract's order
+INSIGHT_FIELDS = (  # StrategyGains field <- metrics.insights, decimals
+    ("surplus_mwh", 1), ("spike_mwh", 1), ("spike_events", None), ("spike_charge_level", 3),
+    ("sold_mwh", 1), ("bought_mwh", 1), ("avg_sell_usd_mwh", 2), ("avg_buy_usd_mwh", 2),
+)
+
+
+def fleet_signature(record: dict | None) -> tuple | None:
+    """(size, ((location, batteries), ...)) of a slim record's fleet: runs are only compared on one fleet."""
+    fleet = (record or {}).get("fleet") or {}
+    by_location = fleet.get("by_location") or {}
+    if fleet.get("size") is None or not by_location:
+        return None
+    return int(fleet["size"]), tuple(sorted((str(k), int(v)) for k, v in by_location.items()))
+
+
+def config_fleet_signature(cfg=None) -> tuple:
+    from src.config import load_config
+    from src.sim.fleet import location_counts
+
+    cfg = cfg or load_config()
+    return int(cfg.fleet.size), tuple(sorted(location_counts(cfg.fleet.size, cfg.fleet.locations).items()))
+
+
+def _newest(records):
+    return max(records, key=lambda r: (r.get("finished_at") or "", r.get("started_at") or ""), default=None)
+
+
+def build_ai_gains(records: Sequence[dict], *, pitch_year: int, settings: dict | None = None,
+                   default_signature: tuple | None = None) -> dict:
+    """docs/API.md AiGains from slim records (src.backtest.store.load_gains_records / load_gains_records_json).
+
+    - The pitch year: its is_pitch set (the newest flagged run per strategy), listed when it has a simple-rule
+      run. `uplift` (AI minus simple rule; pct = uplift / simple rule) needs the AI run too, so it and the AI's
+      entry are absent in a build without forecasts; in the cloud both exist.
+    - Every other year: the latest complete set, i.e. the newest successful bands, forecast and peak runs on the
+      pitch set's fleet (same size and cities; config.yaml's fleet when there is no pitch set). A year without
+      all three is left out.
+    - best_possible_per_battery_usd_year: that year's newest hindsight run on the same fleet; it and every
+      share_of_best (per-battery earnings / it) are absent when the year has none.
+    - The insight fields come from metrics.insights. A run stored before insights existed has none of them:
+      they are left out of its StrategyGains (the money fields are always there).
+    Labels come from config backtest.labels. Years: the pitch year first, then the others, newest first.
+    """
+    from src.backtest.runner import HINDSIGHT, backtest_settings
+
+    settings = settings or backtest_settings()
+    labels = settings["labels"]
+    usable = [r for r in records if r.get("year") is not None and r.get("fleet_total_usd") is not None
+              and r.get("per_battery_avg_usd") is not None]
+    pitch = {}
+    for name in (*GAIN_ORDER, HINDSIGHT):
+        newest = _newest([r for r in usable if r["is_pitch"] and r["year"] == pitch_year and r["strategy"] == name])
+        if newest is not None:
+            pitch[name] = newest
+    signature = fleet_signature(pitch.get(AI) or pitch.get(BASELINE)) or default_signature
+    years = []
+    if BASELINE in pitch:
+        years.append(_gains_year(pitch_year, pitch, is_pitch=True, labels=labels))
+    for year in sorted({r["year"] for r in usable} - {pitch_year}, reverse=True):
+        mine = [r for r in usable if r["year"] == year and fleet_signature(r) == signature]
+        latest = {name: _newest([r for r in mine if r["strategy"] == name]) for name in (*GAIN_ORDER, HINDSIGHT)}
+        if all(latest[name] is not None for name in GAIN_ORDER):
+            years.append(_gains_year(year, {k: v for k, v in latest.items() if v is not None}, is_pitch=False,
+                                     labels=labels))
+    return {"ai": AI, "baseline": BASELINE, "years": years}
+
+
+def _gains_year(year: int, runs: dict, *, is_pitch: bool, labels: dict) -> dict:
+    from src.backtest.runner import HINDSIGHT
+
+    best = runs.get(HINDSIGHT)
+    best_pb = float(best["per_battery_avg_usd"]) if best else None
+    out: dict = {"year": int(year), "is_pitch": bool(is_pitch)}
+    if best_pb is not None:
+        out["best_possible_per_battery_usd_year"] = _money(best_pb)
+    out["strategies"] = {name: _strategy_gains(name, runs[name], best_pb, labels) for name in GAIN_ORDER if name in runs}
+    ai, base = runs.get(AI), runs.get(BASELINE)
+    if ai is not None and base is not None:
+        diff = float(ai["per_battery_avg_usd"]) - float(base["per_battery_avg_usd"])
+        base_pb = float(base["per_battery_avg_usd"])
+        out["uplift"] = {"per_battery_usd_year": _money(diff),
+                         "pct": round(diff / base_pb, 3) if base_pb > 0 else None,
+                         "fleet_usd_year": _money(float(ai["fleet_total_usd"]) - float(base["fleet_total_usd"]))}
+    return out
+
+
+def _strategy_gains(name: str, run: dict, best_pb: float | None, labels: dict) -> dict:
+    per_battery = float(run["per_battery_avg_usd"])
+    out = {"label": labels.get(name) or run.get("label") or name, "per_battery_usd_year": _money(per_battery),
+           "fleet_usd_year": _money(run["fleet_total_usd"])}
+    if best_pb:
+        out["share_of_best"] = round(per_battery / best_pb, 3)
+    insights = run.get("insights")
+    if isinstance(insights, dict):
+        for key, digits in INSIGHT_FIELDS:
+            if key in insights:
+                value = insights[key]
+                out[key] = value if value is None or digits is None else round(float(value), digits)
+    return out

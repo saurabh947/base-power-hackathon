@@ -142,3 +142,59 @@ def test_pitch_results_reads_the_database(pg, tmp_path):
     # jsonb reorders object keys; the Results keep config order
     assert list(results["strategies"][0]["per_location_usd"]) == list(LOCS)
     assert any("in all four cities: Houston (7), Dallas–Fort Worth (8)" in a for a in results["assumptions"])
+
+
+def _synthetic_forecast_run(year: int = 2025) -> dict:
+    """A forecast run on SYNTHETIC forecast books (test doubles, not TimesFM) over the mini window."""
+    import numpy as np
+
+    from src.backtest.runner import build_context, run_strategy
+    from src.forecast.provider import ForecastBook
+    from src.strategy.forecast import ForecastStrategy
+
+    start = local_midnight_utc(date(2025, 6, 1))
+    rows = [r for r in load_rt_rows(years=(2025,), locations=LOCS)
+            if start - timedelta(days=7) <= r.ts < start + timedelta(days=14)]
+    settings = backtest_settings()
+    settings["ceiling"].update(ratio_step=0.25, workers=1)
+    ctx = build_context(year, settings=settings, fleet_size=20, feed=InMemoryPriceFeed.from_intervals(rows))
+    first = int(ctx.series[LOCS[0]].replayed[0].ts.timestamp()) - 3600
+    n = len(ctx.series[LOCS[0]].replayed) // 12 + 48
+    issued = (first + np.arange(n, dtype=np.int64) * 3600) * 10**9
+    shape = np.tile(np.linspace(20.0, 80.0, 96, dtype=np.float32), (n, 1))
+    books = {loc: ForecastBook(loc, "rt_price", "synthetic", 15, issued, issued.copy(), shape - 5, shape, shape + 5)
+             for loc in LOCS}
+    return run_strategy("forecast", ctx, lag0=False,
+                        strategies={loc: ForecastStrategy(books, duration_h=2.0) for loc in LOCS})
+
+
+def test_ai_gains_reads_the_database(pg, tmp_path, monkeypatch):
+    """GET /results/ai-gains from backtest_runs: the same object as from the JSON export, and runs stored before
+    metrics.insights existed (here: copies for another year, without it) come without the insight fields."""
+    import json
+
+    outcome = mini_backtest(tmp_path)  # 2025 pitch set: bands, peak, the ceiling (forecast: a skip marker)
+    forecast = _synthetic_forecast_run()
+    store.save_records([forecast], pitch=True, use_db=True, out_dir=tmp_path)
+    old = []
+    for r in outcome.records + [forecast]:  # a 2024 set as stored before insights: copies of the 2025 rows
+        if r["metrics"].get("skipped"):
+            continue
+        metrics = {k: v for k, v in r["metrics"].items() if k != "insights"}
+        old.append({**r, "run_id": str(uuid.uuid4()), "year": 2024, "metrics": metrics,
+                    "params": {**r["params"], "year": 2024}})
+    store.save_records(old, pitch=False, use_db=True, out_dir=tmp_path)
+    slim = store.load_gains_records()
+    assert {r["strategy"] for r in slim} == {"bands", "forecast", "peak", "hindsight"}  # no skip marker
+    assert all(r["insights"] is None for r in slim if r["year"] == 2024)
+    from_db = service.ai_gains()
+    assert [(y["year"], y["is_pitch"]) for y in from_db["years"]] == [(2025, True), (2024, False)]
+    y25, y24 = from_db["years"]
+    assert y25["strategies"]["forecast"]["spike_events"] == forecast["metrics"]["insights"]["spike_events"]
+    assert "surplus_mwh" in y25["strategies"]["bands"]
+    assert "surplus_mwh" not in y24["strategies"]["bands"] and "share_of_best" in y24["strategies"]["bands"]
+    assert y24["uplift"] == y25["uplift"]  # the same numbers, stored again for 2024
+    # the database and the JSON export give the same answer
+    monkeypatch.delenv("DATABASE_URL")
+    monkeypatch.setenv("BACKTEST_RESULTS_DIR", str(tmp_path))
+    assert json.dumps(service.ai_gains(), sort_keys=True) == json.dumps(from_db, sort_keys=True)

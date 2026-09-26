@@ -129,6 +129,85 @@ def read_pitch_results_json(year: int, out_dir=None) -> dict | None:
     return json.loads(path.read_text()) if path.exists() else None
 
 
+# --- slim records for GET /results/ai-gains -----------------------------------------------------
+#
+# Every successful run of these strategies, with only what the AiGains object needs:
+# {"run_id", "strategy", "year", "label", "fleet": {"size", "by_location"}, "fleet_total_usd",
+#  "per_battery_avg_usd", "insights" (metrics.insights, None for runs stored before it existed),
+#  "is_pitch", "started_at", "finished_at"}. Skip markers are left out.
+
+GAINS_STRATEGIES = ("bands", "forecast", "peak", "hindsight")
+
+
+def slim_record(record: dict, *, is_pitch: bool) -> dict | None:
+    """A full record (JSON export) as a slim AiGains record, or None for a skip marker."""
+    metrics = record.get("metrics") or {}
+    if metrics.get("skipped") or record.get("fleet_total_usd") is None or record.get("per_battery_avg_usd") is None:
+        return None
+    fleet = (record.get("params") or {}).get("fleet") or {}
+    year = record.get("year", (record.get("params") or {}).get("year"))
+    return {
+        "run_id": str(record["run_id"]), "strategy": record["strategy"],
+        "year": int(year) if year is not None else None, "label": record.get("label"),
+        "fleet": {"size": fleet.get("size"), "by_location": fleet.get("by_location")},
+        "fleet_total_usd": float(record["fleet_total_usd"]), "per_battery_avg_usd": float(record["per_battery_avg_usd"]),
+        "insights": metrics.get("insights"), "is_pitch": bool(is_pitch),
+        "started_at": record.get("started_at"), "finished_at": record.get("finished_at"),
+    }
+
+
+def load_gains_records(*, conn=None) -> list[dict]:
+    """Slim records of every successful bands/forecast/peak/hindsight run in backtest_runs (one small query:
+    the ceiling's curves and the config snapshots stay in the database)."""
+    conn, owned = _connect(conn)
+    try:
+        rows = conn.execute(
+            "SELECT run_id, strategy, params->>'year', params->>'label', params->'fleet'->'size', "
+            "params->'fleet'->'by_location', fleet_total_usd, per_battery_avg_usd, metrics->'insights', is_pitch, "
+            "started_at, finished_at FROM backtest_runs "
+            "WHERE strategy = ANY(%s) AND fleet_total_usd IS NOT NULL AND per_battery_avg_usd IS NOT NULL "
+            "AND COALESCE(metrics->>'skipped', 'false') <> 'true'",
+            (list(GAINS_STRATEGIES),),
+        ).fetchall()
+    finally:
+        if owned:
+            conn.close()
+    return [{
+        "run_id": str(run_id), "strategy": strategy, "year": int(year) if year is not None else None,
+        "label": label, "fleet": {"size": size, "by_location": by_location},
+        "fleet_total_usd": float(total), "per_battery_avg_usd": float(per_battery), "insights": insights,
+        "is_pitch": bool(is_pitch), "started_at": _iso(started), "finished_at": _iso(finished),
+    } for (run_id, strategy, year, label, size, by_location, total, per_battery, insights, is_pitch, started,
+           finished) in rows]
+
+
+def load_gains_records_json(out_dir=None) -> list[dict]:
+    """The same from the JSON export: runs/*.json, with is_pitch from the pitch_<year>_runs.json sets."""
+    base = results_dir(out_dir)
+    pitch = {}
+    for path in sorted(base.glob("pitch_*_runs.json")):
+        for r in json.loads(path.read_text()):
+            pitch[str(r["run_id"])] = r
+    records = {}
+    runs = base / "runs"
+    for path in sorted(runs.glob("*.json")) if runs.is_dir() else []:
+        try:
+            r = json.loads(path.read_text())
+        except ValueError:
+            continue
+        if r.get("strategy") in GAINS_STRATEGIES:
+            records[str(r["run_id"])] = r
+    for run_id, r in pitch.items():  # a pitch set whose runs/ files are gone still counts
+        records.setdefault(run_id, r)
+    out = []
+    for run_id, r in records.items():
+        if r.get("strategy") in GAINS_STRATEGIES:
+            slim = slim_record(r, is_pitch=run_id in pitch)
+            if slim is not None:
+                out.append(slim)
+    return out
+
+
 def _write(path: Path, obj) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=1, allow_nan=False))

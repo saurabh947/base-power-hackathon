@@ -10,7 +10,9 @@ directional headroom, proportional allocation, src.sim.battery physics, and the 
 (20,000 seeded batteries), split between the configured locations.
 
 Every strategy runs twice: at the configured lag (3 ticks, the headline) and at lag 0, the
-spec-literal variant, which is stored in the record's metrics["lag0"]. The perfect-hindsight
+spec-literal variant, which is stored in the record's metrics["lag0"]. The headline replay also
+yields metrics["insights"] (src/backtest/insights.py: surplus power soaked up, energy sold in price
+spikes, trade volume and prices), read off the same replay. The perfect-hindsight
 ceiling comes from src/backtest/ceiling.py. Records go to data/results/ as JSON and, when a
 database is configured, to backtest_runs; --pitch marks them as the Results screen's set.
 
@@ -34,7 +36,7 @@ from typing import Callable, Mapping, Sequence
 
 import numpy as np
 
-from src.backtest import engine
+from src.backtest import engine, insights
 from src.backtest.engine import (  # re-exported: the parity tests of the worker fleet import these
     Fleet,
     LocationRun,
@@ -357,6 +359,8 @@ def run_strategy(name: str, ctx: Context, *, fast: bool = True, lag0: bool | Non
     metrics = dict(main_run.metrics)
     metrics["lag_ticks"] = lag
     metrics["replay_seconds"] = round(main_run.seconds, 3)
+    # what the AI adds (GET /results/ai-gains), read off this same replay: no extra replay
+    metrics["insights"] = insights.from_replay(main_run, ctx.series)
     want_lag0 = ctx.settings["lag0_variant"] if lag0 is None else lag0
     if want_lag0 and lag != 0:
         zero = replay(name, ctx.cfg, ctx.series, ctx.fleets, lag=0, fast=fast, expected_ticks=ctx.expected_ticks,
@@ -496,6 +500,12 @@ def format_report(outcome: BacktestOutcome) -> str:
             f"  top days: " + ", ".join(f"{d['date_local']} ${d['usd']:,.0f}" for d in m["top_days"][:5]),
             f"  replay {m['replay_seconds']:.1f}s, coverage {m['coverage']['fraction']:.4f}",
         ]
+        ins = m.get("insights")
+        if ins:
+            level = ins["spike_charge_level"]
+            lines.append(f"  surplus bought at <= $0: {ins['surplus_mwh']:,.1f} MWh; sold in spikes >= "
+                         f"${ins['spike_usd_mwh']:,.0f}/MWh: {ins['spike_mwh']:,.1f} MWh over {ins['spike_events']} "
+                         f"city spikes (charge level when they began {'n/a' if level is None else f'{level:.1%}'})")
         if "lag0" in m:
             z = m["lag0"]
             lines.append(f"  lag 0 (spec-literal): ${z['per_battery_usd_year']:,.2f}/battery, "

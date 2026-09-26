@@ -1,9 +1,10 @@
 """The API bridge for full-year results (docs/API.md: POST /backtest, GET /backtest/{job_id},
-GET /results/pitch). The API builder calls exactly these three functions:
+GET /results/pitch, GET /results/ai-gains). The API calls exactly these functions:
 
     start_backtest(strategies, year) -> job_id
     get_job(job_id)                  -> {"status": "running" | "done" | "failed", "run_ids": [...], "skipped": {...}, "error": None}
     pitch_results(year=None)         -> the Results object
+    ai_gains()                       -> the AiGains object (what the AI forecast adds, per year)
 
 A job runs `python -m src.backtest.runner --pitch` in a subprocess, so the replay's CPU work
 never holds the API process's GIL (the live coordinator runs there). One job at a time: while
@@ -12,8 +13,9 @@ this process's memory (Cloud Run runs one instance); results live in backtest_ru
 data/results/. A finished job's runs become the Results screen's set (is_pitch).
 
 Errors: start_backtest raises ValueError (a plain-language message) for unknown strategies or
-a bad year; get_job raises KeyError for an unknown job; pitch_results raises ResultsNotFound
-when no full-year results exist yet. A failed job's `error` is one plain-language sentence.
+a bad year; get_job raises KeyError for an unknown job; pitch_results and ai_gains raise
+ResultsNotFound when no full-year results exist yet. A failed job's `error` is one plain-language
+sentence.
 """
 from __future__ import annotations
 
@@ -97,6 +99,36 @@ def pitch_results(year: int | None = None) -> dict:
     if results is not None:
         return results
     raise ResultsNotFound(f"There are no full-year results for {year} yet.")
+
+
+def ai_gains() -> dict:
+    """docs/API.md AiGains: what the AI forecast adds over the simple rule, per year, from stored runs.
+
+    The pitch year (config backtest.year) is its is_pitch set; every other year present is its latest
+    complete set of bands, forecast and peak on the same fleet (src.backtest.results.build_ai_gains has the
+    rules, including what is left out for runs stored before metrics.insights existed). Reads backtest_runs
+    when a database is configured, else (or if it fails or holds none) the JSON export in data/results/.
+    Raises ResultsNotFound when no year qualifies.
+    """
+    from src.backtest import store
+    from src.backtest.results import build_ai_gains, config_fleet_signature
+    from src.backtest.runner import backtest_settings
+
+    settings = backtest_settings()
+    records: list[dict] = []
+    if store.db_configured():
+        try:
+            records = store.load_gains_records()
+        except Exception as exc:  # fall back to the JSON export rather than fail the screen
+            log.warning("ai_gains: database read failed (%s); using the JSON export", exc)
+            records = []
+    if not records:
+        records = store.load_gains_records_json()
+    gains = build_ai_gains(records, pitch_year=int(settings["year"]), settings=settings,
+                           default_signature=config_fleet_signature())
+    if not gains["years"]:
+        raise ResultsNotFound("There are no full-year results yet.")
+    return gains
 
 
 def add_listener(fn: Callable[[str, dict], None]) -> None:
