@@ -36,7 +36,7 @@ import { CrashButton, CrashPopover, PauseResume, ResetButton, SpeedSelect } from
 import { useCrashAsk } from '../crash.ts';
 import { eventClass, eventIcon, eventSpoken } from '../eventLook.ts';
 import { RaceBars } from '../RaceBars.tsx';
-import { ConnectionStatus, PredictedBadge, RunStatus, TechCounters } from '../TopBar.tsx';
+import { ConnectionStatus, PredictedBadge, RunStatus, TechCounters } from '../status.tsx';
 import { MiniPowerChart, MiniPriceChart } from './MiniCharts.tsx';
 import { ON_TARGET_PCT, scopeAvailability, scopeTotals, scopeTracking, workerShare, type Scope } from './scope.ts';
 import { Timeline } from './Timeline.tsx';
@@ -327,7 +327,7 @@ export function MoneyCorner({ scope }: { scope: Scope }) {
 
 // ---- bottom left: controls (always the live run) ---------------------------------------------
 
-export function ControlsCorner({ onOpenAvailability, onShowCharts }: { onOpenAvailability: () => void; onShowCharts: () => void }) {
+export function ControlsCorner({ onOpenAvailability }: { onOpenAvailability: () => void }) {
   return (
     <section className="corner corner-bl" aria-label="Simulation controls">
       <div className="corner-buttons">
@@ -342,12 +342,6 @@ export function ControlsCorner({ onOpenAvailability, onShowCharts }: { onOpenAva
           <CrashButton />
           <span className="corner-hint">or click a controller</span>
         </span>
-      </div>
-      <div className="corner-foot">
-        <button type="button" className="btn btn-quiet" onClick={onShowCharts}>
-          <Icon name="chart" />
-          Show charts
-        </button>
       </div>
     </section>
   );

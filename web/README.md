@@ -54,7 +54,7 @@ rebuilds the Texas outline (below).
 | `npm run mock` | Standalone mock API on port 8787 (`MOCK_PORT` to change) |
 | `npm run typecheck` | `tsc -b` over the app, the mock and the configs |
 | `npm run lint` | oxlint (correctness, suspicious, React hooks, jsx-a11y), warnings fail |
-| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings (years and their presets), chart model, results rows, "What the AI adds" (uplift maths, wording, the pitch year only), the full-year re-run's Stop, the race (with the all-online third bar) and its events, map (projection, outline, layout and status decoding, cells, dot looks, zoom viewports, selection, labels), the timeline (past state, frame recorder, track), crash errors, mock (2026 prediction, race potential, status while paused, public kill over HTTP), AA contrast of the site's one theme |
+| `npm test` | vitest: formatters, frame reducer, reconnect logic, settings (years and their presets), results rows, "What the AI adds" (uplift maths, wording, the pitch year only), the full-year re-run's Stop, the race (with the all-online third bar) and its events, map (projection, outline, layout and status decoding, cells, dot looks, zoom viewports, selection, labels), the timeline (past state, frame recorder, track), crash errors, mock (2026 prediction, race potential, status while paused, public kill over HTTP), AA contrast of the site's one theme |
 | `npm run build` | typecheck, `vite build` to `dist/` (no source maps), then `scripts/check-dist.mjs` fails if any mock code shipped |
 | `npm run check` | all of the above |
 
@@ -110,8 +110,8 @@ src/
   lib/          format.ts (units + plain-language translations), cities.ts (names from the layout), fleet.ts,
                 store.ts, router.ts, contrast.ts
   state/        backend health / wake-up, technical-details switch, toasts
-  components/   Panel ("What is this?" + "How it works"), Tech/Term, Dialog, charts/ (uPlot)
-  screens/      start/, live/ (map/ is the default view, the charts layout is behind "Show charts"), results/
+  components/   Panel ("What is this?" + "How it works"), Tech/Term, Dialog, Segmented, Notice, Toasts
+  screens/      start/, live/ (the map page: map/ holds its corners, timeline and mini charts), results/
   styles/       tokens.css (the one always-dark theme, AA-checked), app.css, map.css
 scripts/        check-dist.mjs (no mock in dist/), texas-outline.ts (builds src/map/texasOutline.ts)
 mock/           simulated API for dev and tests only (never in dist/)
@@ -119,10 +119,11 @@ mock/           simulated API for dev and tests only (never in dist/)
 
 ### The live map
 
-The Live screen opens on a full-window map (docs/UX.md, "Live map" and "Live map v2"): a dark gray page, Texas
-as a bright red outline, and the 20,000 batteries as dots coloured by what they are doing, with the four corners
+The Live screen is a full-window map (docs/UX.md, "Live map" and "Live map v2"): a dark gray page, Texas as a
+bright red outline, and the 20,000 batteries as dots coloured by what they are doing, with the four corners
 holding the timeline, clock and price, money and power, the controls, and the controllers, batteries and latest
-events. "Show charts" switches to the detailed layout (remembered for the tab); "Show map" switches back.
+events. The older detailed layout with its price and power charts ("Show charts") was removed at the human's
+request: the map page shows the same things.
 
 - **Projection.** `src/map/albers.ts` implements the ellipsoidal Albers equal-area conic (Snyder 1987) with the
   EPSG:3083 parameters; it matches PROJ's reference values. The outline and the dots use the same function.
@@ -161,8 +162,8 @@ events. "Show charts" switches to the detailed layout (remembered for the tab); 
   `src/live/recorder.ts`); before the page was opened the corners rebuild the moment from the tick history
   (`src/live/past.ts`) and the map shows city totals only, which a one-line hint says.
 - **2026.** On ticks with `predicted: true` the clock gets a "Predicted" badge, the money is labelled
-  "projected", the timeline and price chart shade the predicted part, and `prediction_started` shows in the
-  event feed.
+  "projected", the timeline shades the predicted part (the corner's mini price line dashes it), and
+  `prediction_started` shows in the event feed.
 - **Drawing.** Two canvases: the outline (redrawn on resize and zoom) and the dots (redrawn on each 1 Hz
   frame). `requestAnimationFrame` runs only while a transition, a pulse, a zoom or a re-light plays.
   `prefers-reduced-motion` turns off halos, pulses and transitions.
@@ -174,9 +175,9 @@ events. "Show charts" switches to the detailed layout (remembered for the tab); 
   (`race` in every frame, docs/API.md): "RACE ↑ AI forecast ahead by $15,290" over two bars, for all of Texas or
   the selected city (`race.by_location`), hidden while idle. When `race.shows_potential` is true (batteries have
   been offline or a controller down this run) a third bar shows `race.potential`, the same fleet with every
-  battery online, and the shortfall: "All online … projected · Outages cost $790 so far" in the corner, the full
-  label in the money card. "Show charts" has the same in its money card, with the charge left on each side;
-  `race_update` events get a flag in both "What just happened" lists. The wording is in
+  battery online, and the shortfall: "All online … projected · Outages cost $790 so far", with the full label and
+  the charge left on each side in its tooltip; `race_update` events get a flag in "What just happened". The
+  wording is in
   `src/screens/live/race.ts` (tested). In a short window the money corner is capped at the room the fleet corner
   below it leaves, so the two never overlap.
 - **Batteries offline.** "Take batteries offline" opens a drawer on the LEFT with a light backdrop, so the cities
@@ -203,11 +204,11 @@ only (the first entry of `years` with `is_pitch: true`, 2025) and ignores any ot
 switch and no spike card. A 404 `no_results` hides the section. The model and every sentence
 are in `src/screens/results/aiGains.ts` (tested).
 
-- **Charts**: [uPlot](https://github.com/leeoniya/uPlot) (about 50 KB): canvas, fast with 2,000-point series,
-  live appends, bands for the forecast, draw hooks for the charge/sell shading and crash markers.
+- **Charts**: no chart library. The corners' mini price and power lines and the timeline are small SVGs drawn
+  from the tick history; the map is plain canvas.
 - **Performance**: a frame every second goes through a pure reducer into a tiny external store. Panels read
-  single slices, so only panels whose data changed re-render; the charts subscribe outside React and call
-  `setData`. History is capped at 2,000 ticks and events at 50.
+  single slices, so only panels whose data changed re-render; the map's canvas subscribes outside React.
+  History is capped at 2,000 ticks and events at 50.
 - **Live connection**: reconnects with exponential backoff and jitter (Cloud Run closes WebSockets after 60
   minutes, so a long-lived connection that closes comes back within about half a second). A watchdog closes a
   socket that is quiet for 15 s (idle messages come every 5 s), and a handshake that has not finished after 15 s counts as a failed attempt.
@@ -216,7 +217,7 @@ are in `src/screens/results/aiGains.ts` (tested).
 - **Accessibility**: keyboard-only use works throughout (skip link, native dialogs, radio groups, a real
   switch, city buttons and Esc on the map); visible focus rings; AA contrast in the site's one dark theme
   (tested, including the primary button, the bars, the dot colours and the outline against the page); status never shown by color alone
-  (icons and words next to every color); charts have text read-outs above them, and the map canvas has a text
-  alternative with the current counts.
+  (icons and words next to every color); the mini charts are decorative, with their values written out next to
+  them, and the map canvas has a text alternative with the current counts.
 - **Language**: plain words by default; "Show technical details" (header, remembered per browser) reveals raw
   values and spec terms in brackets, e.g. "Controllers (worker processes)".

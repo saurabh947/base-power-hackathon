@@ -127,7 +127,6 @@ function ViewingChip({ chipRef }: { chipRef: { current: HTMLDivElement | null } 
 
 interface Props {
   onOpenAvailability: () => void;
-  onShowCharts: () => void;
   /** The run and connection notice (idle, finished, can't reach the simulator), if any. */
   notice: ReactNode;
 }
@@ -136,7 +135,7 @@ interface Props {
 const RIGHT_GAP = 10;
 const EDGE = 12;
 
-export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
+export function LiveMap({ onOpenAvailability, notice }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
@@ -173,7 +172,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
   const onPriceRow = useCallback((location: string) => select({ type: 'label', location }), [select]);
 
   useEffect(() => holdMapFeed(), []);
-  // Leaving the map (to "Show charts" or another page) goes back to live: only the map has the timeline.
+  // Leaving the map (for another page) goes back to live: only the map has the timeline.
   useEffect(() => () => backToLive(), []);
 
   // ---- labels ---------------------------------------------------------------------
@@ -518,7 +517,7 @@ export function LiveMap({ onOpenAvailability, onShowCharts, notice }: Props) {
       ) : null}
 
       <div className="corner-slot corner-slot-bl" ref={blRef}>
-        <ControlsCorner onOpenAvailability={onOpenAvailability} onShowCharts={onShowCharts} />
+        <ControlsCorner onOpenAvailability={onOpenAvailability} />
       </div>
       <LiveDataContext.Provider value={shownStore}>
         <div className="corner-slot corner-slot-br" ref={brRef}>

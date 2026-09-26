@@ -73,8 +73,6 @@ const TEXT_PAIRS: [string, string][] = [
   ['text-muted', 'hold-soft'],
   ['text-muted', 'warn-soft'],
   ['text-muted', 'fail-soft'],
-  ['chart-axis', 'surface'],
-  ['chart-axis', PANEL],
   // Results: the big per-battery number, the headline bar's value; Start: "20,000 home batteries".
   ['money', PANEL],
   ['money', 'bg'],
@@ -105,10 +103,7 @@ const UI_PAIRS: [string, string][] = [
   // Info notices and events.
   ['info', 'bg'],
   ['info', PANEL],
-  // Detailed charts.
-  ['chart-price', 'surface'],
-  ['chart-plan', 'surface'],
-  ['chart-delivered', 'surface'],
+  // The corners' mini charts and the timeline's price line, on the panels.
   ['chart-price', PANEL],
   ['chart-plan', PANEL],
   ['chart-delivered', PANEL],

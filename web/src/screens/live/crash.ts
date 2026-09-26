@@ -94,7 +94,7 @@ export function useCrashable(): { can: boolean; why: string | null } {
 /** The "Crash controller 7?" popover: which controller, and where it sits over the tiles. */
 export interface CrashTarget {
   workerId: number;
-  /** Position in the tiles' wrapper (.mini-tiles-wrap or .tiles-wrap, positioned): above the tile. */
+  /** Position in the tiles' wrapper (.mini-tiles-wrap, positioned): above the tile. */
   left: number;
   bottom: number;
   button: HTMLElement;
@@ -121,7 +121,7 @@ export function useCrashAsk(): {
       setTarget(null);
       return;
     }
-    const box = button.closest<HTMLElement>('.mini-tiles-wrap, .tiles-wrap');
+    const box = button.closest<HTMLElement>('.mini-tiles-wrap');
     if (!box) return;
     const b = button.getBoundingClientRect();
     const c = box.getBoundingClientRect();

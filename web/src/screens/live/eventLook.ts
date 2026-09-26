@@ -1,5 +1,5 @@
-// How a "What just happened" item looks, on the map and in "Show charts": its icon, its colour class and
-// what a screen reader hears first. Race updates (docs/API.md race_update) get a flag of their own, and the
+// How a "What just happened" item looks in the map's corner: its icon, its colour class and what a screen
+// reader hears first. Race updates (docs/API.md race_update) get a flag of their own, and the
 // moment the AI's prediction takes over (prediction_started) the AI's sparkle in the forecast's violet.
 
 import type { LiveEvent } from '../../api/types.ts';

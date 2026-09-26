@@ -1,7 +1,7 @@
 // "Viewing 7:45 pm · Back to live" (docs/UX.md, "Live map v2", the timeline): which moment the map and its
 // corners show. null is live; otherwise the sim time (ms) of a tick in the history. The simulation keeps
 // running meanwhile. `shownStore` is the live state as of that moment (src/live/past.ts), and the map's
-// corners read it through useLiveData; the controls and the "Show charts" layout always read the live store.
+// corners read it through useLiveData; the controls always read the live store.
 
 import { createContext, useContext } from 'react';
 import { createStore, useStore, type Store } from '../lib/store.ts';

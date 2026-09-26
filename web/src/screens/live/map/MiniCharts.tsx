@@ -3,9 +3,9 @@
 // moment the timeline shows. Decorative: the values they show are always written out next to them.
 
 import type { Forecast, Tick } from '../../../api/types.ts';
-import { actionSpans } from '../../../components/charts/model.ts';
 import { useLiveData } from '../../../live/timeTravel.ts';
 import { scopeValue, type Scope } from './scope.ts';
+import { actionSpans } from './spans.ts';
 
 const W = 280;
 const H = 56;

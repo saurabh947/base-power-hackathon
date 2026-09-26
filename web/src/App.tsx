@@ -5,7 +5,6 @@ import { PracticeBanner } from './components/PracticeBanner.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { useRoute, type Route } from './lib/router.ts';
 import { LiveScreen } from './screens/live/LiveScreen.tsx';
-import { useView } from './screens/live/viewStore.ts';
 import { ResultsScreen } from './screens/results/ResultsScreen.tsx';
 import { StartScreen } from './screens/start/StartScreen.tsx';
 import { checkBackend } from './state/backend.ts';
@@ -19,11 +18,10 @@ const TITLES: Record<Route, string> = {
 
 export function App() {
   const route = useRoute();
-  const liveMode = useView((v) => v.mode);
   const mainRef = useRef<HTMLElement>(null);
   const firstRender = useRef(true);
-  // The live map fills the window (docs/UX.md, Live map). Every page shares its dark theme (tokens.css).
-  const mapMode = route === 'live' && liveMode === 'map';
+  // The Live page is the map, filling the window (docs/UX.md, Live map). Every page shares its dark theme (tokens.css).
+  const mapMode = route === 'live';
 
   useEffect(() => {
     void checkBackend();

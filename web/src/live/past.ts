@@ -221,9 +221,3 @@ export function projectedMoney(history: readonly Tick[], scope: string | null): 
   }
   return any ? { usd, exact: !history[0]?.predicted } : null;
 }
-
-/** The first predicted tick in the history, if any (where the AI's prediction took over). */
-export function firstPredicted(history: readonly Tick[]): Tick | null {
-  for (const t of history) if (t.predicted) return t;
-  return null;
-}

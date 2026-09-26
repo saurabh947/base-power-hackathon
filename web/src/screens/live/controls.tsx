@@ -1,8 +1,8 @@
-// Run controls shared by the map's bottom-left corner and the detailed layout's top bar: Pause/Resume,
-// Speed, Reset (with a confirmation) and "Crash a controller", which is open to everyone (docs/UX.md,
-// Crashing controllers). A visitor can also crash one controller by clicking its tile, after a small
-// "Crash controller 7?" confirmation (CrashPopover). Crashes are limited to one every 2 s for everyone
-// together, and the server never leaves fewer than 2 working controllers (./crash.ts).
+// Run controls in the map's bottom-left corner: Pause/Resume, Speed, Reset (with a confirmation) and
+// "Crash a controller", which is open to everyone (docs/UX.md, Crashing controllers). A visitor can also
+// crash one controller by clicking it in the controllers panel, after a small "Crash controller 7?" confirmation
+// (CrashPopover). Crashes are limited to one every 2 s for everyone together, and the server never leaves
+// fewer than 2 working controllers (./crash.ts).
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Dialog } from '../../components/Dialog.tsx';

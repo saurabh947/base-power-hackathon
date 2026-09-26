@@ -21,8 +21,7 @@
   },
   "dependencies": {
     "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "uplot": "^1.6.32"
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

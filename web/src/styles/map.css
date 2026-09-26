@@ -785,22 +785,6 @@ html.map-mode .toasts {
   min-height: 34px;
 }
 
-.corner .crash-control {
-  padding-left: 0;
-  border-left: 0;
-}
-
-.corner-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.corner-foot .btn-quiet {
-  margin-left: -6px;
-}
-
 /* "Crash a controller", and beside it the hint that a tile crashes that one. */
 .crash-with-hint {
   display: inline-flex;

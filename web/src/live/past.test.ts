@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LiveEvent, Tick, Totals, Worker } from '../api/types.ts';
-import { firstPredicted, indexAt, pastState, projectedMoney, stepFrom, tickMs, totalsAt, workersAt } from './past.ts';
+import { indexAt, pastState, projectedMoney, stepFrom, tickMs, totalsAt, workersAt } from './past.ts';
 import type { FrameRecord } from './recorder.ts';
 import { initialLiveState, type LiveState } from './reducer.ts';
 
@@ -182,7 +182,5 @@ describe('money on predicted ticks is projected', () => {
     expect(projectedMoney(history.slice(0, 7), null)).toBeNull();
     // A kept history that starts inside the prediction cannot say how much.
     expect(projectedMoney(history.slice(8), null)?.exact).toBe(false);
-    expect(firstPredicted(history)).toBe(history[7]);
-    expect(firstPredicted(history.slice(0, 7))).toBeNull();
   });
 });
