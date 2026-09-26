@@ -1,0 +1,48 @@
+# fleet-sim forecast job: TimesFM on CPU torch, as a Cloud Run Job (8 vCPU / 32 GiB, no GPU).
+# Built by Cloud Build: scripts/cloud/cloudbuild.forecast.yaml (scripts/cloud/jobs.sh forecast).
+#
+# Weights are BAKED IN at build time, pinned to the Hugging Face revisions in
+# src/forecast/model.py. Why: every run then starts in seconds with no network
+# dependency on Hugging Face (unauthenticated downloads are rate-limited), and
+# re-runs forecast with exactly the same weights. The cost is ~2.2 GB of image;
+# the job pulls it once per execution. If a model is not baked (BAKE_MODELS),
+# forecast.download: true fetches it at start instead.
+# Licence: timesfm-3.0 weights are non-commercial / non-production (demo only,
+# RUNLOG); timesfm-2.5 is Apache-2.0. Switch with env FORECAST_MODEL.
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy \
+    HF_HUB_DISABLE_TELEMETRY=1
+RUN pip install --no-cache-dir uv==0.9.13
+WORKDIR /app
+
+# Dependencies from uv.lock (main + the `forecast` extra), with CPU-only torch:
+# PyPI's Linux torch wheel pulls ~3 GB of CUDA libraries a CPU job never loads.
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --extra forecast --no-emit-project --no-hashes -o /tmp/req.txt \
+ && grep -v -E '^(torch|triton|nvidia-|cuda-)' /tmp/req.txt > /tmp/req-cpu.txt \
+ && TORCH_VERSION="$(sed -n -E 's/^torch==([^ ;]+).*/\1/p' /tmp/req.txt)" \
+ && test -n "$TORCH_VERSION" \
+ && uv venv /app/.venv \
+ && uv pip install --python /app/.venv/bin/python --no-deps \
+      --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" \
+ && uv pip install --python /app/.venv/bin/python -r /tmp/req-cpu.txt \
+ && rm -rf /root/.cache /tmp/req*.txt
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Weights, before the source so code changes do not re-download them.
+ARG BAKE_MODELS="timesfm-3.0 timesfm-2.5"
+COPY src/forecast/model.py /tmp/bake/forecast_model.py
+RUN python -c "import sys; sys.path.insert(0, '/tmp/bake'); import forecast_model as m; \
+[print('baked', m.ensure_weights(m.MODELS[n], '/app/models')) for n in sys.argv[1:]]" ${BAKE_MODELS} \
+ && rm -rf /root/.cache /tmp/bake
+
+COPY config.yaml ./
+COPY migrations ./migrations
+# Real ERCOT inputs for SERIES_BACKEND=snapshot, if Postgres prices are not loaded yet (~10 MB).
+COPY data/snapshot ./data/snapshot
+COPY src ./src
+ENV FORECAST_WEIGHTS_DIR=/app/models
+
+# DB comes from DB_HOST / DB_NAME / DB_USER / DB_PASSWORD (src/db.py); output defaults to the forecasts table.
+ENTRYPOINT ["python", "-m", "src.forecast.job"]
+CMD ["--year", "2025"]
