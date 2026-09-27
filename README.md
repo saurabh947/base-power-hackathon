@@ -2,6 +2,8 @@
 
 20,000 simulated home batteries trading on real ERCOT prices across the Texas triangle (Houston, Dallas-Fort Worth, San Antonio, Austin). Built for the Base Power Hackathon, Sep 25 - 27, 2026.
 
+[![Fleet Sim's Live page: 20,000 batteries on a map of Texas](assets/teaser.gif)](https://fleet-sim.vercel.app)
+
 Live: https://fleet-sim.vercel.app
 
 ## What it does
