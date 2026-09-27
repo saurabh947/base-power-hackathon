@@ -60,7 +60,7 @@ describe('GET /settings readers', () => {
       description: 'Both areas jump to about $1,750/MWh at 9 pm.',
     };
     expect(readPresets([good, { id: 'a', label: 'A' }, { id: 3 }])).toEqual([good]);
-    expect(readPresets([{ id: 'a' }])[0].id).toBe('ai_best_evening'); // documented fallback
+    expect(readPresets([{ id: 'a' }])[0].id).toBe('morning_spike'); // documented fallback
     expect(readEditable(['preset', 'fleet_size', 'strategy'])).toEqual(['preset', 'strategy']);
     expect(readEditable(null)).toEqual(['year', 'preset', 'speed_tps', 'strategy', 'start_charge_level']);
     expect(readEditable(['year', 'preset'])).toEqual(['year', 'preset']);
@@ -70,7 +70,7 @@ describe('GET /settings readers', () => {
     const model = readSettingsResponse(null);
     expect(model.fallback).toBe(true);
     expect(model.defaults).toEqual(DOCUMENTED_DEFAULTS);
-    expect(model.presets[0].id).toBe('ai_best_evening');
+    expect(model.presets[0].id).toBe('morning_spike');
     const real = readSettingsResponse({ defaults: { ...DOCUMENTED_DEFAULTS, speed_tps: 5 } });
     expect(real.fallback).toBe(false);
     expect(real.defaults.speed_tps).toBe(5);
@@ -168,7 +168,7 @@ describe('years and presets', () => {
       [2025, null],
       [2026, '2026-09-21T05:00:00Z'],
     ]);
-    expect(presetsForYear(fallback.presets, 2026).map((p) => p.label)).toEqual(['From January 1']);
+    expect(presetsForYear(fallback.presets, 2026).map((p) => p.label)).toEqual(['Biggest evening spike of 2026', 'From January 1']);
   });
 });
 

@@ -1,5 +1,6 @@
-// "What the AI adds" on the Results page, from GET /results/ai-gains?year= (docs/API.md). Pure, so the
-// uplift maths and the wording are unit tested.
+// "What the AI adds" on the Results page: its headline (what the AI forecast earns over the simple rule) and
+// its surplus-power figure, from GET /results/ai-gains?year= (docs/API.md); the methods' bars beside them come
+// from the results (./model.ts). Pure, so the uplift maths and the wording are unit tested.
 //
 // It shows the year the Results page shows (the run's, or the one picked on Start): the entry of `years`
 // for that year. Without a year it shows the pitch year (the first entry with `is_pitch: true`). Other years
@@ -200,7 +201,7 @@ export function gainsHeadline(gains: PitchGains, year: AiGainsYear, knownFleetSi
   return { ...up, amount, pctText, versus, fleetText, sentence };
 }
 
-// ---- the cards ---------------------------------------------------------------------------------------------
+// ---- surplus power -----------------------------------------------------------------------------------------
 
 export interface Pair {
   /** The AI's value and the baseline's, as bar lengths against the larger (0-1). */
@@ -224,72 +225,7 @@ function side(year: AiGainsYear, id: string): Side {
   return { label, short: shortLabel(label) };
 }
 
-/** (a) Earns more: the AI vs the simple rule per battery, and the fleet difference. */
-export interface EarnsCard extends Pair {
-  ai: Side;
-  base: Side;
-  /** "$191" and "$124" per battery per year. */
-  aiText: string;
-  baseText: string;
-  /** "$3.82 million vs $2.47 million a year" */
-  fleetText: string | null;
-  /** "+$1.35 million a year" */
-  fleetDiffText: string | null;
-}
-
-export function earnsCard(gains: PitchGains, year: AiGainsYear, knownFleetSize: number | null): EarnsCard | null {
-  const a = year.strategies[gains.ai];
-  const b = year.strategies[gains.baseline];
-  if (!finite(a.per_battery_usd_year) || !finite(b.per_battery_usd_year)) return null;
-  const up = upliftOf(year, gains.ai, gains.baseline, fleetSizeOf(year, gains.ai, knownFleetSize));
-  const bothFleets = finite(a.fleet_usd_year) && finite(b.fleet_usd_year);
-  return {
-    ai: side(year, gains.ai),
-    base: side(year, gains.baseline),
-    aiText: fmtUsd(a.per_battery_usd_year, 0),
-    baseText: fmtUsd(b.per_battery_usd_year, 0),
-    ...pair(a.per_battery_usd_year, b.per_battery_usd_year),
-    fleetText: bothFleets ? `${fmtUsdLarge(a.fleet_usd_year, 2)} vs ${fmtUsdLarge(b.fleet_usd_year, 2)} a year` : null,
-    fleetDiffText:
-      up && up.fleet !== null ? `${up.fleet < 0 ? MINUS : '+'}${fmtUsdLarge(Math.abs(up.fleet), 2)} a year` : null,
-  };
-}
-
-/** (b) Gets closer to perfect: each method's share of the hindsight best, as bars. */
-export interface PerfectBar {
-  key: string;
-  label: string;
-  /** 0-1 of "perfect", for the bar. */
-  share: number;
-  /** "45%" */
-  text: string;
-  ai: boolean;
-}
-
-export interface PerfectCard {
-  /** The simple rule first, then the other methods, the AI last. */
-  bars: PerfectBar[];
-  /** "$421" per battery per year: what 100% is. */
-  bestText: string | null;
-}
-
-export function perfectCard(gains: PitchGains, year: AiGainsYear): PerfectCard | null {
-  const best = year.best_possible_per_battery_usd_year;
-  const others = Object.keys(year.strategies)
-    .filter((id) => id !== gains.ai && id !== gains.baseline)
-    .toSorted((x, y) => (x === 'peak' ? -1 : y === 'peak' ? 1 : x.localeCompare(y)));
-  const bars: PerfectBar[] = [];
-  for (const id of [gains.baseline, ...others, gains.ai]) {
-    const s = year.strategies[id];
-    const share = finite(s.share_of_best) ? s.share_of_best : finite(best) && best > 0 ? s.per_battery_usd_year / best : Number.NaN;
-    if (!finite(share)) continue;
-    bars.push({ key: id, label: side(year, id).short, share: clampShare(share), text: fmtPercent(share, 0), ai: id === gains.ai });
-  }
-  if (!bars.some((b) => b.ai)) return null;
-  return { bars, bestText: finite(best) && best > 0 ? fmtUsd(best, 0) : null };
-}
-
-/** (c) Soaks up surplus power: energy bought at prices at or below $0/MWh. */
+/** Soaks up surplus power: energy bought at prices at or below $0/MWh. */
 export interface SurplusCard extends Pair {
   ai: Side;
   base: Side;
@@ -331,13 +267,8 @@ export interface GainsSplit {
   real: string;
   projected: string;
   estimate: string;
-  /** For the "Earns more" card: "Real Jan 1 – Sep 20: $140 vs $95 · Projected Sep 21 – Dec 31: $60 vs $35". */
-  earnsReal: string;
-  earnsProjected: string;
 }
 
-/** Whole dollars: "$140". */
-const usd = (n: number) => fmtUsd(n, 0);
 /** Whole dollars with a sign: "+$45", "−$3". */
 const signedUsd = (n: number) => `${n < 0 ? MINUS : '+'}${fmtUsd(Math.abs(n), 0)}`;
 
@@ -351,8 +282,6 @@ export function gainsSplit(input: SplitInput | null, year: number): GainsSplit |
     real: `Real ${input.span.realSpan}: ${signedUsd(aiReal - baseReal)} per battery`,
     projected: `Projected ${input.span.projectedSpan}: ${signedUsd(aiProjected - baseProjected)}`,
     estimate: `${year} estimate: ${signedUsd(aiTotal - baseTotal)}`,
-    earnsReal: `Real ${input.span.realSpan}: ${usd(aiReal)} vs ${usd(baseReal)}`,
-    earnsProjected: `Projected ${input.span.projectedSpan}: ${usd(aiProjected)} vs ${usd(baseProjected)}`,
   };
 }
 
@@ -361,21 +290,17 @@ export function gainsSplit(input: SplitInput | null, year: number): GainsSplit |
 export interface GainsView {
   year: AiGainsYear;
   headline: GainsHeadline | null;
-  earns: EarnsCard | null;
-  perfect: PerfectCard | null;
   surplus: SurplusCard | null;
   /** A year with an AI-predicted part: the uplift split into real and projected; null for a year of real prices. */
   split: GainsSplit | null;
 }
 
-/** The headline and the three cards, for the year shown (and its real/projected split, when it has one). */
+/** The headline and the surplus figure, for the year shown (and its real/projected split, when it has one). */
 export function gainsView(gains: PitchGains, knownFleetSize: number | null, splitInput: SplitInput | null = null): GainsView {
   const y = gains.year;
   return {
     year: y,
     headline: gainsHeadline(gains, y, knownFleetSize),
-    earns: earnsCard(gains, y, knownFleetSize),
-    perfect: perfectCard(gains, y),
     surplus: surplusCard(gains, y),
     split: gainsSplit(splitInput, y.year),
   };

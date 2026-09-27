@@ -14,7 +14,7 @@ import { batteryId, batteryIndex, COUNT, LOCS, MockSim, mockSettingsResponse, PR
 function running(speed = 2, preset?: string) {
   let now = Date.parse('2026-09-25T12:00:00Z');
   const sim = new MockSim({ now: () => now, random: () => 0.5, backtestMs: 1000 });
-  sim.start({ speed_tps: speed, ...(preset ? { preset } : {}) });
+  sim.start({ speed_tps: speed, preset: preset ?? 'ai_best_evening' }); // May 30, 2025, from 6 pm
   const step = () => {
     now += 1000;
     return sim.stepWall();
@@ -41,7 +41,7 @@ describe('price fixture', () => {
     expect(fixture.source_note).toContain('REAL DATA');
     expect(fixture.locations).toEqual(['LZ_HOUSTON', 'LZ_NORTH', 'LZ_CPS', 'LZ_AEN']);
     const presets2025 = PRESETS.filter((p) => p.year === 2025).map((p) => p.id);
-    expect(fixture.segments.map((s) => s.preset)).toEqual([...presets2025.filter((id) => id !== 'jan1_2025'), 'jan1_2025', 'stand_in_2026_sep']);
+    expect(fixture.segments.map((s) => s.preset).toSorted()).toEqual([...presets2025, 'stand_in_2026_sep'].toSorted());
     for (const s of fixture.segments) {
       expect(s.rows).toHaveLength(s.preset === 'stand_in_2026_sep' ? 7 * 96 : 192);
       for (const r of s.rows) for (const loc of LOCS) expect(typeof (r as Record<string, unknown>)[loc]).toBe('number');
@@ -66,17 +66,8 @@ describe('GET /settings shapes', () => {
     );
     expect(Object.keys(s.strategies[0]).toSorted()).toEqual(['description', 'id', 'label']);
     expect(s.speeds[1]).toEqual({ tps: 2, label: '1 hour every 6 s' });
-    expect(s.presets.map((p) => p.id)).toEqual([
-      'spike_evening',
-      'morning_spike',
-      'summer_spike',
-      'ai_best_evening',
-      'ordinary_day',
-      'jan1_2025',
-      'predicted_2026',
-      'jan1_2026',
-    ]);
-    expect(s.defaults).toMatchObject({ year: 2025, preset: 'ai_best_evening' }); // config.yaml presets.default
+    expect(s.presets.map((p) => p.id)).toEqual(['morning_spike', 'ordinary_day', 'jan1_2025', 'jan1_2026']);
+    expect(s.defaults).toMatchObject({ year: 2025, preset: 'morning_spike' }); // config.yaml presets.default
     expect(s.defaults.locations).toEqual({ LZ_HOUSTON: 0.35, LZ_NORTH: 0.4, LZ_CPS: 0.13, LZ_AEN: 0.12 });
     expect(s.editable).toEqual(['year', 'preset', 'speed_tps', 'strategy', 'start_charge_level']);
   });
@@ -502,16 +493,15 @@ describe('GET /results/ai-gains (the measured numbers, RUNLOG.md)', () => {
     }
   });
 
-  it('reads on the site as the approved headline and cards', () => {
+  it('reads on the site as the approved headline and surplus figure', () => {
     const read = readAiGains(JSON.parse(JSON.stringify(gains)));
     if (!read) throw new Error('unreadable');
     const view = gainsView(read, 20_000);
     expect(view.headline?.sentence).toBe(
       '+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet',
     );
-    expect(view.perfect?.bars.map((b) => b.text)).toEqual(['29%', '32%', '45%']);
     expect(view.surplus).toMatchObject({ aiText: '7,011 MWh', baseText: '1,239 MWh', times: '5.7×' });
-    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus', 'split']); // three cards, no spike card
+    expect(Object.keys(view)).toEqual(['year', 'headline', 'surplus', 'split']); // the bars come from the results
     expect(view.split).toBeNull(); // 2025: real prices all year
   });
 

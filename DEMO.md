@@ -12,32 +12,33 @@
 ## Two minutes before
 - Open the site; the first visit wakes the simulator.
 - **Crash a controller** is open to everyone. It's on the Live screen's controls, or click any controller's tile. At most one crash every 2 s; **Reset** brings every controller back.
-- On the Start screen the defaults read: 20,000 home batteries · Dallas–Fort Worth, Houston, San Antonio and Austin · **The AI's best evening, May 30, 2025, from 6 pm** · 1 hour every 6 s · AI forecast (TimesFM-3) · 90% charged.
+- On the Start screen the defaults read: 20,000 home batteries · Dallas–Fort Worth, Houston, San Antonio and Austin · **Biggest spike of 2025, Apr 7, 2025, from 3 am** · 1 hour every 6 s · AI forecast (TimesFM-3) · 90% charged.
+- **Do one practice run first.** The race numbers for this morning weren't measured before this preset became the default, so read them off the Race panel once and use those in what you say.
 
 ## The 3 minutes
-The replay runs at 1 hour of market time every 6 seconds.
+The replay runs at 1 hour of market time every 6 seconds, so the spike comes about 20 seconds in. If you want more time to talk, set the speed to *1 hour every 12 s* before you press Start.
 
 | Time | Replay | Do | Say |
 |---|---|---|---|
-| 0:00 | | Point at the settings card, then press **Start the simulation** | "20,000 home batteries across the Texas Triangle replay real prices from May 30, 2025. Watch the top right: our AI fleet races a copy of the same fleet running a simple rule." |
-| ~0:05 | 6:30–7:30 pm | Point at **Race** | "The simple rule sells as soon as prices look high. It's ahead by about $12,000. The AI's TimesFM-3 forecast says prices keep climbing, so it waits at 90%." |
-| ~0:12 | 8 pm | The AI starts selling. Press **Crash a controller** | "That really killed a process on the server. The tile goes red and its 1,000 dots flash. The other 19 take them over in milliseconds, and 'asked for' and 'delivered' line up again on the next step." |
-| ~0:18 | 9 pm | The feed reads "Prices jumped to $389 in all four cities…" **Crash a second controller** | "Two down, still on target. The simple rule is almost empty; the AI kept energy for this." |
-| ~0:25 | ~9:45 pm | The feed reads "The AI is now $21,330 ahead of the simple rule." | "Same batteries, same prices, only the decisions differ: $38,900 vs $17,500 tonight." |
+| 0:00 | 3 am | Point at the settings card, then press **Start the simulation** | "20,000 home batteries across the Texas Triangle replay April 7, 2025: the biggest price spike of the year. Watch the top right: our AI fleet races a copy of the same fleet running a simple rule." |
+| ~0:08 | ~4:30 am | Press **Crash a controller** | "That really killed a process on the server. The tile goes red and its 1,000 dots flash. The other 19 take them over in milliseconds, and 'asked for' and 'delivered' line up again on the next step." |
+| ~0:17 | 5:45 am | The feed reads "Prices jumped to $3xx in all four cities. The AI fleet had …% charge left; the simple rule had …%." | "Prices are climbing. This is who kept charge for what comes next." |
+| ~0:23 | 6:45 am | All four cities pass $3,500/MWh. **Crash a second controller** | "The year's highest prices, two controllers down, and the fleet still delivers what it's asked for." |
+| ~0:30 | 7:30 am | Point at **Race** | "Same batteries, same prices, only the decisions differ." Read the two totals from the screen. |
 | optional | | Click **Houston** on the map | "Every city has its own price, money and race. These seven controllers run Houston." |
 | 1:30 | | Open **Results** | "Over all of 2025 that's $191 per battery per year, $3.8M for this fleet." |
-| 1:50 | | Scroll to **What the AI adds** | "+$67 per battery per year, +54% over the simple rule: $1.35M more for the fleet. It gets 45% of the way to perfect hindsight and soaks up 5.7× more free or negative-priced power." |
+| 1:50 | | Point at **What the AI adds**, beside it | "+$67 per battery per year, +54% over the simple rule: $1.35M more for the fleet. The bars show it gets 45% of the way to perfect hindsight, and it soaks up 5.7× more free or negative-priced power." |
 
 - **Too fast?** Use **Pause**, or set the speed to *1 hour every 12 s*.
 - **Next run:** press **Reset**. That brings all 20 controllers back and every battery online.
-- **Re-running the full year** on Results takes about a minute. **Stop** cancels it and keeps the current results.
 
 ## Honest answers to likely questions
 - **"Does the AI always win?"** No.
-  - On July 11 (the *Summer night spike* preset) both fleets catch the 9 pm spike, and the AI ends only about $1,500 ahead.
-  - On May 16 (the *Price-spike evening* preset) the AI sold too early.
+  - On the evening of July 11, 2025 both fleets catch the 9 pm spike, and the AI ends only about $1,500 ahead.
+  - On the evening of May 16, 2025 the AI sold too early.
+  - Its best evening of 2025 was May 30: $38,936 against the simple rule's $17,536.
   - Over whole years it wins clearly: +54% in 2025 and +139% in 2024.
-- **"Why this evening?"** The demo uses the 2025 evening where the AI pulled furthest ahead. The preset's label says so, and every preset is one click away.
+- **"Why April 7?"** It has the year's highest prices: all four cities pass $3,500/MWh just before 7 am. An ordinary day and the whole year from January 1 are one click away on Start.
 - **"Is $191 cherry-picked?"** The forecast rule's two settings were tuned on part of 2025, so 2024, with fresh forecasts, is the clean check: $271 per battery vs $114 for the simple rule.
 - **"Real hardware?"** Everything talks through four frozen interfaces (price feed, battery adapter, strategy, ledger), so real price feeds and battery APIs can plug in later.
 

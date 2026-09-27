@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Results, StrategyResult } from '../../api/types.ts';
-import { cityRows, comparisonRows, headlineOf, isProjectedDay, roundedParts, splitOf, strategyLabel, yearSplit } from './model.ts';
+import { cityRows, comparisonRows, finePrint, headlineOf, isProjectedDay, roundedParts, splitOf, strategyLabel, yearSplit } from './model.ts';
 
 function strategy(key: string, perBattery: number, headline = false, label = ''): StrategyResult {
   return {
@@ -54,11 +54,16 @@ describe('comparisonRows', () => {
     }
   });
 
+  it('gives each method its share of the best possible, but not the ceiling itself', () => {
+    expect(rows.map((x) => x.ofBest)).toEqual([104.2 / 251, 161.8 / 251, 128.5 / 251, null]);
+  });
+
   it('copes with no ceiling, a loss and a missing number', () => {
     const odd = results([strategy('bands', -5), strategy('forecast', Number.NaN, true), strategy('peak', 40)], null);
     const oddRows = comparisonRows(odd, headlineOf(odd));
     expect(oddRows.map((x) => x.key)).toEqual(['bands', 'forecast', 'peak']);
     expect(oddRows.map((x) => x.share)).toEqual([0, 0, 1]);
+    expect(oddRows.map((x) => x.ofBest)).toEqual([null, null, null]);
   });
 
   it('falls back to the first method when none is marked as the headline', () => {
@@ -151,5 +156,16 @@ describe('cityRows', () => {
     const rows = cityRows({ LZ_HOUSTON: 10, LZ_NORTH: Number.NaN, LZ_CPS: -3 } as Record<string, number>);
     expect(rows.map((r) => r.location)).toEqual(['LZ_HOUSTON', 'LZ_CPS']);
     expect(rows[1].share).toBe(0);
+  });
+});
+
+describe('finePrint', () => {
+  it('names the prices, and for a split year says the projected part favors the AI', () => {
+    expect(finePrint({ year: 2025 }, null)[0]).toBe('Gross wholesale value at 2025 real-time prices.');
+    const span = yearSplit({ year: 2026, real_until_utc: '2026-09-20T05:00:00Z' });
+    expect(finePrint({ year: 2026 }, span)[0]).toBe(
+      "Real-time prices through Sep 19, then the AI's predicted prices. That later part is a projection, and it favors the AI forecast, which trades on its own prediction.",
+    );
+    expect(finePrint({ year: 2025 }, null)).toHaveLength(5);
   });
 });

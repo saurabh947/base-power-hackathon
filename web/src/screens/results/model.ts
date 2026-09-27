@@ -102,6 +102,8 @@ export interface BarRow {
   value: number;
   /** Bar length, 0-1 of the longest bar. */
   share: number;
+  /** A method's share of the best possible (0.49 is 49%); null for the ceiling itself, or without one. */
+  ofBest: number | null;
   /** The method of the big number (green). */
   headline: boolean;
   /** "Best possible (perfect hindsight)" (hatched). */
@@ -115,7 +117,7 @@ const share = (value: number, max: number) => (Number.isFinite(value) && max > 0
 /** One bar per decision method in the usual order, then the hindsight ceiling; split real/projected when the year is. */
 export function comparisonRows(results: Results, headline: StrategyResult | null): BarRow[] {
   const splitYear = yearSplit(results) !== null;
-  const rows: Omit<BarRow, 'share' | 'split'>[] = [];
+  const rows: Omit<BarRow, 'share' | 'ofBest' | 'split'>[] = [];
   const splits: (Split | null)[] = [];
   for (const s of results.strategies.toSorted((a, b) => rank(a) - rank(b))) {
     rows.push({
@@ -138,6 +140,7 @@ export function comparisonRows(results: Results, headline: StrategyResult | null
     splits.push(splitYear ? splitOf(results.ceiling) : null);
   }
   const max = Math.max(0, ...rows.map((r) => (Number.isFinite(r.value) ? r.value : 0)));
+  const best = results.ceiling?.per_battery_usd_year;
   return rows.map((r, i) => {
     const sp = splits[i];
     const whole = share(r.value, max);
@@ -146,6 +149,7 @@ export function comparisonRows(results: Results, headline: StrategyResult | null
     return {
       ...r,
       share: whole,
+      ofBest: !r.ceiling && finite(best) && best > 0 && finite(r.value) ? r.value / best : null,
       split: sp ? { ...sp, realShare, projectedShare: Math.max(0, whole - realShare) } : null,
     };
   });
@@ -167,4 +171,17 @@ export function cityRows(perLocation: Record<string, number> | null | undefined)
   return entries
     .map(([location, usd]) => ({ location, name: cityName(location), usd, share: share(usd, max) }))
     .toSorted((a, b) => b.usd - a.usd || a.name.localeCompare(b.name));
+}
+
+/** The fine print, in plain words: which prices, what is left out, and the rules every method follows. */
+export function finePrint(results: Pick<Results, 'year'>, split: YearSplit | null): string[] {
+  return [
+    split
+      ? `Real-time prices through ${dayMonth(split.lastRealDay)}, then the AI's predicted prices. That later part is a projection, and it favors the AI forecast, which trades on its own prediction.`
+      : `Gross wholesale value at ${results.year} real-time prices.`,
+    'Leaves out retail and delivery charges, grid-support services and battery wear.',
+    'The fleet is too small to move prices.',
+    'No peeking: each decision uses only prices already published, 15 minutes late.',
+    'TimesFM-3’s weights are licensed for non-commercial research only; a production version would use TimesFM 2.5.',
+  ];
 }

@@ -1,7 +1,7 @@
 // Full-year results for one year (the human's "option A"): the year of the run that exists now, else the one
 // picked on Start, else 2025 (src/state/resultsYear.ts). GET /results/pitch?year= and GET /results/ai-gains?year=;
 // a year with an AI-predicted part (2026) shows its real and projected parts everywhere; a year without results
-// (404) says so and offers the re-run, which runs the year shown.
+// (404) says so.
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../../api/client.ts';
@@ -13,10 +13,9 @@ import { fmtLocalDate } from '../../lib/format.ts';
 import { checkBackend, useBackend } from '../../state/backend.ts';
 import { useResultsYear } from '../../state/resultsYear.ts';
 import { AiGainsSection } from './AiGainsSection.tsx';
-import { readAiGains, type PitchGains, type SplitInput } from './aiGains.ts';
-import { headlineOf, splitOf, yearSplit, type YearSplit } from './model.ts';
-import { BigNumber, ComparisonBars, HowWeGotThis, TopDays } from './ResultPanels.tsx';
-import { RerunPanel } from './RerunPanel.tsx';
+import { readAiGains, type PitchGains } from './aiGains.ts';
+import { headlineOf, yearSplit } from './model.ts';
+import { BigNumber, HowWeGotThis, TopDays } from './ResultPanels.tsx';
 
 function isResults(v: unknown): v is Results {
   return !!v && typeof v === 'object' && Array.isArray((v as Results).strategies);
@@ -26,7 +25,7 @@ function isResults(v: unknown): v is Results {
 function noResults(year: number, technical: string): FriendlyError {
   return {
     title: `No full-year results for ${year} yet.`,
-    detail: 'Press "Re-run the full year" below to calculate them.',
+    detail: 'Pick another year on Start.',
     retryAfterS: null,
     technical,
     unreachable: false,
@@ -48,21 +47,11 @@ interface Gains {
   settled: boolean;
 }
 
-/** For "What the AI adds" in a split year: the AI's and the baseline's real and projected parts. */
-function splitInput(results: Results, span: YearSplit | null, gains: PitchGains): SplitInput | null {
-  if (!span) return null;
-  const ai = results.strategies.find((s) => s.strategy === gains.ai);
-  const base = results.strategies.find((s) => s.strategy === gains.baseline);
-  const a = ai ? splitOf(ai) : null;
-  const b = base ? splitOf(base) : null;
-  return a && b ? { span, ai: a, base: b } : null;
-}
-
 /** One year's results (keyed by the year, so nothing of another year ever shows while this one loads). */
 function YearResults({ year, onResults }: { year: number; onResults: (results: Results | null) => void }) {
   const backend = useBackend();
   const [state, setState] = useState<Loaded>({ results: null, error: null, loading: true });
-  // "What the AI adds": shown only when GET /results/ai-gains has something for this year.
+  // "What the AI adds" headline and surplus: shown only when GET /results/ai-gains has something for this year.
   const [gains, setGains] = useState<Gains>({ data: null, settled: false });
   const [patienceOver, setPatienceOver] = useState(false);
 
@@ -110,8 +99,8 @@ function YearResults({ year, onResults }: { year: number; onResults: (results: R
     const controller = new AbortController();
     fetchResults(controller.signal);
     fetchGains(controller.signal);
-    // The section sits right under the headline row: wait a moment for it, so it does not push the page down
-    // just after it appears, but never hold the results back for long.
+    // Its headline sits at the top of the card beside the big number: wait a moment for it, so it does not push
+    // the bars down just after it appears, but never hold the results back for long.
     const patience = setTimeout(() => setPatienceOver(true), GAINS_PATIENCE_MS);
     return () => {
       controller.abort();
@@ -159,16 +148,10 @@ function YearResults({ year, onResults }: { year: number; onResults: (results: R
       {waitingForGains ? null : results && headline ? (
         <div className="results-grid">
           <BigNumber results={results} headline={headline} split={span} />
-          <ComparisonBars results={results} headline={headline} split={span} />
-          {gains.data ? <AiGainsSection gains={gains.data} fleetSize={results.fleet_size} split={splitInput(results, span, gains.data)} /> : null}
+          <AiGainsSection results={results} headline={headline} split={span} gains={gains.data} />
           <TopDays results={results} headline={headline} split={span} />
-          <div className="span-5 stack">
-            <HowWeGotThis results={results} split={span} />
-            <RerunPanel year={year} onDone={reload} />
-          </div>
+          <HowWeGotThis results={results} split={span} />
         </div>
-      ) : !loading ? (
-        <RerunPanel year={year} onDone={reload} hasResults={false} />
       ) : null}
     </>
   );

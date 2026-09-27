@@ -1496,8 +1496,7 @@ dialog.backdrop-light::backdrop {
   font-size: 18px;
 }
 
-/* Rows of panels: the headline and the comparison, then the details. A new full-width section (span-12)
-   fits between them without changing anything else. */
+/* Two rows of panels: the big number beside "What the AI adds", then the top days beside the fine print. */
 .results-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -1513,19 +1512,7 @@ dialog.backdrop-light::backdrop {
   grid-column: span 5;
 }
 
-.span-12 {
-  grid-column: span 12;
-}
-
-.stack {
-  display: grid;
-  gap: 16px;
-  align-content: start;
-  min-width: 0;
-}
-
-.results-grid > .panel,
-.results-grid > .stack > .panel {
+.results-grid > .panel {
   display: flex;
   flex-direction: column;
 }
@@ -1720,7 +1707,7 @@ dialog.backdrop-light::backdrop {
   font-size: 13.5px;
 }
 
-/* Comparison bars: AI forecast (the headline) green, the other methods gray, "Best possible" hatched. */
+/* The methods compared (in "What the AI adds"): AI forecast (the headline) green, the others gray, "Best possible" hatched. */
 .bars {
   display: grid;
   gap: 16px;
@@ -1817,12 +1804,6 @@ dialog.backdrop-light::backdrop {
   align-content: space-evenly;
 }
 
-.bars-note {
-  padding-top: 14px;
-  color: var(--text-muted);
-  font-size: 13.5px;
-}
-
 /* Top 10 days */
 .days {
   display: grid;
@@ -1913,19 +1894,7 @@ dialog.backdrop-light::backdrop {
   }
 }
 
-.rerun {
-  display: grid;
-  gap: 10px;
-}
-
-/* The run button, and Stop next to it (enabled only while a re-run runs). */
-.rerun-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-/* What the AI adds: the pitch year's headline, then three cards side by side. */
+/* What the AI adds, beside the big number: the uplift, every method's bar, then the surplus power it soaked up. */
 .ai-gains .panel-head {
   row-gap: 10px;
 }
@@ -1949,7 +1918,7 @@ dialog.backdrop-light::backdrop {
   align-items: baseline;
   gap: 4px 12px;
   color: var(--money);
-  font-size: 54px;
+  font-size: 48px;
   font-weight: 800;
   letter-spacing: -0.035em;
   line-height: 1.05;
@@ -1958,7 +1927,7 @@ dialog.backdrop-light::backdrop {
 
 .gains-big small {
   color: var(--text-muted);
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 650;
   letter-spacing: 0;
   text-shadow: none;
@@ -1971,7 +1940,7 @@ dialog.backdrop-light::backdrop {
   border-radius: 999px;
   background: var(--ok-soft);
   color: var(--ok);
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 750;
   letter-spacing: 0;
   line-height: 1.5;
@@ -1979,49 +1948,8 @@ dialog.backdrop-light::backdrop {
 }
 
 .gains-sub {
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 650;
-}
-
-/* Three cards whose parts line up across the row (subgrid): head, figure, details, meaning. */
-.gains-cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  column-gap: 14px;
-  /* The cards' own bottom margin spaces wrapped rows; the last row's is taken back here. */
-  margin: 18px 0 -12px;
-  padding: 0;
-  list-style: none;
-}
-
-.gains-card {
-  display: grid;
-  grid-row: span 4;
-  grid-template-rows: subgrid;
-  row-gap: 10px;
-  align-content: start;
-  min-width: 0;
-  margin-bottom: 12px;
-  padding: 13px 14px 12px;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  background: var(--card);
-}
-
-.gains-card-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.gains-card-head svg {
-  flex: none;
-  color: var(--money);
 }
 
 /* Labelled bars: the AI's green, the others gray. */
@@ -2083,41 +2011,27 @@ dialog.backdrop-light::backdrop {
   color: var(--money);
 }
 
-/* The bars and what they measure. */
-.gains-figure {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-}
-
-.gains-caption {
-  color: var(--text-muted);
-  font-size: 12.5px;
-}
-
-.gains-details {
-  display: grid;
-  align-content: start;
-  gap: 3px;
-  font-size: 13.5px;
-}
-
 .gains-plus {
   color: var(--money);
   font-weight: 750;
 }
 
-.gains-means {
-  padding-top: 9px;
-  border-top: 1px solid var(--panel-border);
-  color: var(--text-muted);
-  font-size: 13.5px;
-  line-height: 1.45;
+.ai-gains .bars {
+  margin-top: 22px;
 }
 
-.gains-means strong {
-  color: var(--text);
-  font-weight: 650;
+/* Its label draws the divider above it, as "By city" does in the big-number card. */
+.gains-surplus {
+  display: grid;
+  gap: 8px;
+}
+
+.gains-surplus .result-section-label {
+  margin: 22px 0 2px;
+}
+
+.gains-surplus-times {
+  font-size: 13.5px;
 }
 
 .empty-state {
@@ -2149,13 +2063,6 @@ dialog.backdrop-light::backdrop {
   }
 }
 
-/* Below this, three cards side by side get too narrow: they stack, one full-width card each. */
-@media (max-width: 860px) {
-  .gains-cards {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 1060px) {
   .page {
     padding-left: 16px;
@@ -2163,7 +2070,7 @@ dialog.backdrop-light::backdrop {
   }
 }
 
-/* Phones: the three results figures and the "What the AI adds" cards stack. */
+/* Phones: the three results figures stack. */
 @media (max-width: 560px) {
   .result-stats {
     grid-template-columns: 1fr;
@@ -2177,9 +2084,8 @@ dialog.backdrop-light::backdrop {
     font-size: 42px;
   }
 
-  .gains-big small,
-  .gains-sub {
-    font-size: 17px;
+  .gains-big small {
+    font-size: 16px;
   }
 }
 

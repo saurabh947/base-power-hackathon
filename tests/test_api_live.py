@@ -160,7 +160,7 @@ def test_websocket_messages_match_the_contract(live):
         idle = ws.receive_json()
         assert idle == {"type": "idle", "status": "idle", "run_id": None, "last_run": None}
         assert time.monotonic() - t0 >= 0.7  # idle every FLEET_IDLE_INTERVAL_S (5 s in production), not every frame
-        r = client.post("/run/start", json={"preset": "spike_evening", "speed_tps": 10, "strategy": "peak",
+        r = client.post("/run/start", json={"preset": "spike_2026", "speed_tps": 10, "strategy": "peak",
                                             "start_charge_level": 0.9, "fleet_size": 5})
         assert r.status_code == 202 and set(r.json()) == {"run_id", "settings"}
         run_id = r.json()["run_id"]
@@ -182,7 +182,7 @@ def test_websocket_messages_match_the_contract(live):
                                for f in running)
         assert all(f["race"] is None for f in frames if f["status"] == "starting")
         stamps = [datetime.fromisoformat(t["ts_utc"].replace("Z", "+00:00")) for t in seen]
-        assert stamps[0] == datetime.fromisoformat("2025-05-16T21:00:00+00:00")
+        assert stamps[0] == datetime.fromisoformat("2026-04-24T21:00:00+00:00")
         assert all(b - a == timedelta(minutes=5) for a, b in zip(stamps, stamps[1:]))  # every tick, none sampled
         assert any(len(f["ticks"]) > 1 for f in frames)
         assert any(e["kind"] == "run_started" for e in fresh["events"] + sum((f["events"] for f in frames), []))
@@ -444,7 +444,7 @@ def test_battery_status_idle_follows_availability_and_a_run_shows_what_batteries
     codes = _codes(client.get("/state").json())  # no run: offline shows at once
     cps = co.layout.location_indices("LZ_CPS")
     assert (codes[cps] == bstatus.OFFLINE).all() and (np.delete(codes, cps) == bstatus.WAITING).all()
-    client.post("/run/start", json={"preset": "spike_evening", "speed_tps": 10, "strategy": "peak",
+    client.post("/run/start", json={"preset": "spike_2026", "speed_tps": 10, "strategy": "peak",
                                     "start_charge_level": 0.9})
     assert _wait(lambda: co.run is not None and co.run.k >= 30, timeout=20)  # after 6 pm: the peak rule sells
     with client.websocket_connect("/live") as ws:
@@ -493,7 +493,7 @@ def test_a_start_right_after_a_reset_waits_for_the_controllers(live, monkeypatch
 
 
 def _paused_while_selling(client, co):
-    r = client.post("/run/start", json={"preset": "spike_evening", "speed_tps": 10, "strategy": "peak",
+    r = client.post("/run/start", json={"preset": "spike_2026", "speed_tps": 10, "strategy": "peak",
                                         "start_charge_level": 0.9})
     assert r.status_code == 202
     assert _wait(lambda: co.run is not None and co.run.k >= 30, timeout=20)  # after 6 pm: the evening peak sells
@@ -561,7 +561,14 @@ def test_a_crash_while_paused_shows_code_4_then_the_hand_over(live_fast_heartbea
     if co.workers[1].status != "dead":  # still within the heartbeat's TTL: exactly its batteries are down
         assert np.array_equal(codes[others], before[others])
     assert _wait(lambda: co.workers[1].status == "dead", timeout=5)
-    frame = frame_message(backend, cursor)
+    frame = {}
+
+    def handed_over() -> bool:  # the frame's workers ride the next published snapshot, a moment after the status flips
+        frame.clear()
+        frame.update(frame_message(backend, cursor))
+        return sum(w["batteries"] for w in frame["workers"] if w["worker_id"] != 1) == 300
+
+    assert _wait(handed_over, timeout=2)
     codes = _codes(frame)
     assert not (codes == bstatus.CONTROLLER_DOWN).any() and (codes[mine] == bstatus.WAITING).all()
     assert np.array_equal(codes[others], before[others]) and frame["status"] == "paused"

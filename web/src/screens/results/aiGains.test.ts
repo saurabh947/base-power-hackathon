@@ -147,40 +147,10 @@ describe('formatting', () => {
   });
 });
 
-describe('the cards', () => {
+describe('surplus power', () => {
   const view = gainsView(read(measured()), FLEET);
 
-  it('(a) earns more: per battery and the fleet difference', () => {
-    expect(view.earns).toMatchObject({
-      aiText: '$191',
-      baseText: '$124',
-      fleetText: '$3.82 million vs $2.47 million a year',
-      fleetDiffText: '+$1.35 million a year',
-      aiShare: 1,
-    });
-    expect(view.earns?.baseShare).toBeCloseTo(123.67 / 190.95, 9);
-    expect(view.earns?.ai.short).toBe('AI forecast');
-  });
-
-  it('(b) closer to perfect: simple rule, evening peak, then the AI, as shares of the hindsight best', () => {
-    expect(view.perfect?.bars.map((b) => [b.key, b.label, b.text, b.ai])).toEqual([
-      ['bands', 'Simple rule', '29%', false],
-      ['peak', 'Evening peak', '32%', false],
-      ['forecast', 'AI forecast', '45%', true],
-    ]);
-    expect(view.perfect?.bars[2].share).toBeCloseTo(0.453, 9);
-    expect(view.perfect?.bestText).toBe('$421');
-  });
-
-  it('(b) works out a missing share from the hindsight best', () => {
-    const g = measured();
-    g.years[0].strategies.bands.share_of_best = undefined as never;
-    const bars = gainsView(read(g), FLEET).perfect?.bars ?? [];
-    expect(bars[0].share).toBeCloseTo(123.67 / 421.29, 9);
-    expect(bars[0].text).toBe('29%');
-  });
-
-  it('(c) soaks up surplus power: MWh bought at $0 or less, and how many times as much', () => {
+  it('soaks up surplus power: MWh bought at $0 or less, and how many times as much', () => {
     expect(view.surplus).toMatchObject({ aiText: '7,011 MWh', baseText: '1,239 MWh', times: '5.7×', aiShare: 1 });
     expect(view.surplus?.homes).toBe('about what 190,000 homes use in a day');
   });
@@ -193,7 +163,7 @@ describe('the pitch year only (no year switch, no spike card)', () => {
     expect(g.year.year).toBe(2025);
     expect(Object.keys(g)).toEqual(['ai', 'baseline', 'year']);
     const view = gainsView(g, FLEET);
-    expect(Object.keys(view)).toEqual(['year', 'headline', 'earns', 'perfect', 'surplus', 'split']);
+    expect(Object.keys(view)).toEqual(['year', 'headline', 'surplus', 'split']);
     expect(view.split).toBeNull(); // 2025 is real prices all year
     // 2024's much bigger gain never shows, whatever order the server sends.
     const reversed = measured();
@@ -238,8 +208,6 @@ describe('the year the Results page shows (GET /results/ai-gains?year=)', () => 
       real: 'Real Jan 1 – Sep 20: +$45 per battery',
       projected: 'Projected Sep 21 – Dec 31: +$25',
       estimate: '2025 estimate: +$70',
-      earnsReal: 'Real Jan 1 – Sep 20: $140 vs $95',
-      earnsProjected: 'Projected Sep 21 – Dec 31: $60 vs $35',
     });
   });
 
@@ -251,8 +219,6 @@ describe('the year the Results page shows (GET /results/ai-gains?year=)', () => 
       ai: { real: 151.6, projected: 53.8, total: 205.4 }, // $151 + $54 = $205, not $152 + $54
       base: { real: 97.9, projected: 33.3, total: 131.2 }, // $98 + $33 = $131
     }).split;
-    expect(split?.earnsReal).toBe('Real Jan 1 – Sep 20: $151 vs $98');
-    expect(split?.earnsProjected).toBe('Projected Sep 21 – Dec 31: $54 vs $33');
     expect([split?.real, split?.projected, split?.estimate]).toEqual([
       'Real Jan 1 – Sep 20: +$53 per battery',
       'Projected Sep 21 – Dec 31: +$21',

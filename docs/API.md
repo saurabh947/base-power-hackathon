@@ -24,8 +24,8 @@ Change it only through the integrator.
 ```json
 {
   "year": 2025,
-  "preset": "ai_best_evening",
-  "start_utc": "2025-05-30T23:00:00Z",
+  "preset": "morning_spike",
+  "start_utc": "2025-04-07T08:00:00Z",
   "speed_tps": 2,
   "strategy": "forecast",
   "start_charge_level": 0.9,

@@ -8,7 +8,8 @@ date and the day after (America/Chicago) from the committed snapshot
 them to web/mock/data/ercot_rt_lz_preset_days_2025.json, one segment per preset.
 
 It also exports the mock-only days in MOCK_ONLY: January 1-2, 2025 (the 2025
-"From January 1" preset) and September 14-20, 2025. The mock has no 2026 data,
+"From January 1" preset), three 2025 evenings Start no longer offers that the
+mock's tests still replay (May 16, May 30 and July 11) and September 14-20, 2025. The mock has no 2026 data,
 so its 2026 replays use 2025's real prices from the same dates, a year on, and
 simulate the AI's prediction after Sep 20 from the week before (web/mock/sim.ts).
 Presets of other years (2026 in config.yaml) are skipped: the snapshot is 2025.
@@ -35,6 +36,10 @@ YEAR = 2025  # the snapshot's year
 # Days the mock needs beyond config.yaml's presets (see the module docstring).
 MOCK_ONLY = [
     {"id": "jan1_2025", "date_local": "2025-01-01", "days": 2},
+    # 2025 evenings no longer offered on Start that the mock's tests still replay (web/mock/sim.ts PRESETS)
+    {"id": "spike_evening", "date_local": "2025-05-16"},
+    {"id": "summer_spike", "date_local": "2025-07-11"},
+    {"id": "ai_best_evening", "date_local": "2025-05-30"},
     {"id": "stand_in_2026_sep", "date_local": "2025-09-14", "days": 7},
 ]
 
@@ -77,7 +82,8 @@ def main() -> None:
         "source_note": (
             "REAL DATA. ERCOT real-time settlement point prices (MIS report 13061, 15-minute "
             f"intervals), load zones {', '.join(locations)}, for each 2025 replay preset's Chicago-local "
-            "date and the day after, plus the mock-only days (Jan 1-2 and Sep 14-20, 2025). Exported from "
+            "date and the day after, plus the mock-only days (Jan 1-2, the May 16, May 30 and Jul 11 evenings, and "
+            "Sep 14-20, 2025). Exported from "
             "data/snapshot/ercot_rt_2025_hubs.parquet by web/mock/export_prices.py. Everything else the "
             "mock API serves is simulated, including its 2026 prices (2025's, a year on) and prediction."
         ),

@@ -91,11 +91,19 @@ def test_public_years_follow_docs_api(raw):
          "real_until_utc": "2026-09-20T05:00:00Z"}]
 
 
+def with_computed_preset(raw):
+    """The config plus a preset whose start is computed (`start: evening_before_real_until`); none ships today."""
+    items = [*raw["presets"]["items"], {"id": "end_2026", "year": 2026, "label": "Where real prices end",
+                                         "start": ctl.EVENING_BEFORE_REAL_UNTIL, "description": "The last real evening."}]
+    return {**raw, "presets": {**raw["presets"], "items": items}}
+
+
 def test_presets_carry_their_year_and_the_computed_start(raw):
     listed = ctl.presets(raw)
-    assert [p["year"] for p in listed].count(2025) == 6 and [p["year"] for p in listed].count(2026) == 3
+    assert [p["id"] for p in listed] == ["morning_spike", "ordinary_day", "jan1_2025", "spike_2026", "jan1_2026"]
+    assert [p["year"] for p in listed] == [2025, 2025, 2025, 2026, 2026]
     assert all(list(p) == list(ctl.PRESET_KEYS) for p in listed)
-    end = next(p for p in listed if p["id"] == "real_prices_end_2026")
+    end = next(p for p in ctl.presets(with_computed_preset(raw)) if p["id"] == "end_2026")
     assert end["start_utc"] == "2026-09-19T23:00:00Z" and end["date_local"] == "2026-09-19"
     # the switch comes 72 ticks (36 s at 2 ticks/s) after the start
     assert (END_2026 - datetime.fromisoformat(end["start_utc"].replace("Z", "+00:00"))) / timedelta(minutes=5) == 72
@@ -104,23 +112,23 @@ def test_presets_carry_their_year_and_the_computed_start(raw):
 def test_presets_of_a_year_without_prices_and_a_complete_year(raw):
     a26, b26 = years.year_window(2026)
     complete = {2025: info(2025, *years.year_window(2025)), 2026: info(2026, a26, b26)}
-    ids = [p["id"] for p in ctl.presets(raw, infos=complete)]
-    assert "real_prices_end_2026" not in ids and "spike_2026" in ids  # real all year: nothing ends
+    ids = [p["id"] for p in ctl.presets(with_computed_preset(raw), infos=complete)]
+    assert "end_2026" not in ids and "spike_2026" in ids  # real all year: nothing ends
     missing = {2025: complete[2025], 2026: info(2026)}  # 2026 not ingested yet
     assert {p["year"] for p in ctl.presets(raw, infos=missing)} == {2025}
 
 
 def test_resolve_year_and_preset(cfg, raw):
     s = ctl.resolve_settings({"year": 2026}, cfg, raw)  # a year alone replays its default preset
-    assert (s["year"], s["preset"], s["start_utc"]) == (2026, "real_prices_end_2026", "2026-09-19T23:00:00Z")
-    s = ctl.resolve_settings({"preset": "spike_2026"}, cfg, raw)  # a preset sets its year
-    assert (s["year"], s["start_utc"]) == (2026, "2026-04-24T21:00:00Z")
+    assert (s["year"], s["preset"], s["start_utc"]) == (2026, "spike_2026", "2026-04-24T21:00:00Z")
+    s = ctl.resolve_settings({"preset": "jan1_2026"}, cfg, raw)  # a preset sets its year
+    assert (s["year"], s["start_utc"]) == (2026, "2026-01-01T06:00:00Z")
     s = ctl.resolve_settings({"year": 2025, "preset": "jan1_2025"}, cfg, raw)
     assert (s["year"], s["start_utc"]) == (2025, "2025-01-01T06:00:00Z")
     s = ctl.resolve_settings({"year": 2025}, cfg, raw)
-    assert (s["year"], s["preset"]) == (2025, "ai_best_evening")
+    assert (s["year"], s["preset"], s["start_utc"]) == (2025, "morning_spike", "2025-04-07T08:00:00Z")
     s = ctl.resolve_settings({}, cfg, raw)
-    assert list(s)[:2] == ["year", "preset"] and (s["year"], s["preset"]) == (2025, "ai_best_evening")
+    assert list(s)[:2] == ["year", "preset"] and (s["year"], s["preset"]) == (2025, "morning_spike")
     internal = ctl.resolve_settings({"start_utc": "2026-02-01T06:00:00Z"}, cfg, raw, allow_internal=True)
     assert (internal["year"], internal["preset"]) == (2026, "custom")
 
@@ -130,7 +138,7 @@ def test_resolve_year_and_preset(cfg, raw):
     ({"year": "2026"}, "invalid_year", "whole number"),
     ({"year": True}, "invalid_year", "whole number"),
     ({"year": 2026.5}, "invalid_year", "whole number"),
-    ({"year": 2026, "preset": "ai_best_evening"}, "invalid_preset", "is in 2025, not 2026"),
+    ({"year": 2026, "preset": "ordinary_day"}, "invalid_preset", "is in 2025, not 2026"),
     ({"year": 2025, "preset": "spike_2026"}, "invalid_preset", "is in 2026, not 2025"),
     ({"preset": "spike_2024"}, "invalid_preset", "no replay called"),
 ])

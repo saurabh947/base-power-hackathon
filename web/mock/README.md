@@ -26,22 +26,23 @@ with `mock`), the mock's forecasts are labelled `mock (simulated, not TimesFM)`,
 "SIMULATED practice data …" as their first assumption, saying which figures are copied and which are made up.
 
 The years are 2025 (real prices all year) and 2026 (real prices through Sep 20, then the AI's prediction), as
-`years` in `GET /settings`. The 2025 presets mirror `config.yaml` (`presets.items`; `ai_best_evening` is the
-default, as there); each year also has "From January 1" (two days here), and 2026 has the evening its real prices end:
+`years` in `GET /settings`. `GET /settings` lists what Start offers: the 2025 presets of `config.yaml`
+(`presets.items`; `morning_spike` is the default, as there) and 2026's "From January 1" (the mock has no 2026 spike
+day). The mock can also replay the unlisted days below, which its own tests use:
 
-| Preset | Year | Replay starts (Central time) | Prices loaded |
-|---|---|---|---|
-| `spike_evening` | 2025 | May 16, 2025, 4 pm | real, May 16–17 |
-| `morning_spike` | 2025 | Apr 7, 2025, 3 am | real, Apr 7–8 |
-| `summer_spike` | 2025 | Jul 11, 2025, 6 pm | real, Jul 11–12 |
-| `ai_best_evening` (default) | 2025 | May 30, 2025, 6 pm | real, May 30–31 |
-| `ordinary_day` | 2025 | Jun 28, 2025, midnight | real, Jun 28–29 |
-| `jan1_2025` | 2025 | Jan 1, 2025, midnight | real, Jan 1–2 |
-| `predicted_2026` | 2026 | Sep 20, 2026, 6 pm | stand-in to midnight, then the simulated prediction for two days |
-| `jan1_2026` | 2026 | Jan 1, 2026, midnight | stand-in, Jan 1–2 |
+| Preset | Year | Listed | Replay starts (Central time) | Prices loaded |
+|---|---|---|---|---|
+| `morning_spike` (default) | 2025 | yes | Apr 7, 2025, 3 am | real, Apr 7–8 |
+| `ordinary_day` | 2025 | yes | Jun 28, 2025, midnight | real, Jun 28–29 |
+| `jan1_2025` | 2025 | yes | Jan 1, 2025, midnight | real, Jan 1–2 |
+| `jan1_2026` | 2026 | yes | Jan 1, 2026, midnight | stand-in, Jan 1–2 |
+| `spike_evening` | 2025 | no | May 16, 2025, 4 pm | real, May 16–17 |
+| `summer_spike` | 2025 | no | Jul 11, 2025, 6 pm | real, Jul 11–12 |
+| `ai_best_evening` | 2025 | no | May 30, 2025, 6 pm | real, May 30–31 |
+| `predicted_2026` | 2026 | no | Sep 20, 2026, 6 pm | stand-in to midnight, then the simulated prediction for two days |
 
 Settings take `year` too: a preset from another year answers 400 `invalid_preset`, a year other than 2025 or 2026
-400 `invalid_year`, and a year alone picks that year's first preset (the default for 2025).
+400 `invalid_year`, and a year alone picks that year's first listed preset (the default for 2025).
 
 The price fixture is exported from the committed snapshot `data/snapshot/ercot_rt_2025_hubs.parquet` (ERCOT MIS
 report 13061, see `data/snapshot/README.md`), reading the 2025 presets and the load zones (`fleet.locations`)

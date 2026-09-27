@@ -337,15 +337,6 @@ export interface KillResponse {
   killed_at_utc: string;
 }
 
-export interface BacktestStatus {
-  /** `cancelled`: stopped with POST /backtest/{job_id}/cancel; nothing was stored. */
-  status: 'running' | 'done' | 'failed' | 'cancelled';
-  run_ids: string[];
-  /** Strategies left out of the run, with the reason, e.g. {"forecast": "forecasts do not cover 2025"}. */
-  skipped?: Record<string, string>;
-  error: string | null;
-}
-
 export interface TopDay {
   date_local: string;
   usd: number;

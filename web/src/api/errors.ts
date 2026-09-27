@@ -4,7 +4,7 @@
 
 import { ApiError } from './client.ts';
 
-export type ErrorContext = 'load' | 'start' | 'control' | 'availability' | 'kill' | 'restart' | 'backtest' | 'results';
+export type ErrorContext = 'load' | 'start' | 'control' | 'availability' | 'kill' | 'restart' | 'results';
 
 export interface FriendlyError {
   title: string;

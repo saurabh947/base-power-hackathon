@@ -45,7 +45,7 @@ def test_m2_one_sim_day_20k_batteries_20_workers(coordinator):
     co = coordinator(journal=True, orchestration=orch)
     assert co.N == 20000 and co.n_workers == 20
     assert len({h.pid for h in co.workers}) == 20 and all(h.status == "healthy" for h in co.workers)
-    co.start({"preset": "spike_evening", "speed_tps": "max", "strategy": "bands", "start_charge_level": 0.5},
+    co.start({"preset": "morning_spike", "speed_tps": "max", "strategy": "bands", "start_charge_level": 0.5},
              max_ticks=288)
     t0 = time.perf_counter()
     assert co.serve_until(lambda: co.run.status == "finished", timeout_s=240)

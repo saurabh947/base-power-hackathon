@@ -168,7 +168,7 @@ def test_race_window_is_the_backtest_from_that_start(ctx):
     from src.feeds.parquet import snapshot_feed
 
     cfg = ctx.cfg
-    start = datetime(2025, 7, 11, 23, tzinfo=timezone.utc)  # 6 pm CDT, the summer_spike preset
+    start = datetime(2025, 7, 11, 23, tzinfo=timezone.utc)  # 6 pm CDT, the July 11 spike evening
     end = start + timedelta(hours=6)
     strategies = {name: {loc: make_named_strategy(name, cfg, loc) for loc in ctx.fleets} for name in ("bands", "peak")}
     got = insights.race_window(ctx, strategies, start, end, 0.9)

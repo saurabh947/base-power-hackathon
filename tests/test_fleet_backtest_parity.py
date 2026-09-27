@@ -41,7 +41,7 @@ def backtest_day(name: str, start_utc: str, ticks: int, soc0: float, size: int, 
 
 @pytest.mark.parametrize("name, start_utc, soc0, size", [
     ("bands", "2025-05-16T05:00:00Z", 0.5, 2000),     # the M0 day, local midnight
-    ("peak", "2025-05-16T21:00:00Z", 0.9, 2000),      # the demo preset: spike evening, pre-charged
+    ("peak", "2025-05-16T21:00:00Z", 0.9, 2000),      # the May 16 spike evening, pre-charged
     ("bands", "2025-01-01T06:00:00Z", 0.5, 2000),     # warm-up reaches back into 2024
     ("bands", "2025-02-19T06:00:00Z", 0.5, 20000),    # worker 17's day, the full fleet: San Antonio and Austin diverge
 ])

@@ -70,8 +70,8 @@ def run_all(c):
 
 
 def test_real_prices_until_they_end_then_the_prediction(co):
-    co.start({"preset": "real_prices_end_2026", "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
-             max_ticks=96)
+    co.start({"start_utc": "2026-09-19T23:00:00Z", "speed_tps": "max", "strategy": "peak", "start_charge_level": 0.9},
+             max_ticks=96, internal=True)  # the evening before real prices end
     assert co.run.settings["year"] == 2026 and co.run.settings["start_utc"] == "2026-09-19T23:00:00Z"
     assert co.run.cutoff == int(CUTOFF.timestamp()) and co.run.predicted_locations == tuple(LOCS)
     log = run_all(co)

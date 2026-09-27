@@ -51,7 +51,7 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
   - 20,000 home batteries
   - 5–11.5 kW, 10–20 kWh each
   - The Texas Triangle: Dallas–Fort Worth, Houston, San Antonio and Austin
-  - Replay: {preset label, e.g. "Price-spike evening, May 16, 2025, from 4 pm"}
+  - Replay: {preset label, e.g. "Biggest spike of 2025, Apr 7, 2025, from 3 am"}
   - Speed: "1 hour of market time every 6 seconds"
   - Decision method: "AI forecast (TimesFM-3)"
   - Batteries start 90% charged
@@ -86,23 +86,21 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **Big number:** "$X per battery per year".
   - Subline: "$Y million a year for the 20,000-battery fleet".
   - Small print: "$/kWh-year", "cycles per year".
-- **Comparison bars:** Simple rule vs AI forecast vs Evening peak vs Best possible (hindsight). Explainer: "Best possible assumes perfect knowledge of future prices. No real system can reach it."
+- **"What the AI adds"**, beside the big number: the old "How the decision methods compare" card and the AI section in one (round 4).
+  - **Headline:** "+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet", computed from `uplift` (`GET /results/ai-gains`).
+  - **Bars:** Simple rule, AI forecast, Evening peak and Best possible (hindsight), per battery per year, each method with "N% of best possible".
+  - **Surplus power soaked up:** the AI's and the simple rule's `surplus_mwh` (bought at $0/MWh or less), and how many times as much.
+  - A 404 from `/results/ai-gains` leaves the bars alone.
+  - No limitations line here (the human's call); the fine print has it.
 - **Top 10 days by earnings:** a list or small bar chart.
-- **"How we got this number"** (expander):
-  - gross wholesale value at ERCOT 2025 real-time prices
+- **The fine print**, a short list shown in full:
+  - the prices (2026: real through the last real day, then the AI's prediction, a projection that favors the AI forecast)
   - excludes retail/delivery charges, grid-support services and battery wear
   - the fleet is too small to move prices
+  - no peeking: decisions use only published prices, 15 minutes late
   - TimesFM-3 licence note: non-commercial research weights; a production version would use TimesFM 2.5
-- **Button:** "Re-run the full year" (POST /backtest), showing progress. Next to it is a **Stop** button (POST /backtest/{id}/cancel). Stop is enabled only while a re-run is running; a stopped run keeps the previous results ("Stopped. The previous results are still shown.").
-- **"What the AI adds"** is a full-width section right under the big number (`GET /results/ai-gains`):
-  - **Headline:** "+$67 per battery per year (+54%) vs the simple rule, $1.35 million more a year for the 20,000-battery fleet", computed from `uplift`.
-  - **Three cards**, each with bars and a "What this means" line:
-    - *Earns more*
-    - *Gets closer to perfect*: `share_of_best`
-    - *Soaks up surplus power*: `surplus_mwh`
-  - **Pitch year (2025) only.** The human removed the 2024 switch and, with it, the 2024-only "Ready for spikes" card.
-  - No limitations line in this section (the human's call). The fine print stays in "How we got this number".
-  - A 404 hides the section.
+  - The simulator's own notes (`assumptions`) show only with technical details on.
+- No panel carries a "What is this?" line, and there is no "Re-run the full year" (round 4: the human found them of no value).
 
 ## Crashing controllers
 - Open to everyone: there is no presenter mode and no passcode. Rate-limited to one crash per 2 s, and it never leaves fewer than 2 healthy controllers.
@@ -188,3 +186,13 @@ The human's brief: *"as user friendly as possible, no unnecessary jargon, techni
 - **Results follows the chosen year:** the current run's year, else the year last picked on Start, else 2025.
   - For 2026: "Real Jan 1 – Sep 19: $X per battery · Projected Sep 20 – Dec 31: $Y · 2026 estimate: $Z".
   - The method bars show projected parts hatched violet, and projected top days are marked.
+
+## Round 4 (2026-09-26, the human's direction)
+- **Start offers fewer replays.**
+  - 2025: "Biggest spike of 2025" (the default), "An ordinary day" and "From January 1".
+  - 2026: "Biggest evening spike of 2026" (the default) and "From January 1".
+- **Results is shorter.**
+  - No "What is this?" lines.
+  - "What the AI adds" absorbs the methods compared.
+  - The fine print is a short list.
+  - "Re-run the full year" is gone.

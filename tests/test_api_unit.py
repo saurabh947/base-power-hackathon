@@ -35,13 +35,13 @@ def test_health_and_settings(client):
     assert set(s) == {"defaults", "editable", "presets", "strategies", "speeds", "years"}
     assert s["editable"] == ["year", "preset", "speed_tps", "strategy", "start_charge_level"]
     assert s["defaults"]["fleet_size"] == 20000 and s["defaults"]["speed_tps"] == 2
-    assert (s["defaults"]["year"], s["defaults"]["preset"]) == (2025, "ai_best_evening")
+    assert (s["defaults"]["year"], s["defaults"]["preset"]) == (2025, "morning_spike")
     # docs/API.md item shapes
     assert all(set(p) == {"id", "year", "label", "date_local", "start_utc", "start_local", "description"}
                for p in s["presets"])
     first = s["presets"][0]
     assert (first["id"], first["year"], first["start_utc"], first["start_local"]) == (
-        "spike_evening", 2025, "2025-05-16T21:00:00Z", "2025-05-16T16:00:00-05:00")
+        "morning_spike", 2025, "2025-04-07T08:00:00Z", "2025-04-07T03:00:00-05:00")
     # years: 2025 and 2026, no 2024; 2026's real prices end where the committed 2026 snapshot does (files of Sep 20)
     assert s["years"] == [
         {"year": 2025, "label": "2025", "description": "Real ERCOT prices for the whole year.", "real_until_utc": None},
@@ -53,9 +53,8 @@ def test_health_and_settings(client):
         jan1 = [p for p in items if p["label"] == "From January 1"]
         assert len(jan1) == 1 and jan1[0]["start_utc"] == f"{year}-01-01T06:00:00Z"
         assert jan1[0]["start_local"] == f"{year}-01-01T00:00:00-06:00" and jan1[0]["date_local"] == f"{year}-01-01"
-    end = next(p for p in by_year[2026] if p["id"] == "real_prices_end_2026")  # the evening before real prices end
-    assert (end["label"], end["start_utc"], end["start_local"], end["date_local"]) == (
-        "Where real prices end", "2026-09-19T23:00:00Z", "2026-09-19T18:00:00-05:00", "2026-09-19")
+    assert [[p["id"] for p in by_year[y]] for y in (2025, 2026)] == [
+        ["morning_spike", "ordinary_day", "jan1_2025"], ["spike_2026", "jan1_2026"]]
     spike = next(p for p in by_year[2026] if p["id"] == "spike_2026")
     assert (spike["start_utc"], spike["date_local"]) == ("2026-04-24T21:00:00Z", "2026-04-24")
     assert s["strategies"] == [
@@ -76,7 +75,7 @@ def test_errors_are_plain_json(client):
     assert r.status_code == 400 and r.json()["error"] == "invalid_preset"
     r = client.post("/run/start", json={"year": 2024})
     assert r.status_code == 400 and r.json()["error"] == "invalid_year" and "2025 or 2026" in r.json()["message"]
-    r = client.post("/run/start", json={"year": 2026, "preset": "summer_spike"})
+    r = client.post("/run/start", json={"year": 2026, "preset": "ordinary_day"})
     assert r.status_code == 400 and r.json()["error"] == "invalid_preset" and "2025, not 2026" in r.json()["message"]
     r = client.post("/run/speed", json={"speed_tps": 7})
     assert r.status_code == 400 and r.json()["error"] == "invalid_speed"

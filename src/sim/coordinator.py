@@ -2462,7 +2462,7 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--ticks", type=int, default=288)
     bench.add_argument("--speed", default="max")
     bench.add_argument("--strategy", default="bands", choices=ctl.STRATEGIES)
-    bench.add_argument("--preset", default="spike_evening")
+    bench.add_argument("--preset", default="morning_spike")
     bench.add_argument("--start-utc", default=None)
     bench.add_argument("--soc", type=float, default=0.5)
     bench.add_argument("--kill-at", type=int, default=None, help="SIGKILL a worker right after this tick index")

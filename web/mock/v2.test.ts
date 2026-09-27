@@ -13,7 +13,7 @@ import { isPredicted, LOCS, MockSim, PRESETS, priceAt, REAL_UNTIL_2026 } from '.
 function running(speed = 2, preset?: string) {
   let now = Date.parse('2026-09-25T12:00:00Z');
   const sim = new MockSim({ now: () => now, random: () => 0.5, backtestMs: 1000 });
-  sim.start({ speed_tps: speed, ...(preset ? { preset } : {}) });
+  sim.start({ speed_tps: speed, preset: preset ?? 'ai_best_evening' }); // May 30, 2025, from 6 pm
   const step = () => {
     now += 1000;
     return sim.stepWall();
@@ -74,8 +74,8 @@ describe('2026: real prices through Sep 20, then the AI prediction (simulated he
   });
 
   it('picks a year’s preset, and refuses a preset from another year', () => {
-    expect(new MockSim().start({ year: 2026 }).settings).toMatchObject({ year: 2026, preset: 'predicted_2026' });
-    expect(new MockSim().start({ year: 2025 }).settings).toMatchObject({ year: 2025, preset: 'ai_best_evening' });
+    expect(new MockSim().start({ year: 2026 }).settings).toMatchObject({ year: 2026, preset: 'jan1_2026' });
+    expect(new MockSim().start({ year: 2025 }).settings).toMatchObject({ year: 2025, preset: 'morning_spike' });
     expect(new MockSim().start({ preset: 'jan1_2026' }).settings.year).toBe(2026);
     expect(caught(() => new MockSim().start({ year: 2026, preset: 'summer_spike' }))).toMatchObject({ status: 400, code: 'invalid_preset' });
     expect(caught(() => new MockSim().start({ year: 2024 }))).toMatchObject({ status: 400, code: 'invalid_year' });

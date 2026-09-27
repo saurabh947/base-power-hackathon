@@ -469,14 +469,15 @@ Built against docs/API.md as of 4879fde. Code: `src/data/years.py`, `src/feeds/p
 - Description: "Real ERCOT prices for the whole year." / "Real prices through Sep 19, then the AI's prediction."
   (the date is the last local day with real prices), or "... The AI's prediction for the rest of the year isn't
   ready yet." when no stored prediction covers the cutoff.
-- Presets: the five 2025 ones plus `jan1_2025` ("From January 1", 2025-01-01T06:00Z); for 2026
-  `real_prices_end_2026` ("Where real prices end": 6 pm Central on the evening before real_until_utc, computed, so
-  it follows each ERCOT publication: 2026-09-19T23:00Z with the Sep 20 files, 72 ticks = 36 s at 2 ticks/s before
-  the switch), `spike_2026` (2026-04-24, from 4 pm CDT: at 7:45 pm Houston $1,051.54, Dallas–Fort Worth
-  $1,231.82, San Antonio $1,096.97, Austin $1,105.20, the biggest 2026 evening where all four spike) and
-  `jan1_2026` (2026-01-01T06:00Z; its bands window warms up on real Dec 25-31, 2025 prices).
+- Presets (round 4, the human's cut): 2025 `morning_spike` ("Biggest spike of 2025"), `ordinary_day` and
+  `jan1_2025` ("From January 1", 2025-01-01T06:00Z); 2026 `spike_2026` (2026-04-24, from 4 pm CDT: at 7:45 pm
+  Houston $1,051.54, Dallas–Fort Worth $1,231.82, San Antonio $1,096.97, Austin $1,105.20, the biggest 2026 evening
+  where all four spike) and `jan1_2026` (2026-01-01T06:00Z; its bands window warms up on real Dec 25-31, 2025
+  prices). A preset may still say `start: evening_before_real_until` (6 pm Central on the evening before
+  real_until_utc, computed, so it follows each ERCOT publication; left out when the year is real all year); none
+  does since "Where real prices end" was dropped.
 - Settings: `year` is editable. A preset sets its year; a year alone replays that year's default preset
-  (`presets.default_by_year`: 2025 `ai_best_evening`, 2026 `real_prices_end_2026`); a preset of another year than
+  (`presets.default_by_year`: 2025 `morning_spike`, 2026 `spike_2026`); a preset of another year than
   the one sent is 400 `invalid_preset`; a year that isn't configured, isn't a whole number, or has no prices loaded
   is 400 `invalid_year`. Presets of a year without prices are left out of `GET /settings`.
 

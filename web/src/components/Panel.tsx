@@ -1,13 +1,14 @@
 // Every panel explains itself (docs/UX.md principle 3): a title, a one-line
-// "What is this?" underneath, and an optional "How it works" of at most three
-// sentences behind a native <details> disclosure.
+// "What is this?" underneath (the Results panels leave it out: their titles and
+// figures say it), and an optional "How it works" of at most three sentences
+// behind a native <details> disclosure.
 
 import { useId, type ReactNode } from 'react';
 import { Icon } from './Icon.tsx';
 
 interface PanelProps {
   title: ReactNode;
-  what: ReactNode;
+  what?: ReactNode;
   how?: ReactNode;
   actions?: ReactNode;
   className?: string;
@@ -26,10 +27,12 @@ export function Panel({ title, what, how, actions, className, headingLevel = 2, 
         </Heading>
         {actions ? <div className="panel-actions">{actions}</div> : null}
       </div>
-      <p className="panel-what">
-        <span className="sr-only">What is this? </span>
-        {what}
-      </p>
+      {what ? (
+        <p className="panel-what">
+          <span className="sr-only">What is this? </span>
+          {what}
+        </p>
+      ) : null}
       {how ? <HowItWorks>{how}</HowItWorks> : null}
       {children ? <div className="panel-body">{children}</div> : null}
     </section>

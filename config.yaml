@@ -68,35 +68,17 @@ years:
 # year. `start: evening_before_real_until` is computed: 6 pm Central on the evening before the year's
 # real_until_utc (src/data/years.py evening_before), so it follows each new ERCOT publication.
 presets:
-  default: ai_best_evening   # the 2025 evening where the AI pulled furthest ahead of the simple rule (race table)
+  default: morning_spike     # the biggest spike of 2025
   default_by_year:           # what a Start with only a year replays
-    2025: ai_best_evening
-    2026: real_prices_end_2026
+    2025: morning_spike
+    2026: spike_2026
   items:
-    - id: spike_evening
-      year: 2025
-      label: "Price-spike evening"
-      date_local: "2025-05-16"
-      start_utc: "2025-05-16T21:00:00Z"   # 4:00 pm CDT; Houston peaks $2,250/MWh at 7:45 pm
-      description: "All four cities jump above $2,000/MWh around 7:45 pm; San Antonio tops $3,000."
     - id: morning_spike
       year: 2025
       label: "Biggest spike of 2025"
       date_local: "2025-04-07"
       start_utc: "2025-04-07T08:00:00Z"   # 3:00 am CDT; Houston peaks $3,860/MWh around 6:45 am
       description: "The year's highest prices: all four cities pass $3,500/MWh just before 7 am."
-    - id: summer_spike
-      year: 2025
-      label: "Summer night spike"
-      date_local: "2025-07-11"
-      start_utc: "2025-07-11T23:00:00Z"   # 6:00 pm CDT; both areas ~$1,755/MWh in the 9:00 pm interval
-      description: "All four cities jump to about $1,750/MWh at 9 pm."
-    - id: ai_best_evening
-      year: 2025
-      label: "The AI's best evening"
-      date_local: "2025-05-30"
-      start_utc: "2025-05-30T23:00:00Z"   # 6:00 pm CDT; race from 90%: AI $38,936 vs simple rule $17,536 by midnight
-      description: "The 2025 evening where the AI forecast pulled furthest ahead of the simple rule."
     - id: ordinary_day
       year: 2025
       label: "An ordinary day"
@@ -109,11 +91,6 @@ presets:
       date_local: "2025-01-01"
       start_utc: "2025-01-01T06:00:00Z"   # midnight CST; the bands window warms up on Dec 25-31, 2024
       description: "The whole of 2025 from New Year's Day, real ERCOT prices all year."
-    - id: real_prices_end_2026
-      year: 2026
-      label: "Where real prices end"
-      start: evening_before_real_until    # 6 pm Central the evening before real_until_utc (2026-09-19 with the Sep 20 files)
-      description: "The last real evening of 2026. A few hours in, the replay switches to the AI's prediction."
     - id: spike_2026
       year: 2026
       label: "Biggest evening spike of 2026"

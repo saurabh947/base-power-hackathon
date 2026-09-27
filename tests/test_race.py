@@ -107,7 +107,7 @@ def assert_same(race, summary, soc_final):
 
 
 @pytest.mark.parametrize("name, start_utc, ticks, soc0, size", [
-    ("bands", "2025-07-11T23:00:00Z", 72, 0.9, 20000),  # the summer_spike preset, the full fleet: 6 pm to midnight
+    ("bands", "2025-07-11T23:00:00Z", 72, 0.9, 20000),  # the July 11 spike evening, the full fleet: 6 pm to midnight
     ("bands", "2025-01-01T06:00:00Z", 288, 0.5, 2000),  # warm-up reaches back into 2024
     ("bands", "2025-05-16T21:00:00Z", 96, 0.9, 2000),   # the spike evening
 ])
@@ -146,7 +146,7 @@ def test_the_race_on_the_ai_forecast_is_the_backtest_too():
 
 def test_availability_overrides_mid_run_are_mirrored_exactly():
     """30% of Houston and a block of Dallas-Fort Worth go offline at 8 pm and come back at 9 pm, while the simple
-    rule sells (2025-07-11, the summer_spike preset from 6 pm): the race equals a backtest replayed in segments
+    rule sells (2025-07-11, the spike evening from 6 pm): the race equals a backtest replayed in segments
     with those very masks, and an offline battery holds its charge while it is offline."""
     size = 2000
     fleets = build_fleets(size, CFG.fleet.locations, CFG.battery, CFG.seed)

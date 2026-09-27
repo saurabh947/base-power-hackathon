@@ -41,7 +41,6 @@ import type {
   Availability,
   AvailabilityRequest,
   AvailabilityResponse,
-  BacktestStatus,
   BatteryInfo,
   EditableSettings,
   FailedCommand,
@@ -69,6 +68,16 @@ import { CHARGING, DOWN, OFFLINE, packStatus, SELLING, WAITING } from '../src/ma
 import priceFixture from './data/ercot_rt_lz_preset_days_2025.json' with { type: 'json' };
 import { MEASURED, mockAiGains, SPLIT_2026 } from './gains.ts';
 import { buildMockLayout } from './layout.ts';
+
+/** GET /backtest/{job_id} (docs/API.md). The site no longer re-runs a year, but the practice server keeps the API. */
+interface BacktestStatus {
+  /** `cancelled`: stopped with POST /backtest/{job_id}/cancel; nothing was stored. */
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  run_ids: string[];
+  /** Strategies left out of the run, with the reason, e.g. {"forecast": "forecasts do not cover 2025"}. */
+  skipped?: Record<string, string>;
+  error: string | null;
+}
 
 /** Present in every mock module so scripts/check-dist.mjs can prove none of it ships. */
 export const MOCK_MARKER = 'FLEET_SIM_MOCK_DO_NOT_SHIP';
@@ -120,9 +129,11 @@ export const YEARS: YearInfo[] = [
 ];
 
 /**
- * The 2025 presets mirror config.yaml presets.items (start_local added, as GET /settings sends it); each year
- * has a "From January 1" preset (docs/API.md). The mock loads two days per preset, so "From January 1" runs for
- * two days here.
+ * Every replay the practice server can run. GET /settings lists only LISTED: config.yaml's 2025 presets
+ * (presets.items, start_local added, as GET /settings sends it) and the mock's 2026 "From January 1" (each year
+ * has one, docs/API.md). The other 2025 evenings and "Where real prices end" (the mock's quick way into its
+ * simulated 2026 prediction) stay replayable for the mock's own tests. The mock loads two days per preset, so
+ * "From January 1" runs for two days here.
  */
 export const PRESETS: Preset[] = [
   {
@@ -199,11 +210,14 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-/** config.yaml presets.default is ai_best_evening. */
+/** What GET /settings offers on Start (config.yaml presets.items; the mock has no 2026 spike day). */
+export const LISTED = new Set(['morning_spike', 'ordinary_day', 'jan1_2025', 'jan1_2026']);
+
+/** config.yaml presets.default is morning_spike (the biggest spike of 2025). */
 export const DEFAULT_SETTINGS: Settings = {
   year: 2025,
-  preset: 'ai_best_evening',
-  start_utc: '2025-05-30T23:00:00Z',
+  preset: 'morning_spike',
+  start_utc: '2025-04-07T08:00:00Z',
   speed_tps: 2,
   strategy: 'forecast',
   start_charge_level: 0.9,
@@ -816,9 +830,11 @@ export class MockSim {
     if (year !== null && !YEARS.some((y) => y.year === year)) {
       throw new MockError(400, 'invalid_year', 'The year must be 2025 or 2026.');
     }
-    // A preset belongs to one year; a year alone gets the default preset, or that year's first.
+    // A preset belongs to one year; a year alone gets the default preset, or that year's first listed one.
     const yearDefault =
-      year === null || year === DEFAULT_SETTINGS.year ? DEFAULT_SETTINGS.preset : PRESETS.find((p) => p.year === year)?.id;
+      year === null || year === DEFAULT_SETTINGS.year
+        ? DEFAULT_SETTINGS.preset
+        : PRESETS.find((p) => p.year === year && LISTED.has(p.id))?.id;
     const presetId = partial.preset ?? yearDefault ?? DEFAULT_SETTINGS.preset;
     const preset = PRESETS.find((p) => p.id === presetId);
     if (!preset) throw new MockError(400, 'unknown_preset', `There is no replay called "${presetId}".`);
@@ -1918,7 +1934,7 @@ export function mockSettingsResponse() {
   return {
     defaults: DEFAULT_SETTINGS,
     editable: ['year', 'preset', 'speed_tps', 'strategy', 'start_charge_level'],
-    presets: PRESETS,
+    presets: PRESETS.filter((p) => LISTED.has(p.id)),
     years: YEARS,
     strategies: STRATEGIES,
     speeds: SPEEDS.map((tps) => ({ tps, label: `1 hour every ${12 / tps} s` })),

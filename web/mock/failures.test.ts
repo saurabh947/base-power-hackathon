@@ -12,7 +12,7 @@ import { MockSim } from './sim.ts';
 function running(speed = 2, preset?: string) {
   let now = Date.parse('2026-09-25T12:00:00Z');
   const sim = new MockSim({ now: () => now, random: () => 0.5 });
-  sim.start({ speed_tps: speed, ...(preset ? { preset } : {}) });
+  sim.start({ speed_tps: speed, preset: preset ?? 'ai_best_evening' }); // May 30, 2025, from 6 pm
   const step = () => {
     now += 1000;
     return sim.stepWall() as FrameMessage;

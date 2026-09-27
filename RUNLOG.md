@@ -517,3 +517,20 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   - Turning a controller back online returns everything its switch took down, wherever those batteries are now.
   - User-chosen offline (city, battery, the controller's own switch) stays.
   - Tests: `tests/test_availability_sources.py` and `test_failure_model.py::test_a_restart_brings_back_online_what_went_offline_with_another_controller`.
+
+## Round 4: fewer Start replays, a shorter Results page (2026-09-26)
+
+- **Start (the human's cut).** `config.yaml` presets:
+  - 2025: `morning_spike` ("Biggest spike of 2025", now the default), `ordinary_day` and `jan1_2025`.
+  - 2026: `spike_2026` (now 2026's default) and `jan1_2026`.
+  - Dropped: `spike_evening`, `summer_spike`, `ai_best_evening` and `real_prices_end_2026`.
+  - The computed-start mechanism (`start: evening_before_real_until`) stays and is still tested with a synthetic preset.
+  - The 2026 option is the biggest *evening* spike (Apr 24). The biggest 2026 spike overall is Jan 28: $1,612/MWh in one city, $1,285 in all four at once.
+  - The practice server lists the same 2025 replays and keeps the dropped days unlisted for its tests.
+- **Results (the human's cut).**
+  - No "What is this?" line on any panel.
+  - "What the AI adds" absorbs "How the decision methods compare": one card beside the big number with the uplift headline, every method's bar with "N% of best possible", and the surplus power.
+  - The fine print is a short list shown in full, with the simulator's notes only under technical details.
+  - "Re-run the full year" is gone from the site (the API keeps `/backtest`).
+- **Demo script** rewritten around April 7 (the spike is about 20 s in at 2 ticks/s). The AI-vs-simple-rule race numbers for that morning are not yet measured: the local database has no prices or forecasts.
+- **Tests.** Two live API tests raced the published snapshot and now wait for it. `test_a_crash_while_paused_shows_code_4_then_the_hand_over` failed about 1 run in 5 and passed 8 of 8 after the fix.

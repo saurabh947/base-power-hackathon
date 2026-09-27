@@ -7,7 +7,6 @@ import type {
   ApiErrorBody,
   AvailabilityRequest,
   AvailabilityResponse,
-  BacktestStatus,
   EditableSettings,
   Forecast,
   HealthResponse,
@@ -122,12 +121,6 @@ export const api = {
     request<KillResponse>('POST', workerId === undefined ? '/chaos/kill' : `/chaos/kill?worker_id=${encodeURIComponent(workerId)}`),
   /** Bring a crashed controller back (public; rate-limited like kill): 409 not_crashed if it isn't down. */
   restart: (workerId: number) => request<RestartResponse>('POST', `/workers/${encodeURIComponent(workerId)}/restart`),
-  backtest: (strategies: string[], year: number) =>
-    request<{ job_id: string }>('POST', '/backtest', { body: { strategies, year } }),
-  backtestStatus: (jobId: string) => request<BacktestStatus>('GET', `/backtest/${encodeURIComponent(jobId)}`),
-  /** Stops a running full-year job: 200 {"status": "cancelled"}, 409 not_running, 404 unknown. */
-  cancelBacktest: (jobId: string) =>
-    request<{ status: 'cancelled' }>('POST', `/backtest/${encodeURIComponent(jobId)}/cancel`),
   /** GET /results/pitch?year=: that year's full-year results (the pitch year, 2025, without a year). */
   results: (year: number | null, signal?: AbortSignal) =>
     request<Results>('GET', `/results/pitch${year === null ? '' : `?year=${encodeURIComponent(year)}`}`, { signal, timeoutMs: 30_000 }),

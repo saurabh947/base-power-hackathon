@@ -34,10 +34,10 @@ def test_default_settings_follow_docs_api(cfg, raw):
 
 
 def test_resolve_settings_takes_only_editable_keys(cfg, raw):
-    s = ctl.resolve_settings({"preset": "summer_spike", "speed_tps": 5, "strategy": "peak", "start_charge_level": 0.5,
+    s = ctl.resolve_settings({"preset": "ordinary_day", "speed_tps": 5, "strategy": "peak", "start_charge_level": 0.5,
                               "fleet_size": 3, "start_utc": "2020-01-01T00:00:00Z"}, cfg, raw)
     assert (s["preset"], s["start_utc"], s["speed_tps"], s["strategy"], s["start_charge_level"]) == (
-        "summer_spike", "2025-07-11T23:00:00Z", 5, "peak", 0.5)
+        "ordinary_day", "2025-06-28T05:00:00Z", 5, "peak", 0.5)
     assert s["fleet_size"] == 20000  # ignored
     internal = ctl.resolve_settings({"start_utc": "2025-03-01T06:00:00Z"}, cfg, raw, allow_internal=True)
     assert internal["start_utc"] == "2025-03-01T06:00:00Z"
