@@ -13,3 +13,4 @@ __pycache__
 .dev
 .pytest_cache
 data/results
+assets
