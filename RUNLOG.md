@@ -534,3 +534,33 @@ The Texas Triangle fleet (20,000 batteries), lag 3, real ERCOT prices, load and 
   - "Re-run the full year" is gone from the site (the API keeps `/backtest`).
 - **Demo script** rewritten around April 7 (the spike is about 20 s in at 2 ticks/s). The AI-vs-simple-rule race numbers for that morning are not yet measured: the local database has no prices or forecasts.
 - **Tests.** Two live API tests raced the published snapshot and now wait for it. `test_a_crash_while_paused_shows_code_4_then_the_hand_over` failed about 1 run in 5 and passed 8 of 8 after the fix.
+
+## No database: the data moves into the backend image (2026-11-19)
+
+- **Why.** Cloud SQL `fleet-sim-db` (db-f1-micro) cost about $9.37 a month and had no real use after Sep 30. Stopping it would have saved only about $0.37, because a stopped instance still pays for its disk and public IP.
+- **Backup.** Full SQL export (294 MB): `gs://appintellect-fleet-sim-backup/fleetsim-2026-11-19.sql.gz`, in a private bucket. It was restored locally and everything below was rebuilt from it.
+- **`data/frozen`**, written by `src/data/freeze.py`, which reads every file back against the database. Only `results/` is in git; the TimesFM output (forecasts and prediction, about 100 MB) is in the backup bucket under `frozen/`, and `deploy.sh` refuses to deploy without it:
+  - TimesFM-3 forecasts issued from 2024-12-24 on: rt_price for the 4 cities and ERCOT demand, 15,245 each.
+  - The 2026 prediction: cutoff 2026-09-20T05:00Z, 9,892 points per city.
+  - All 36 full-year runs, with the 2025 and 2026 Results sets.
+  - Prices need no export: `data/snapshot` matched the database row for row (2024–2026, RT and DA, the 4 cities).
+- **Checks.**
+  - Database mode and files mode gave identical Results, AI gains, 736 sampled forecasts, the prediction and the forecast books the AI strategy trades on.
+  - Re-running 2025 and 2026 from the files reproduced the published figures exactly ($190.950711 per battery for the AI in 2025).
+  - The new backend answered /settings, /results and /fleet/layout byte for byte as before, locally and live, and a live run used the AI forecasts in all 4 cities with no warnings.
+- **Changes.**
+  - `FORECAST_CACHE_DIR` and `PREDICTION_CACHE_DIR` env overrides; the Dockerfile copies `data/frozen` and points the readers at it.
+  - `deploy.sh` no longer attaches Cloud SQL or the DB password.
+  - At most 2 snapshot price feeds are kept in memory (each holds +117 to +313 MB).
+  - `BACKTEST_RERUNS=off` (set in the image) makes `POST /backtest` answer 403 `backtest_disabled`.
+- **Deployed** as revision fleet-sim-00010-8vv; then `fleet-sim-db` was deleted.
+- **Differences after the switch:**
+  - A 2025 replay stops at the end of 2025 instead of running on into 2026.
+  - `GET /forecast` before 2024-12-24 answers 404.
+  - Revisions up to fleet-sim-00009 needed the database and can't be rolled back to.
+- **Cleaned up the same day:**
+  - The six Cloud Run jobs.
+  - The `fleet-sim-db-password` secret.
+  - The `fleet-sim-run` service account's conditional `cloudsql.client` role.
+  - The export account's write access to the backup bucket.
+  - The bucket keeps the SQL export and the frozen AI files, with object versioning on.

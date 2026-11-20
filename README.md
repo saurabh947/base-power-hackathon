@@ -15,13 +15,14 @@ Live: https://fleet-sim.vercel.app
 
 ## Stack
 
-Python, FastAPI, Redis and Postgres on Google Cloud Run and Cloud SQL. React and Vite on Vercel.
+Python, FastAPI and Redis on Google Cloud Run, with no database: the prices, AI forecasts and full-year results ship inside the backend image. React and Vite on Vercel.
 
 ## Layout
 
 - `src/` backend: simulator, strategies, backtest, forecasts, API
 - `web/` website
 - `tests/` backend tests
+- `data/` the ERCOT price snapshot and the backend's frozen data (`data/frozen`; its AI forecasts aren't in git, see its README)
 - `docs/` API contract and UX notes
 - `spec/` the original hackathon spec
 - `assets/` screenshots and recordings
