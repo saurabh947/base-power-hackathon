@@ -1,0 +1,418 @@
+{
+ "run_id": "d371ca4d-c253-4269-b90a-4b11f518be2a",
+ "strategy": "bands",
+ "label": "Simple rule",
+ "year": 2025,
+ "started_at": "2026-09-26T15:28:53Z",
+ "finished_at": "2026-09-26T15:29:38Z",
+ "fleet_total_usd": 2473370.2941370024,
+ "per_battery_avg_usd": 123.66851470685012,
+ "per_location": {
+  "LZ_AEN": 330802.92056305753,
+  "LZ_CPS": 345843.8432100529,
+  "LZ_NORTH": 969156.2366182102,
+  "LZ_HOUSTON": 827567.2937456819
+ },
+ "top_days": [
+  {
+   "usd": 55844.19655090231,
+   "date_local": "2025-06-05"
+  },
+  {
+   "usd": 51343.14199245573,
+   "date_local": "2025-07-11"
+  },
+  {
+   "usd": 45805.36011144942,
+   "date_local": "2025-07-30"
+  },
+  {
+   "usd": 32645.32775141579,
+   "date_local": "2025-03-24"
+  },
+  {
+   "usd": 29945.845914402253,
+   "date_local": "2025-05-06"
+  },
+  {
+   "usd": 28981.05511736489,
+   "date_local": "2025-04-06"
+  },
+  {
+   "usd": 27121.53522643599,
+   "date_local": "2025-04-20"
+  },
+  {
+   "usd": 26586.942895426342,
+   "date_local": "2025-05-20"
+  },
+  {
+   "usd": 26548.775444235318,
+   "date_local": "2025-08-18"
+  },
+  {
+   "usd": 25947.356508831814,
+   "date_local": "2025-05-11"
+  }
+ ],
+ "metrics": {
+  "lag0": {
+   "sold_kwh": 42331627.9829462,
+   "top_days": [
+    {
+     "usd": 45941.86195170056,
+     "date_local": "2025-06-05"
+    },
+    {
+     "usd": 39128.882161513524,
+     "date_local": "2025-07-30"
+    },
+    {
+     "usd": 37117.377236862434,
+     "date_local": "2025-07-11"
+    },
+    {
+     "usd": 29229.168637002706,
+     "date_local": "2025-08-18"
+    },
+    {
+     "usd": 29055.67492361033,
+     "date_local": "2025-05-20"
+    },
+    {
+     "usd": 28094.44451089989,
+     "date_local": "2025-03-24"
+    },
+    {
+     "usd": 27506.68309011111,
+     "date_local": "2025-05-06"
+    },
+    {
+     "usd": 26205.783230248686,
+     "date_local": "2025-04-06"
+    },
+    {
+     "usd": 24318.560552517774,
+     "date_local": "2025-05-11"
+    },
+    {
+     "usd": 23840.746517143907,
+     "date_local": "2025-04-20"
+    }
+   ],
+   "lag_ticks": 0,
+   "bought_kwh": 46940162.18115962,
+   "fleet_usd_year": 2424595.517340253,
+   "replay_seconds": 19.1,
+   "avg_buy_usd_mwh": 17.5133048649886,
+   "cycles_per_year": 185.70408738438084,
+   "usd_per_kw_year": 14.705122100868692,
+   "avg_sell_usd_mwh": 76.69614996472308,
+   "per_location_usd": {
+    "LZ_AEN": 326001.13109433424,
+    "LZ_CPS": 339317.09801663307,
+    "LZ_NORTH": 934112.8698056175,
+    "LZ_HOUSTON": 825164.4184236684
+   },
+   "usd_per_kwh_year": 8.072481000598014,
+   "per_battery_usd_year": 121.22977586701265
+  },
+  "checks": {
+   "storage_balance_max_abs_kwh": 5.122124946410622e-10
+  },
+  "coverage": {
+   "fraction": 1.0,
+   "ticks_expected": 105120,
+   "ticks_replayed": {
+    "LZ_AEN": 105120,
+    "LZ_CPS": 105120,
+    "LZ_NORTH": 105120,
+    "LZ_HOUSTON": 105120
+   }
+  },
+  "insights": {
+   "sold_mwh": 42331.6279829487,
+   "spike_mwh": 27.85698808324355,
+   "bought_mwh": 46940.16218116342,
+   "revenue_usd": 2473370.2941370057,
+   "surplus_mwh": 1238.8457992216704,
+   "spike_events": 21,
+   "spike_usd_mwh": 1000.0,
+   "avg_buy_usd_mwh": 17.317537649226427,
+   "avg_sell_usd_mwh": 77.6312765786804,
+   "spike_charge_level": 0.23689659266625668,
+   "spike_intervals_5min": 108
+  },
+  "sold_kwh": 42331627.9829462,
+  "top_days": [
+   {
+    "usd": 55844.19655090231,
+    "date_local": "2025-06-05"
+   },
+   {
+    "usd": 51343.14199245573,
+    "date_local": "2025-07-11"
+   },
+   {
+    "usd": 45805.36011144942,
+    "date_local": "2025-07-30"
+   },
+   {
+    "usd": 32645.32775141579,
+    "date_local": "2025-03-24"
+   },
+   {
+    "usd": 29945.845914402253,
+    "date_local": "2025-05-06"
+   },
+   {
+    "usd": 28981.05511736489,
+    "date_local": "2025-04-06"
+   },
+   {
+    "usd": 27121.53522643599,
+    "date_local": "2025-04-20"
+   },
+   {
+    "usd": 26586.942895426342,
+    "date_local": "2025-05-20"
+   },
+   {
+    "usd": 26548.775444235318,
+    "date_local": "2025-08-18"
+   },
+   {
+    "usd": 25947.356508831814,
+    "date_local": "2025-05-11"
+   }
+  ],
+  "lag_ticks": 3,
+  "bought_kwh": 46940162.18115962,
+  "monthly_usd": {
+   "2025-01": 117683.34549054166,
+   "2025-02": 102455.7534192374,
+   "2025-03": 296994.5836221672,
+   "2025-04": 243703.78219172632,
+   "2025-05": 256643.67031963414,
+   "2025-06": 216055.15264323837,
+   "2025-07": 214585.7010480033,
+   "2025-08": 235924.10535470562,
+   "2025-09": 289396.62018520327,
+   "2025-10": 217913.56236733223,
+   "2025-11": 188035.87757908402,
+   "2025-12": 93978.13991613244
+  },
+  "per_location": {
+   "LZ_AEN": {
+    "usd": 330802.92056305753,
+    "sold_kwh": 5174961.398614272,
+    "batteries": 2400,
+    "bought_kwh": 5738529.874330102,
+    "active_ticks": 11783,
+    "replay_seconds": 3.005,
+    "cycles_per_year": 188.69252890619504,
+    "per_battery_usd": 137.8345502346073
+   },
+   "LZ_CPS": {
+    "usd": 345843.8432100529,
+    "sold_kwh": 5683475.583923368,
+    "batteries": 2600,
+    "bought_kwh": 6302610.0831289925,
+    "active_ticks": 11848,
+    "replay_seconds": 3.146,
+    "cycles_per_year": 191.55184464623582,
+    "per_battery_usd": 133.01686277309727
+   },
+   "LZ_NORTH": {
+    "usd": 969156.2366182102,
+    "sold_kwh": 16369377.445679724,
+    "batteries": 8000,
+    "bought_kwh": 18150155.86628629,
+    "active_ticks": 11133,
+    "replay_seconds": 6.047,
+    "cycles_per_year": 179.29394442794046,
+    "per_battery_usd": 121.14452957727627
+   },
+   "LZ_HOUSTON": {
+    "usd": 827567.2937456819,
+    "sold_kwh": 15103813.554731324,
+    "batteries": 7000,
+    "bought_kwh": 16748866.357418014,
+    "active_ticks": 11827,
+    "replay_seconds": 5.558,
+    "cycles_per_year": 189.8492249574843,
+    "per_battery_usd": 118.22389910652598
+   }
+  },
+  "fleet_usd_year": 2473370.2941370024,
+  "replay_seconds": 25.738,
+  "ticks_replayed": 105120,
+  "avg_buy_usd_mwh": 17.317537649227827,
+  "cycles_per_year": 185.70408738438084,
+  "usd_per_kw_year": 15.00094012210533,
+  "avg_sell_usd_mwh": 77.63127657868499,
+  "usd_per_kwh_year": 8.234872399981647,
+  "per_battery_usd_year": 123.66851470685012,
+  "cycles_per_year_nameplate": 148.5632699075047,
+  "per_battery_usd_percentiles": {
+   "p0": 77.17090631913939,
+   "p10": 90.51728324694335,
+   "p50": 123.70164209576038,
+   "p90": 155.97074370065334,
+   "p100": 187.18258626638595
+  }
+ },
+ "params": {
+  "code": {
+   "git": null
+  },
+  "year": 2025,
+  "fleet": {
+   "seed": 42,
+   "size": 20000,
+   "locations": [
+    "LZ_HOUSTON",
+    "LZ_NORTH",
+    "LZ_CPS",
+    "LZ_AEN"
+   ],
+   "assignment": "src.sim.fleet.generate_batteries, contiguous blocks per location in config order",
+   "by_location": {
+    "LZ_AEN": 2400,
+    "LZ_CPS": 2600,
+    "LZ_NORTH": 8000,
+    "LZ_HOUSTON": 7000
+   },
+   "battery_ranges": {
+    "power_kw": [
+     5.0,
+     11.5
+    ],
+    "soc_init": 0.5,
+    "efficiency": 0.9,
+    "soc_bounds": [
+     0.2,
+     1.0
+    ],
+    "capacity_kwh": [
+     10.0,
+     20.0
+    ],
+    "cap_power_at_capacity": true
+   },
+   "power_kw_total": 164881.01905641588,
+   "capacity_kwh_total": 300353.2020899941
+  },
+  "label": "Simple rule",
+  "config": {
+   "sim": {
+    "tick_seconds": 300,
+    "decision_lag_ticks": 3
+   },
+   "seed": 42,
+   "fleet": {
+    "size": 20000,
+    "workers": 20,
+    "locations": {
+     "LZ_AEN": 0.12,
+     "LZ_CPS": 0.13,
+     "LZ_NORTH": 0.4,
+     "LZ_HOUSTON": 0.35
+    }
+   },
+   "battery": {
+    "soc_max": 1.0,
+    "soc_min": 0.2,
+    "power_kw": [
+     5.0,
+     11.5
+    ],
+    "soc_init": 0.5,
+    "efficiency": 0.9,
+    "capacity_kwh": [
+     10.0,
+     20.0
+    ],
+    "demo_soc_init": 0.9,
+    "cap_power_at_capacity": true
+   },
+   "backtest": {
+    "year": 2025,
+    "labels": {
+     "peak": "Evening peak",
+     "bands": "Simple rule",
+     "forecast": "AI forecast (TimesFM-3)",
+     "hindsight": "Best possible (perfect hindsight)"
+    },
+    "ceiling": {
+     "workers": 4,
+     "ratio_step": 0.05,
+     "cycles_per_day_cap": 1.0
+    },
+    "headline": [
+     "forecast",
+     "bands"
+    ],
+    "strategies": [
+     "bands",
+     "forecast",
+     "peak"
+    ],
+    "results_dir": "data/results",
+    "warmup_days": 7,
+    "lag0_variant": true,
+    "forecast_min_coverage": 0.99
+   },
+   "strategy": {
+    "name": "bands",
+    "peak": {
+     "timezone": "America/Chicago",
+     "charge_window": [
+      "10:00:00",
+      "15:00:00"
+     ],
+     "discharge_window": [
+      "18:00:00",
+      "21:00:00"
+     ]
+    },
+    "bands": {
+     "min_samples": 288,
+     "window_days": 7,
+     "low_percentile": 25.0,
+     "high_percentile": 90.0
+    }
+   },
+   "orchestration": {
+    "heartbeat_ttl_s": 6.0,
+    "heartbeat_interval_s": 2.0,
+    "deadline_miss_threshold": 2
+   }
+  },
+  "prices": {
+   "ticks": {
+    "LZ_AEN": 105120,
+    "LZ_CPS": 105120,
+    "LZ_NORTH": 105120,
+    "LZ_HOUSTON": 105120
+   },
+   "source": "ERCOT RT settlement point prices, native 15-min, forward-filled to 5-min ticks",
+   "backend": "postgres",
+   "warmup_ticks": {
+    "LZ_AEN": 2016,
+    "LZ_CPS": 2016,
+    "LZ_NORTH": 2016,
+    "LZ_HOUSTON": 2016
+   },
+   "replay_end_utc": "2026-01-01T06:00:00Z",
+   "replay_start_utc": "2025-01-01T06:00:00Z"
+  },
+  "strategy": "bands",
+  "decisions": "bands percentiles precomputed for all ticks (bit-identical to the seam)",
+  "lag_ticks": 3,
+  "lag0_variant": true,
+  "history_ticks": 2016,
+  "strategy_repr": "BandsStrategy(p25/p90, window=2016 ticks, min_samples=288)"
+ },
+ "notes": "Simple rule: $123.67 per battery, $2,473,370 for the fleet, 2025, decision lag 3 ticks."
+}

@@ -1,0 +1,213 @@
+{
+ "year": 2026,
+ "generated_utc": "2026-09-26T23:05:12Z",
+ "real_until_utc": "2026-09-20T05:00:00Z",
+ "fleet_size": 20000,
+ "fleet_power_mw": 164.9,
+ "fleet_energy_mwh": 300.4,
+ "assumptions": [
+  "Gross wholesale energy value at real-time prices from ERCOT, the Texas grid operator (15-minute settlement), for every 5-minute step of 2026 up to Sep 19, 2026.",
+  "ERCOT's real prices end on Sep 19, 2026. After that, the prices are the AI's prediction (TimesFM-3, its median), so the money after that date is a projection, shown separately.",
+  "After real prices end, the AI forecast method trades on hourly slices of that same prediction, so it knows those prices in advance and its projected money flatters it.",
+  "Excludes retail and delivery charges, payments for grid-support services, and battery wear.",
+  "The fleet is assumed too small to move market prices.",
+  "20,000 simulated home batteries of 5\u201311.5 kW and 10\u201320 kWh each (165 MW and 300 MWh in all), in all four cities: Houston (7,000), Dallas\u2013Fort Worth (8,000), San Antonio (2,600) and Austin (2,400).",
+  "Batteries never go below 20% charge (a safety reserve), and a round trip (charge, then discharge) returns 90% of the energy.",
+  "One cycle means using a battery's full usable energy once, from 100% down to the 20% reserve.",
+  "Decisions use each price only once it is published, 15 minutes late. If prices were known instantly, AI forecast (TimesFM-3) would earn $149.39 per battery instead.",
+  "Best possible (perfect hindsight) assumes perfect knowledge of each day's prices, with each day planned on its own. No real system can reach it. Held to 1 full cycle a day, it would be $264.98 per battery.",
+  "The AI forecast uses Google's TimesFM-3 research weights, licensed for non-commercial use; a production version would use TimesFM 2.5 (Apache-2.0)."
+ ],
+ "strategies": [
+  {
+   "strategy": "bands",
+   "label": "Simple rule",
+   "run_id": "8cd5f241-1bce-419d-992b-622f2b01c0e9",
+   "is_headline": false,
+   "per_battery_usd_year": 98.7,
+   "real_per_battery_usd": 68.66,
+   "projected_per_battery_usd": 30.04,
+   "fleet_usd_year": 1973910.49,
+   "usd_per_kwh_year": 6.57,
+   "usd_per_kw_year": 11.97,
+   "cycles_per_year": 231.1,
+   "per_location_usd": {
+    "LZ_HOUSTON": 624365.28,
+    "LZ_NORTH": 846297.67,
+    "LZ_CPS": 266371.19,
+    "LZ_AEN": 236876.36
+   },
+   "top_days": [
+    {
+     "date_local": "2026-01-31",
+     "usd": 52632.23
+    },
+    {
+     "date_local": "2026-09-02",
+     "usd": 43890.65
+    },
+    {
+     "date_local": "2026-01-27",
+     "usd": 29045.22
+    },
+    {
+     "date_local": "2026-04-20",
+     "usd": 26215.6
+    },
+    {
+     "date_local": "2026-04-27",
+     "usd": 25630.63
+    },
+    {
+     "date_local": "2026-08-30",
+     "usd": 24640.33
+    },
+    {
+     "date_local": "2026-04-18",
+     "usd": 20214.5
+    },
+    {
+     "date_local": "2026-08-17",
+     "usd": 18359.23
+    },
+    {
+     "date_local": "2026-07-21",
+     "usd": 17776.39
+    },
+    {
+     "date_local": "2026-08-23",
+     "usd": 17575.78
+    }
+   ]
+  },
+  {
+   "strategy": "forecast",
+   "label": "AI forecast (TimesFM-3)",
+   "run_id": "96947f47-b81a-43fb-9d47-9df2b42e4487",
+   "is_headline": true,
+   "per_battery_usd_year": 156.63,
+   "real_per_battery_usd": 118.27,
+   "projected_per_battery_usd": 38.36,
+   "fleet_usd_year": 3132572.6,
+   "usd_per_kwh_year": 10.43,
+   "usd_per_kw_year": 19.0,
+   "cycles_per_year": 356.4,
+   "per_location_usd": {
+    "LZ_HOUSTON": 935873.27,
+    "LZ_NORTH": 1380729.6,
+    "LZ_CPS": 440689.74,
+    "LZ_AEN": 375279.99
+   },
+   "top_days": [
+    {
+     "date_local": "2026-01-25",
+     "usd": 133433.07
+    },
+    {
+     "date_local": "2026-04-27",
+     "usd": 133360.11
+    },
+    {
+     "date_local": "2026-04-24",
+     "usd": 67732.05
+    },
+    {
+     "date_local": "2026-09-17",
+     "usd": 53359.14
+    },
+    {
+     "date_local": "2026-08-17",
+     "usd": 52080.95
+    },
+    {
+     "date_local": "2026-09-02",
+     "usd": 43090.16
+    },
+    {
+     "date_local": "2026-01-26",
+     "usd": 42555.11
+    },
+    {
+     "date_local": "2026-08-23",
+     "usd": 40492.72
+    },
+    {
+     "date_local": "2026-09-16",
+     "usd": 37966.64
+    },
+    {
+     "date_local": "2026-03-16",
+     "usd": 37030.58
+    }
+   ]
+  },
+  {
+   "strategy": "peak",
+   "label": "Evening peak",
+   "run_id": "5598ae56-6681-4a38-a9d2-214a46088f40",
+   "is_headline": false,
+   "per_battery_usd_year": 123.35,
+   "real_per_battery_usd": 94.68,
+   "projected_per_battery_usd": 28.67,
+   "fleet_usd_year": 2466936.86,
+   "usd_per_kwh_year": 8.21,
+   "usd_per_kw_year": 14.96,
+   "cycles_per_year": 365.0,
+   "per_location_usd": {
+    "LZ_HOUSTON": 638145.2,
+    "LZ_NORTH": 1216032.61,
+    "LZ_CPS": 322073.92,
+    "LZ_AEN": 290685.12
+   },
+   "top_days": [
+    {
+     "date_local": "2026-01-25",
+     "usd": 141248.78
+    },
+    {
+     "date_local": "2026-09-16",
+     "usd": 91666.0
+    },
+    {
+     "date_local": "2026-04-27",
+     "usd": 79062.55
+    },
+    {
+     "date_local": "2026-04-24",
+     "usd": 66907.69
+    },
+    {
+     "date_local": "2026-09-17",
+     "usd": 63076.58
+    },
+    {
+     "date_local": "2026-08-26",
+     "usd": 35780.66
+    },
+    {
+     "date_local": "2026-01-27",
+     "usd": 30121.57
+    },
+    {
+     "date_local": "2026-01-31",
+     "usd": 24204.4
+    },
+    {
+     "date_local": "2026-08-17",
+     "usd": 24048.23
+    },
+    {
+     "date_local": "2026-03-23",
+     "usd": 23800.16
+    }
+   ]
+  }
+ ],
+ "ceiling": {
+  "label": "Best possible (perfect hindsight)",
+  "per_battery_usd_year": 317.75,
+  "real_per_battery_usd": 277.68,
+  "projected_per_battery_usd": 40.07,
+  "fleet_usd_year": 6354930.61
+ }
+}

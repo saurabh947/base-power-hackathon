@@ -1,10 +1,11 @@
 """The `forecast:` section of config.yaml, typed and validated.
 
 Read through src.config.load_raw_config()["forecast"], so the typed core
-config never changes. Two environment variables override the file, so the
-Cloud Run job can switch without a rebuild:
+config never changes. Environment variables override the file, so the Cloud Run
+service and jobs can switch without a rebuild:
   FORECAST_MODEL        timesfm-3.0 | timesfm-2.5
   FORECAST_WEIGHTS_DIR  where model weights live (the image bakes them into /app/models)
+  FORECAST_CACHE_DIR    the parquet forecasts (the backend image serves data/frozen/forecasts)
 """
 from __future__ import annotations
 
@@ -133,7 +134,7 @@ def load_settings(raw: Mapping[str, Any] | None = None, *, env: Mapping[str, str
         locations=tuple(str(x) for x in locations),
         demand_location=str(raw.get("demand_location", "ERCOT")),
         da_publish_local=da_publish,
-        cache_dir=_path(raw.get("cache_dir", "data/cache/forecasts")),
+        cache_dir=_path(env.get("FORECAST_CACHE_DIR") or raw.get("cache_dir", "data/cache/forecasts")),
         rt_price=rt,
         demand=demand,
         strategy=strategy,

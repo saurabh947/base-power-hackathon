@@ -134,6 +134,9 @@ class Orchestration:
 
 _FEEDS: dict = {}
 _FEEDS_LOCK = threading.Lock()
+# A snapshot feed holds every tick of its years in memory (+117 to +313 MB by year-set, measured), and the presets
+# use four year-sets, so only the most recently used ones are kept.
+SNAPSHOT_FEEDS_KEPT = 2
 
 
 def price_feed(years: tuple[int, ...], locations: Sequence[str] | None = None):
@@ -151,17 +154,22 @@ def price_feed(years: tuple[int, ...], locations: Sequence[str] | None = None):
 
 
 def _price_feed_locked(source: str, key: tuple, years: tuple[int, ...], locations: tuple[str, ...]):
-    if key not in _FEEDS:
-        if source == "postgres":
-            from src.feeds.replay import PostgresReplayFeed  # M1: the prices table (Cloud SQL in the container)
+    if key in _FEEDS:
+        _FEEDS[key] = _FEEDS.pop(key)  # most recently used last
+        return _FEEDS[key]
+    if source == "postgres":
+        from src.feeds.replay import PostgresReplayFeed  # the prices table, when a database is configured
 
-            _FEEDS[key] = PostgresReplayFeed(market="RT")
-        elif source == "snapshot":
-            from src.feeds.parquet import snapshot_feed
+        _FEEDS[key] = PostgresReplayFeed(market="RT")
+    elif source == "snapshot":
+        from src.feeds.parquet import snapshot_feed
 
-            _FEEDS[key] = snapshot_feed(years=years, locations=locations)
-        else:
-            raise ValueError(f"PRICE_SOURCE must be snapshot or postgres, got {source!r}")
+        kept = [k for k in _FEEDS if k[0] == "snapshot"]
+        for old in kept[: max(0, len(kept) - SNAPSHOT_FEEDS_KEPT + 1)]:  # make room before building the new one
+            del _FEEDS[old]
+        _FEEDS[key] = snapshot_feed(years=years, locations=locations)
+    else:
+        raise ValueError(f"PRICE_SOURCE must be snapshot or postgres, got {source!r}")
     return _FEEDS[key]
 
 

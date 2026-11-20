@@ -12,13 +12,15 @@ p10/p50/p90. src/forecast/predict.py makes it. Two places read it:
   earnings there flatter it (docs/notes/forecast.md).
 
 Storage: the Postgres table price_predictions (migrations/030_forecast_predictions.sql), or parquet under
-forecast.predict.cache_dir (data/cache/predictions/{model}/{location}/{cutoff}.parquet). The source follows
+forecast.predict.cache_dir (data/cache/predictions/{model}/{location}/{cutoff}.parquet; env
+PREDICTION_CACHE_DIR overrides it, and the backend image serves data/frozen/predictions). The source follows
 the forecasts' (src.forecast.store.default_source: db when a database is configured, FORECAST_SOURCE overrides).
 Writes are idempotent: the same cutoff replaces its path. Reads take the latest cutoff at or before the
 real_until being replayed. No torch here.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -104,10 +106,11 @@ def default_model() -> str:
 
 @lru_cache(maxsize=1)
 def default_cache_dir() -> Path:
+    """env PREDICTION_CACHE_DIR, else config forecast.predict.cache_dir (relative to the repo)."""
     from src.config import REPO_ROOT, load_raw_config
 
     raw = (load_raw_config().get("forecast") or {}).get("predict") or {}
-    p = Path(str(raw.get("cache_dir", "data/cache/predictions")))
+    p = Path(os.environ.get("PREDICTION_CACHE_DIR") or str(raw.get("cache_dir", "data/cache/predictions")))
     return p if p.is_absolute() else REPO_ROOT / p
 
 

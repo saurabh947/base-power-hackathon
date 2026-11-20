@@ -1,0 +1,464 @@
+{
+ "run_id": "96947f47-b81a-43fb-9d47-9df2b42e4487",
+ "strategy": "forecast",
+ "label": "AI forecast (TimesFM-3)",
+ "year": 2026,
+ "started_at": "2026-09-26T23:01:03Z",
+ "finished_at": "2026-09-26T23:03:01Z",
+ "fleet_total_usd": 3132572.5984143675,
+ "per_battery_avg_usd": 156.62862992071837,
+ "per_location": {
+  "LZ_AEN": 375279.98820128245,
+  "LZ_CPS": 440689.7395755336,
+  "LZ_NORTH": 1380729.5986941108,
+  "LZ_HOUSTON": 935873.2719434408
+ },
+ "top_days": [
+  {
+   "usd": 133433.0715104639,
+   "date_local": "2026-01-25"
+  },
+  {
+   "usd": 133360.10995416806,
+   "date_local": "2026-04-27"
+  },
+  {
+   "usd": 67732.04603404216,
+   "date_local": "2026-04-24"
+  },
+  {
+   "usd": 53359.14255476879,
+   "date_local": "2026-09-17"
+  },
+  {
+   "usd": 52080.949627485774,
+   "date_local": "2026-08-17"
+  },
+  {
+   "usd": 43090.164792568175,
+   "date_local": "2026-09-02"
+  },
+  {
+   "usd": 42555.105579077055,
+   "date_local": "2026-01-26"
+  },
+  {
+   "usd": 40492.7215130936,
+   "date_local": "2026-08-23"
+  },
+  {
+   "usd": 37966.63914342356,
+   "date_local": "2026-09-16"
+  },
+  {
+   "usd": 37030.583599988735,
+   "date_local": "2026-03-16"
+  }
+ ],
+ "metrics": {
+  "lag0": {
+   "sold_kwh": 81943319.81820202,
+   "top_days": [
+    {
+     "usd": 133807.48951097438,
+     "date_local": "2026-04-27"
+    },
+    {
+     "usd": 104999.09018407775,
+     "date_local": "2026-01-25"
+    },
+    {
+     "usd": 56630.39299161975,
+     "date_local": "2026-09-17"
+    },
+    {
+     "usd": 39960.65586899745,
+     "date_local": "2026-01-26"
+    },
+    {
+     "usd": 39046.56783764643,
+     "date_local": "2026-08-17"
+    },
+    {
+     "usd": 36709.74426281094,
+     "date_local": "2026-03-16"
+    },
+    {
+     "usd": 36320.85943949889,
+     "date_local": "2026-04-24"
+    },
+    {
+     "usd": 33289.09078787692,
+     "date_local": "2026-09-02"
+    },
+    {
+     "usd": 30659.662835889092,
+     "date_local": "2026-04-13"
+    },
+    {
+     "usd": 29352.18910075426,
+     "date_local": "2026-07-21"
+    }
+   ],
+   "lag_ticks": 0,
+   "bought_kwh": 90953153.1639361,
+   "fleet_usd_year": 2987816.8679322577,
+   "replay_seconds": 48.185,
+   "avg_buy_usd_mwh": 19.232363082214007,
+   "cycles_per_year": 359.476121027403,
+   "usd_per_kw_year": 18.121048044407967,
+   "avg_sell_usd_mwh": 57.80899460215749,
+   "per_location_usd": {
+    "LZ_AEN": 373727.8308501705,
+    "LZ_CPS": 425857.1270436331,
+    "LZ_NORTH": 1272945.511631066,
+    "LZ_HOUSTON": 915286.3984073881
+   },
+   "usd_per_kwh_year": 9.947677757858647,
+   "per_battery_usd_year": 149.3908433966129
+  },
+  "split": {
+   "real_usd": 2365496.0556471194,
+   "ticks_real": 75444,
+   "by_location": {
+    "LZ_AEN": {
+     "real_usd": 278088.35814481275,
+     "projected_usd": 97191.6300564697
+    },
+    "LZ_CPS": {
+     "real_usd": 319119.46490946074,
+     "projected_usd": 121570.27466607286
+    },
+    "LZ_NORTH": {
+     "real_usd": 1060599.2446759748,
+     "projected_usd": 320130.3540181359
+    },
+    "LZ_HOUSTON": {
+     "real_usd": 707688.987916871,
+     "projected_usd": 228184.2840265698
+    }
+   },
+   "projected_usd": 767076.5427672481,
+   "real_until_utc": "2026-09-20T05:00:00Z",
+   "ticks_projected": 29676,
+   "real_per_battery_usd": 118.27480278235598,
+   "projected_per_battery_usd": 38.35382713836239
+  },
+  "checks": {
+   "storage_balance_max_abs_kwh": 1.8196679718585074e-09
+  },
+  "coverage": {
+   "fraction": 1.0,
+   "ticks_expected": 105120,
+   "ticks_replayed": {
+    "LZ_AEN": 105120,
+    "LZ_CPS": 105120,
+    "LZ_NORTH": 105120,
+    "LZ_HOUSTON": 105120
+   }
+  },
+  "insights": {
+   "sold_mwh": 81247.24660021663,
+   "spike_mwh": 77.96680342258165,
+   "bought_mwh": 90179.74743420185,
+   "revenue_usd": 3132572.598414383,
+   "surplus_mwh": 5197.025370480868,
+   "spike_events": 18,
+   "spike_usd_mwh": 1000.0,
+   "avg_buy_usd_mwh": 18.70608064599914,
+   "avg_sell_usd_mwh": 59.31871451926281,
+   "spike_charge_level": 0.3286940146917928,
+   "spike_intervals_5min": 117
+  },
+  "sold_kwh": 81247246.60021774,
+  "top_days": [
+   {
+    "usd": 133433.0715104639,
+    "date_local": "2026-01-25"
+   },
+   {
+    "usd": 133360.10995416806,
+    "date_local": "2026-04-27"
+   },
+   {
+    "usd": 67732.04603404216,
+    "date_local": "2026-04-24"
+   },
+   {
+    "usd": 53359.14255476879,
+    "date_local": "2026-09-17"
+   },
+   {
+    "usd": 52080.949627485774,
+    "date_local": "2026-08-17"
+   },
+   {
+    "usd": 43090.164792568175,
+    "date_local": "2026-09-02"
+   },
+   {
+    "usd": 42555.105579077055,
+    "date_local": "2026-01-26"
+   },
+   {
+    "usd": 40492.7215130936,
+    "date_local": "2026-08-23"
+   },
+   {
+    "usd": 37966.63914342356,
+    "date_local": "2026-09-16"
+   },
+   {
+    "usd": 37030.583599988735,
+    "date_local": "2026-03-16"
+   }
+  ],
+  "lag_ticks": 3,
+  "bought_kwh": 90179747.4342074,
+  "monthly_usd": {
+   "2026-01": 348595.2607123789,
+   "2026-02": 174944.73883659992,
+   "2026-03": 253217.08881517075,
+   "2026-04": 428676.96051570337,
+   "2026-05": 198805.66920300724,
+   "2026-06": 145429.86562224088,
+   "2026-07": 209833.62371044423,
+   "2026-08": 358167.37134409556,
+   "2026-09": 333470.65518061793,
+   "2026-10": 226077.75011164043,
+   "2026-11": 223868.1330012976,
+   "2026-12": 231485.48136118564
+  },
+  "per_location": {
+   "LZ_AEN": {
+    "usd": 375279.98820128245,
+    "sold_kwh": 9795663.725565856,
+    "batteries": 2400,
+    "bought_kwh": 10872643.570942966,
+    "active_ticks": 24969,
+    "replay_seconds": 9.785,
+    "cycles_per_year": 357.1753329767155,
+    "per_battery_usd": 156.36666175053435
+   },
+   "LZ_CPS": {
+    "usd": 440689.7395755336,
+    "sold_kwh": 10695208.43589037,
+    "batteries": 2600,
+    "bought_kwh": 11871211.09779091,
+    "active_ticks": 25064,
+    "replay_seconds": 9.996,
+    "cycles_per_year": 360.4637469659984,
+    "per_battery_usd": 169.49605368289755
+   },
+   "LZ_NORTH": {
+    "usd": 1380729.5986941108,
+    "sold_kwh": 31729398.051017605,
+    "batteries": 8000,
+    "bought_kwh": 35216845.427772835,
+    "active_ticks": 24471,
+    "replay_seconds": 14.1,
+    "cycles_per_year": 347.5323939330746,
+    "per_battery_usd": 172.59119983676385
+   },
+   "LZ_HOUSTON": {
+    "usd": 935873.2719434408,
+    "sold_kwh": 29026976.387742788,
+    "batteries": 7000,
+    "bought_kwh": 32219047.33769512,
+    "active_ticks": 25533,
+    "replay_seconds": 13.678,
+    "cycles_per_year": 364.85811679964115,
+    "per_battery_usd": 133.69618170620583
+   }
+  },
+  "fleet_usd_year": 3132572.5984143675,
+  "replay_seconds": 48.715,
+  "ticks_replayed": 105120,
+  "avg_buy_usd_mwh": 18.706080645997993,
+  "cycles_per_year": 356.422526165647,
+  "usd_per_kw_year": 18.998988581836233,
+  "avg_sell_usd_mwh": 59.318714519262,
+  "usd_per_kwh_year": 10.429629438329618,
+  "per_battery_usd_year": 156.62862992071837,
+  "cycles_per_year_nameplate": 285.13802093251763,
+  "per_battery_usd_percentiles": {
+   "p0": 89.9012682671414,
+   "p10": 113.31169345077433,
+   "p50": 154.5867185868946,
+   "p90": 205.4573658062852,
+   "p100": 234.92311301315323
+  }
+ },
+ "params": {
+  "code": {
+   "git": null
+  },
+  "year": 2026,
+  "fleet": {
+   "seed": 42,
+   "size": 20000,
+   "locations": [
+    "LZ_HOUSTON",
+    "LZ_NORTH",
+    "LZ_CPS",
+    "LZ_AEN"
+   ],
+   "assignment": "src.sim.fleet.generate_batteries, contiguous blocks per location in config order",
+   "by_location": {
+    "LZ_AEN": 2400,
+    "LZ_CPS": 2600,
+    "LZ_NORTH": 8000,
+    "LZ_HOUSTON": 7000
+   },
+   "battery_ranges": {
+    "power_kw": [
+     5.0,
+     11.5
+    ],
+    "soc_init": 0.5,
+    "efficiency": 0.9,
+    "soc_bounds": [
+     0.2,
+     1.0
+    ],
+    "capacity_kwh": [
+     10.0,
+     20.0
+    ],
+    "cap_power_at_capacity": true
+   },
+   "power_kw_total": 164881.01905641588,
+   "capacity_kwh_total": 300353.2020899941
+  },
+  "label": "AI forecast (TimesFM-3)",
+  "config": {
+   "sim": {
+    "tick_seconds": 300,
+    "decision_lag_ticks": 3
+   },
+   "seed": 42,
+   "fleet": {
+    "size": 20000,
+    "workers": 20,
+    "locations": {
+     "LZ_AEN": 0.12,
+     "LZ_CPS": 0.13,
+     "LZ_NORTH": 0.4,
+     "LZ_HOUSTON": 0.35
+    }
+   },
+   "battery": {
+    "soc_max": 1.0,
+    "soc_min": 0.2,
+    "power_kw": [
+     5.0,
+     11.5
+    ],
+    "soc_init": 0.5,
+    "efficiency": 0.9,
+    "capacity_kwh": [
+     10.0,
+     20.0
+    ],
+    "demo_soc_init": 0.9,
+    "cap_power_at_capacity": true
+   },
+   "backtest": {
+    "year": 2025,
+    "labels": {
+     "peak": "Evening peak",
+     "bands": "Simple rule",
+     "forecast": "AI forecast (TimesFM-3)",
+     "hindsight": "Best possible (perfect hindsight)"
+    },
+    "ceiling": {
+     "workers": 4,
+     "ratio_step": 0.05,
+     "cycles_per_day_cap": 1.0
+    },
+    "headline": [
+     "forecast",
+     "bands"
+    ],
+    "strategies": [
+     "bands",
+     "forecast",
+     "peak"
+    ],
+    "results_dir": "data/results",
+    "warmup_days": 7,
+    "lag0_variant": true,
+    "forecast_min_coverage": 0.99
+   },
+   "strategy": {
+    "name": "bands",
+    "peak": {
+     "timezone": "America/Chicago",
+     "charge_window": [
+      "10:00:00",
+      "15:00:00"
+     ],
+     "discharge_window": [
+      "18:00:00",
+      "21:00:00"
+     ]
+    },
+    "bands": {
+     "min_samples": 288,
+     "window_days": 7,
+     "low_percentile": 25.0,
+     "high_percentile": 90.0
+    }
+   },
+   "orchestration": {
+    "heartbeat_ttl_s": 6.0,
+    "heartbeat_interval_s": 2.0,
+    "deadline_miss_threshold": 2
+   }
+  },
+  "prices": {
+   "ticks": {
+    "LZ_AEN": 105120,
+    "LZ_CPS": 105120,
+    "LZ_NORTH": 105120,
+    "LZ_HOUSTON": 105120
+   },
+   "source": "ERCOT RT settlement point prices, native 15-min, forward-filled to 5-min ticks",
+   "backend": "postgres, then the AI's prediction (timesfm-3.0, p50) from 2026-09-20T05:00:00Z",
+   "warmup_ticks": {
+    "LZ_AEN": 2016,
+    "LZ_CPS": 2016,
+    "LZ_NORTH": 2016,
+    "LZ_HOUSTON": 2016
+   },
+   "real_until_utc": "2026-09-20T05:00:00Z",
+   "replay_end_utc": "2027-01-01T06:00:00Z",
+   "after_real_until": {
+    "model": "timesfm-3.0",
+    "end_utc": {
+     "LZ_AEN": "2027-01-01T06:00:00Z",
+     "LZ_CPS": "2027-01-01T06:00:00Z",
+     "LZ_NORTH": "2027-01-01T06:00:00Z",
+     "LZ_HOUSTON": "2027-01-01T06:00:00Z"
+    },
+    "locations": [
+     "LZ_HOUSTON",
+     "LZ_NORTH",
+     "LZ_CPS",
+     "LZ_AEN"
+    ],
+    "cutoff_utc": "2026-09-20T05:00:00Z",
+    "issued_utc": "2026-09-26T20:33:18Z"
+   },
+   "replay_start_utc": "2026-01-01T06:00:00Z"
+  },
+  "strategy": "forecast",
+  "decisions": "Strategy.target_kw called every tick",
+  "lag_ticks": 3,
+  "lag0_variant": true,
+  "history_ticks": 2016,
+  "strategy_repr": "ForecastStrategy(LZ_AEN, duration 1.82 h, k_sell 17, k_buy 19, horizon 12 h) / ForecastStrategy(LZ_CPS, duration 1.82 h, k_sell 17, k_buy 19, horizon 12 h) / ForecastStrategy(LZ_HOUSTON, duration 1.82 h, k_sell 17, k_buy 19, horizon 12 h) / ForecastStrategy(LZ_NORTH, duration 1.82 h, k_sell 17, k_buy 19, horizon 12 h)",
+  "real_until_utc": "2026-09-20T05:00:00Z"
+ },
+ "notes": "AI forecast (TimesFM-3): $156.63 per battery ($118.27 real until 2026-09-20T05:00:00Z + $38.35 projected), $3,132,573 for the fleet, 2026, decision lag 3 ticks."
+}

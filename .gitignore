@@ -29,3 +29,8 @@ models/
 
 # backtest exports (the pitch lives in Cloud SQL backtest_runs)
 data/results/
+
+# TimesFM-3 output (non-commercial weights, ~100 MB), kept out of git. The backend image needs it: copy it from
+# the backup bucket before deploying (data/frozen/README.md).
+data/frozen/forecasts/
+data/frozen/predictions/

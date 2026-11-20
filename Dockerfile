@@ -11,8 +11,15 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY config.yaml ./
 COPY migrations ./migrations
 COPY data/snapshot ./data/snapshot
+COPY data/frozen ./data/frozen
 COPY src ./src
-ENV PATH="/app/.venv/bin:$PATH" START_REDIS=1 REDIS_URL=redis://127.0.0.1:6379/0
+# No database: prices come from data/snapshot, and the AI forecasts, the 2026 prediction and the full-year results
+# from data/frozen (exported from Cloud SQL before it was deleted; src/data/freeze.py). The results are fixed, so
+# full-year re-runs are off.
+ENV PATH="/app/.venv/bin:$PATH" START_REDIS=1 REDIS_URL=redis://127.0.0.1:6379/0 \
+    PRICE_SOURCE=snapshot FORECAST_CACHE_DIR=/app/data/frozen/forecasts \
+    PREDICTION_CACHE_DIR=/app/data/frozen/predictions BACKTEST_RESULTS_DIR=/app/data/frozen/results \
+    BACKTEST_RERUNS=off
 # tini reaps zombies (SIGKILLed workers) and forwards SIGTERM from Cloud Run
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "src.launcher"]

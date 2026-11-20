@@ -432,8 +432,16 @@ def _bridge(module: str):
         raise ctl.ControlError(501, "not_ready", "This part of the simulator isn't ready yet.") from None
 
 
+def _reruns_switched_off() -> bool:
+    """BACKTEST_RERUNS=off (set in the backend image): the Results are fixed files (data/frozen), so no re-runs."""
+    return os.environ.get("BACKTEST_RERUNS", "on").strip().lower() in ("off", "0", "false", "no")
+
+
 @app.post("/backtest", status_code=202)
 async def backtest_start(request: Request):
+    if _reruns_switched_off():
+        raise ctl.ControlError(403, "backtest_disabled",
+                               "Full-year re-runs are switched off on this server: its results are fixed.")
     body = await _body(request)
     strategies = body.get("strategies", list(ctl.STRATEGIES))
     year = body.get("year", (RAW.get("backtest") or {}).get("year", 2025))
